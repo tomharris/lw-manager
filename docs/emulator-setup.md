@@ -42,10 +42,31 @@ sudo modprobe kvm_amd          # or kvm_intel on Intel
 echo kvm_amd | sudo tee /etc/modules-load.d/kvm.conf   # persist across reboots
 ```
 
-If `modprobe` reports **"disabled by BIOS"**, virtualization is off in
-firmware. Reboot into BIOS and enable **SVM Mode** (AMD) or **VT-x / Intel
-Virtualization Technology** (Intel), usually under Advanced → CPU
-Configuration.
+### If modprobe fails with "Invalid argument"
+
+That means SVM is disabled in firmware, not that the module is missing.
+Confirm with:
+
+```bash
+journalctl -k | grep -i svm
+# SVM disabled (by BIOS) in MSR_VM_CR
+```
+
+The firmware has set the SVMDIS bit in `MSR_VM_CR`, which hard-locks
+virtualization. There is no kernel-side workaround — it needs a firmware
+change and a reboot.
+
+**On this machine (System76 Thelio, Gigabyte board, BIOS `F61a`):**
+
+1. Reboot and hold **Del** to enter BIOS setup
+2. **M.I.T.** → **Advanced Frequency Settings** → **Advanced CPU Core Settings**
+3. Set **SVM Mode** → **Enabled**
+4. Save and exit
+
+On other hardware the setting is usually Advanced → CPU Configuration → **SVM
+Mode** (AMD) or **VT-x / Intel Virtualization Technology** (Intel).
+
+After rebooting, `kvm_amd` should load automatically and `/dev/kvm` will exist.
 
 Some systems also need the invoking user in the `kvm` group:
 
