@@ -1,0 +1,11 @@
+bin/
+*.env
+.env
+.env.local
+
+# Local filesystem blob store
+data/
+
+# Captured fixtures are large; track deliberately, not by accident.
+fixtures/**/*.png
+!fixtures/**/manifest.yaml
