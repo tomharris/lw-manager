@@ -121,3 +121,80 @@ func TestScreenshotRejectsMalformedDigest(t *testing.T) {
 		t.Fatal("insert with a malformed sha256 succeeded, want constraint violation")
 	}
 }
+
+// Registration must be safe to re-run: an operator will run it again after a
+// typo, or after the emulator is recreated with the same serial.
+func TestRegistrationIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	p := testPool(t)
+
+	if _, err := p.Exec(ctx, `DELETE FROM devices WHERE serial = 'test-register'`); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+
+	register := func(nickname, role string) (int64, int64, Account) {
+		t.Helper()
+		dev, err := p.UpsertDevice(ctx, "test-register", "adb", 1080, 2400)
+		if err != nil {
+			t.Fatalf("UpsertDevice(): %v", err)
+		}
+		inst, err := p.EnsureAppInstance(ctx, dev.ID, "com.fun.lastwar.gp", 0)
+		if err != nil {
+			t.Fatalf("EnsureAppInstance(): %v", err)
+		}
+		acct, err := p.UpsertAccount(ctx, inst, nickname, role, nil, nil)
+		if err != nil {
+			t.Fatalf("UpsertAccount(): %v", err)
+		}
+		return dev.ID, inst, acct
+	}
+
+	dev1, inst1, acct1 := register("firstname", "farm")
+	dev2, inst2, acct2 := register("corrected", "alliance_data")
+
+	if dev1 != dev2 {
+		t.Errorf("re-registering created a second device: %d then %d", dev1, dev2)
+	}
+	if inst1 != inst2 {
+		t.Errorf("re-registering created a second app instance: %d then %d", inst1, inst2)
+	}
+	if acct1.ID != acct2.ID {
+		t.Errorf("re-registering created a second account: %d then %d", acct1.ID, acct2.ID)
+	}
+	if acct2.Nickname != "corrected" || acct2.Role != "alliance_data" {
+		t.Errorf("re-registration did not apply corrections: %+v", acct2)
+	}
+
+	// A second clone slot on the same device is a genuinely different account.
+	inst3, err := p.EnsureAppInstance(ctx, dev1, "com.fun.lastwar.gp", 1)
+	if err != nil {
+		t.Fatalf("EnsureAppInstance() clone 1: %v", err)
+	}
+	if inst3 == inst1 {
+		t.Error("clone slot 1 reused the app instance for clone slot 0")
+	}
+	acct3, err := p.UpsertAccount(ctx, inst3, "secondalt", "farm", nil, nil)
+	if err != nil {
+		t.Fatalf("UpsertAccount() on clone 1: %v", err)
+	}
+	if acct3.ID == acct1.ID {
+		t.Error("a distinct clone slot reused the first account")
+	}
+
+	// The registered accounts must be resolvable by the capture path.
+	target, err := p.CaptureTargetByAccount(ctx, acct3.ID)
+	if err != nil {
+		t.Fatalf("CaptureTargetByAccount(): %v", err)
+	}
+	if target.CloneID != 1 || target.Serial != "test-register" {
+		t.Errorf("target = %+v, want clone 1 on test-register", target)
+	}
+}
+
+func TestUpsertAccountRejectsUnknownRole(t *testing.T) {
+	ctx := context.Background()
+	p := testPool(t)
+	if _, err := p.UpsertAccount(ctx, 1, "x", "overlord", nil, nil); err == nil {
+		t.Fatal("UpsertAccount() accepted an unknown role")
+	}
+}

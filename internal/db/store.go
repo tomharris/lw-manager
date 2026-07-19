@@ -40,6 +40,32 @@ type CaptureTarget struct {
 	ResolutionH int
 }
 
+// Account is a game account pinned to an app instance.
+type Account struct {
+	ID            int64
+	AppInstanceID int64
+	GameUID       *string
+	Nickname      string
+	Server        *int
+	Role          string
+	Enabled       bool
+}
+
+// ValidRoles are the roles the scheduler understands. Mirrors the
+// accounts_role_valid CHECK constraint; duplicated here so a bad --role gives
+// a helpful message instead of a constraint violation.
+var ValidRoles = []string{"main", "farm", "scout", "alliance_data"}
+
+// IsValidRole reports whether role is one the scheduler understands.
+func IsValidRole(role string) bool {
+	for _, r := range ValidRoles {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
 // Screenshot is a recorded capture.
 type Screenshot struct {
 	ID         int64
@@ -96,6 +122,86 @@ func (p *Pool) CaptureTargetByAccount(ctx context.Context, accountID int64) (Cap
 		return CaptureTarget{}, fmt.Errorf("db: resolving capture target for account %d: %w", accountID, err)
 	}
 	return t, nil
+}
+
+// EnsureAppInstance finds or creates the app instance for a device, package
+// and clone slot. Idempotent, so registration can be re-run safely.
+func (p *Pool) EnsureAppInstance(ctx context.Context, deviceID int64, pkg string, cloneID int) (int64, error) {
+	// DO UPDATE rather than DO NOTHING: DO NOTHING suppresses the RETURNING
+	// row on conflict, which would leave id unset on a re-run.
+	const q = `
+		INSERT INTO app_instances (device_id, package, clone_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (device_id, package, clone_id) DO UPDATE SET device_id = EXCLUDED.device_id
+		RETURNING id`
+
+	var id int64
+	if err := p.QueryRow(ctx, q, deviceID, pkg, cloneID).Scan(&id); err != nil {
+		return 0, fmt.Errorf("db: ensuring app instance for device %d (%s clone %d): %w", deviceID, pkg, cloneID, err)
+	}
+	return id, nil
+}
+
+// UpsertAccount creates or updates the account bound to an app instance.
+//
+// One account per app instance is enforced by a UNIQUE constraint, so
+// re-registering the same slot updates the existing account rather than
+// silently creating a second one that could never be scheduled.
+func (p *Pool) UpsertAccount(ctx context.Context, appInstanceID int64, nickname, role string, gameUID *string, server *int) (Account, error) {
+	if !IsValidRole(role) {
+		return Account{}, fmt.Errorf("db: invalid role %q, want one of %v", role, ValidRoles)
+	}
+
+	const q = `
+		INSERT INTO accounts (app_instance_id, nickname, role, game_uid, server)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (app_instance_id) DO UPDATE SET
+			nickname = EXCLUDED.nickname,
+			role     = EXCLUDED.role,
+			game_uid = COALESCE(EXCLUDED.game_uid, accounts.game_uid),
+			server   = COALESCE(EXCLUDED.server, accounts.server)
+		RETURNING id, app_instance_id, game_uid, nickname, server, role, enabled`
+
+	var a Account
+	err := p.QueryRow(ctx, q, appInstanceID, nickname, role, gameUID, server).Scan(
+		&a.ID, &a.AppInstanceID, &a.GameUID, &a.Nickname, &a.Server, &a.Role, &a.Enabled)
+	if err != nil {
+		return Account{}, fmt.Errorf("db: upserting account %q on app instance %d: %w", nickname, appInstanceID, err)
+	}
+	return a, nil
+}
+
+// ListCaptureTargets returns every registered account with its device, for
+// operator-facing listings.
+func (p *Pool) ListCaptureTargets(ctx context.Context) ([]CaptureTarget, error) {
+	const q = `
+		SELECT a.id, a.nickname, a.role, a.enabled,
+		       ai.package, ai.clone_id,
+		       d.id, d.serial, d.transport, d.resolution_w, d.resolution_h
+		FROM accounts a
+		JOIN app_instances ai ON ai.id = a.app_instance_id
+		JOIN devices d       ON d.id  = ai.device_id
+		ORDER BY d.serial, ai.clone_id`
+
+	rows, err := p.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("db: listing capture targets: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CaptureTarget
+	for rows.Next() {
+		var t CaptureTarget
+		if err := rows.Scan(
+			&t.AccountID, &t.Nickname, &t.Role, &t.Enabled,
+			&t.Package, &t.CloneID,
+			&t.DeviceID, &t.Serial, &t.Transport, &t.ResolutionW, &t.ResolutionH,
+		); err != nil {
+			return nil, fmt.Errorf("db: scanning capture target: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // InsertScreenshot records one capture observation.

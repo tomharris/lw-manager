@@ -8,6 +8,25 @@ schedule and feed the parser directly.
 Full design: `docs/lastwar-platform-design.gen`.
 Current milestone spec: `docs/superpowers/specs/`.
 
+## Quickstart
+
+```bash
+docker compose up -d          # postgres on :5433, minio on :9000
+make build                    # bin/agent, bin/control
+./bin/control migrate
+
+# with an emulator running and `adb devices` listing it:
+./bin/agent devices                                  # confirm the probe works
+./bin/agent register --nickname myalt --role alliance_data
+./bin/agent capture --account <id printed above>
+./bin/agent accounts                                 # what is registered
+```
+
+`register` probes the device over adb rather than taking a resolution flag:
+registration is the one cheap moment to prove the serial is real and the
+device is reachable. It is idempotent, so re-running it corrects a typo
+instead of creating a duplicate account.
+
 ## Invariants — non-negotiable
 
 1. **No absolute pixel coordinates outside a `Transport` implementation.**

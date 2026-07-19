@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"text/tabwriter"
 
 	"github.com/tomharris/lw-manager/internal/blob"
 	"github.com/tomharris/lw-manager/internal/capture"
@@ -28,8 +30,10 @@ func usage() {
 	fmt.Fprint(os.Stderr, `usage: agent <command> [flags]
 
 commands:
+  register  register a device and account, probing the device over adb
   capture   capture one screenshot for an account
   devices   list attached adb devices
+  accounts  list registered accounts
 `)
 }
 
@@ -50,10 +54,14 @@ func run() error {
 	logging.Setup(cfg.Log)
 
 	switch os.Args[1] {
+	case "register":
+		return runRegister(ctx, cfg, os.Args[2:])
 	case "capture":
 		return runCapture(ctx, cfg, os.Args[2:])
 	case "devices":
 		return runDevices(ctx, cfg)
+	case "accounts":
+		return runAccounts(ctx, cfg)
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -61,6 +69,132 @@ func run() error {
 		usage()
 		return fmt.Errorf("unknown command %q", os.Args[1])
 	}
+}
+
+func runRegister(ctx context.Context, cfg config.Config, args []string) error {
+	fs := flag.NewFlagSet("register", flag.ExitOnError)
+	serial := fs.String("serial", "", "device serial; optional when exactly one device is attached")
+	nickname := fs.String("nickname", "", "account nickname (required)")
+	role := fs.String("role", "farm", "account role: "+strings.Join(db.ValidRoles, ", "))
+	pkg := fs.String("package", transport.DefaultPackage, "game package name")
+	clone := fs.Int("clone", 0, "clone slot on the device, for dual-app installs")
+	gameUID := fs.String("game-uid", "", "in-game uid, if known")
+	server := fs.Int("server", 0, "server number, if known")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *nickname == "" {
+		fs.Usage()
+		return fmt.Errorf("--nickname is required")
+	}
+	if !db.IsValidRole(*role) {
+		return fmt.Errorf("invalid --role %q, want one of %s", *role, strings.Join(db.ValidRoles, ", "))
+	}
+
+	resolved, err := resolveSerial(ctx, cfg.ADBPath, *serial)
+	if err != nil {
+		return err
+	}
+
+	// Probe over adb rather than accepting a resolution flag. Registration is
+	// the one moment we can cheaply prove the device is actually reachable and
+	// the serial is right — a wrong serial discovered later shows up as a
+	// mystifying capture failure.
+	tr, err := transport.NewADBTransport(ctx, transport.ADBOptions{
+		ADBPath: cfg.ADBPath,
+		Serial:  resolved,
+		Package: *pkg,
+	})
+	if err != nil {
+		return fmt.Errorf("probing device %s: %w", resolved, err)
+	}
+	defer tr.Close()
+	res := tr.Resolution()
+
+	pool, err := db.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	dev, err := pool.UpsertDevice(ctx, resolved, "adb", res.X, res.Y)
+	if err != nil {
+		return err
+	}
+	instanceID, err := pool.EnsureAppInstance(ctx, dev.ID, *pkg, *clone)
+	if err != nil {
+		return err
+	}
+	acct, err := pool.UpsertAccount(ctx, instanceID, *nickname, *role, optString(*gameUID), optInt(*server))
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("account_id=%d device_id=%d serial=%s resolution=%dx%d package=%s clone=%d role=%s\n",
+		acct.ID, dev.ID, dev.Serial, res.X, res.Y, *pkg, *clone, acct.Role)
+	fmt.Fprintf(os.Stderr, "\nnext: ./bin/agent capture --account %d\n", acct.ID)
+	return nil
+}
+
+// resolveSerial defaults to the only attached device when --serial is
+// omitted, and refuses to guess when there is more than one.
+func resolveSerial(ctx context.Context, adbPath, serial string) (string, error) {
+	if serial != "" {
+		return serial, nil
+	}
+	serials, err := transport.ListDevices(ctx, adbPath)
+	if err != nil {
+		return "", err
+	}
+	switch len(serials) {
+	case 0:
+		return "", fmt.Errorf("no devices attached; start an emulator or pass --serial")
+	case 1:
+		return serials[0], nil
+	default:
+		return "", fmt.Errorf("%d devices attached (%s); pass --serial to choose one",
+			len(serials), strings.Join(serials, ", "))
+	}
+}
+
+func runAccounts(ctx context.Context, cfg config.Config) error {
+	pool, err := db.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	targets, err := pool.ListCaptureTargets(ctx)
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 {
+		fmt.Println("no accounts registered; run: agent register --nickname <name>")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ACCOUNT\tNICKNAME\tROLE\tENABLED\tSERIAL\tRESOLUTION\tCLONE")
+	for _, t := range targets {
+		fmt.Fprintf(w, "%d\t%s\t%s\t%t\t%s\t%dx%d\t%d\n",
+			t.AccountID, t.Nickname, t.Role, t.Enabled, t.Serial, t.ResolutionW, t.ResolutionH, t.CloneID)
+	}
+	return w.Flush()
+}
+
+func optString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func optInt(i int) *int {
+	if i == 0 {
+		return nil
+	}
+	return &i
 }
 
 func runCapture(ctx context.Context, cfg config.Config, args []string) error {
