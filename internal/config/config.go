@@ -59,7 +59,7 @@ type LogConfig struct {
 // LW_LOG_LEVEL should be loud, not silently ignored.
 func Load() (Config, error) {
 	cfg := Config{
-		DatabaseURL: env("LW_DATABASE_URL", "postgres://lw:lw@localhost:5432/lw_manager?sslmode=disable"),
+		DatabaseURL: env("LW_DATABASE_URL", "postgres://lw:lw@localhost:5433/lw_manager?sslmode=disable"),
 		ADBPath:     env("LW_ADB_PATH", "adb"),
 		Blob: BlobConfig{
 			Backend:     BlobBackend(env("LW_BLOB_BACKEND", string(BlobFS))),
