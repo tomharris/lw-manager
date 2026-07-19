@@ -53,13 +53,36 @@ Some systems also need the invoking user in the `kvm` group:
 sudo usermod -aG kvm "$USER"   # log out and back in to take effect
 ```
 
-## Creating and running an AVD
+Confirm acceleration is working before trying to boot:
 
 ```bash
 source scripts/android-env.sh
+emulator -accel-check     # must not say "/dev/kvm is not found"
+```
 
+## Creating and running an AVD
+
+The `lastwar` AVD already exists at `~/.android/avd/lastwar.avd`. To recreate:
+
+```bash
+source scripts/android-env.sh
 avdmanager create avd -n lastwar -k "system-images;android-35;google_apis_playstore;x86_64" -d pixel_6
+```
 
+Its `config.ini` is tuned past the stingy defaults, which matter for a 3D
+game — the stock 2 GB RAM and 2 GB data partition are not enough:
+
+| Setting | Default | Tuned |
+|---|---|---|
+| `hw.ramSize` | 2 GB | 4096 |
+| `vm.heapSize` | 228M | 576 |
+| `disk.dataPartition.size` | 2G | 8192M |
+| `hw.gpu.enabled` / `hw.gpu.mode` | no / auto | yes / host |
+
+Screen is 1080×2400 at density 420 (Pixel 6), a mainstream phone resolution —
+a reasonable reference for the template library the vision milestone builds.
+
+```bash
 # -no-snapshot-load gives a clean boot; drop it for faster restarts later
 emulator -avd lastwar -no-snapshot-load &
 
