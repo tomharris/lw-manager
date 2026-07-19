@@ -93,8 +93,13 @@ func runServe(ctx context.Context, cfg config.Config, args []string) error {
 		status := map[string]string{"status": "ok", "database": "ok"}
 		code := http.StatusOK
 		if err := pool.Ping(ctx); err != nil {
+			// The detail stays in the logs. pgx ping errors embed the
+			// username, database name, host and port, and /healthz is
+			// unauthenticated — that is free reconnaissance for anyone who
+			// can reach the port.
+			slog.Error("healthz database ping failed", "error", err)
 			status["status"] = "degraded"
-			status["database"] = err.Error()
+			status["database"] = "unavailable"
 			code = http.StatusServiceUnavailable
 		}
 
