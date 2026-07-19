@@ -1,0 +1,379 @@
+# Last War: Survival — Automation & Alliance Analytics Platform
+
+**Design + implementation plan for handoff to Claude Code**
+Target: unified system that (a) drives N alternate accounts autonomously and (b) surfaces per-member alliance participation stats.
+
+---
+
+## 0. Framing
+
+The two reference systems solve halves of the same problem:
+
+| Reference | What it gives you | What it lacks |
+|---|---|---|
+| GNBots cloud bot | Multi-account task automation, scheduling, per-account dashboard | No alliance analytics; closed source; no data you own |
+| `vervelak/lastwar-alliance-manager` | Member roster, rankings, train/VS tracking, Tesseract OCR ingest of screenshots | Screenshots are uploaded *by hand*; no automation |
+
+The architectural thesis of this build: **the bot is the collection tier for the analytics tier.** A bot that can already navigate to the Alliance → Members → VS Ranking screens can screenshot them on a schedule and feed the parser directly. That closes the manual-upload loop that limits the alliance manager, and it's the reason to build one system rather than glue two together.
+
+### Constraints worth stating up front
+- Automation of this kind is against Last War's ToS. Accounts can be banned. Design accordingly: run alts, not your main, on aggressive schedules; humanize timing; keep a kill switch. This document assumes you've accepted that trade.
+- No packet interception or client patching. Everything is screen-in / touch-out, same as the existing `~/lastwar-bot/` approach. This is slower but keeps the surface area to "a fast player."
+- All data is local/self-hosted. No third-party account credentials leave the box.
+
+---
+
+## 1. System architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ CONTROL PLANE  (Go or Python/FastAPI, single service)            │
+│  ┌────────────┐  ┌──────────────┐  ┌───────────────┐             │
+│  │ Scheduler  │  │ Account/Fleet│  │ REST + WS API │             │
+│  │ (task queue│  │  Registry    │  │  + MCP server │             │
+│  │  + cron)   │  └──────────────┘  └───────────────┘             │
+│  └─────┬──────┘                              ▲                   │
+└────────┼──────────────────────────────────────┼──────────────────┘
+         │ gRPC / HTTP job dispatch             │
+         ▼                                      │
+┌─────────────────────────┐            ┌────────┴──────────┐
+│ DEVICE PLANE (agents)   │            │ WEB DASHBOARD     │
+│  agent → device 1 (alt A│B)          │  Fleet · Tasks ·  │
+│  agent → device 2 (alt C│D)          │  Members · Stats  │
+│  agent → device N       │            └───────────────────┘
+│    ├ ADB transport                            ▲
+│    ├ Vision (template + OCR)                  │
+│    └ Task runtime (FSM)                       │
+└──────────┬──────────────────────────┘         │
+           │ screenshots + structured events    │
+           ▼                                    │
+┌──────────────────────────────────────┐        │
+│ INGEST PIPELINE                      │        │
+│  capture → preprocess → OCR → parse  │        │
+│  → fuzzy-match roster → facts        │────────┘
+└──────────────┬───────────────────────┘
+               ▼
+┌──────────────────────────────────────┐
+│ POSTGRES  (fleet state + facts)      │
+│  + object store for raw screenshots  │
+└──────────────────────────────────────┘
+```
+
+Four deployable units: `control` (API + scheduler + dashboard), `agent` (one per host driving 1..N devices), `worker` (OCR/ingest, can be in-process initially), `db`.
+
+---
+
+## 2. Device plane — the key decision
+
+Your current `~/lastwar-bot/` uses `cliclick` against the Mac's own screen. That works for one account and doesn't generalize: `cliclick` moves the *real* cursor, so accounts must run strictly serially, and the machine is unusable while it runs.
+
+**Recommendation: migrate the transport to ADB against Android instances.**
+
+```
+Screen:  adb exec-out screencap -p        → raw PNG, no focus stealing
+Touch:   adb shell input tap X Y
+Swipe:   adb shell input swipe X1 Y1 X2 Y2 DUR
+Text:    adb shell input text '...'
+App:     adb shell monkey -p com.fun.lastwar.gp 1
+```
+
+Every one of those is per-device (`adb -s <serial>`), headless, and parallel-safe. N devices = N concurrent accounts with no contention.
+
+Target options, in order of preference:
+
+1. **Physical Android devices** (used Pixel 4a / Moto G class, $60–100 each) on a powered USB hub. Best stealth profile — real hardware fingerprints, real sensors. 4–6 devices covers a healthy alt farm.
+2. **Genymotion / Android Studio emulator on Apple Silicon** (arm64 images run natively and fast). Cheapest to start, easiest to snapshot/restore, but emulator fingerprints are the most detectable signal in this whole design.
+3. **Keep macOS + cliclick** as a legacy transport for your main account only, where you want a human in the loop.
+
+Abstract this behind an interface so the choice isn't load-bearing:
+
+```python
+class Transport(Protocol):
+    def screenshot(self) -> np.ndarray: ...
+    def tap(self, x: int, y: int) -> None: ...
+    def swipe(self, x1, y1, x2, y2, ms: int) -> None: ...
+    def type_text(self, s: str) -> None: ...
+    def app_restart(self) -> None: ...
+    @property
+    def resolution(self) -> tuple[int, int]: ...
+```
+
+`AdbTransport`, `CliclickTransport`, and `ReplayTransport` (fixture-driven, for tests) all implement it.
+
+### Account-to-device mapping
+Last War supports multiple accounts per install via in-app account switching, but switching is slow and fragile to automate. Two accounts per device via **app cloning** (Island / Shelter work profiles, or the device's built-in dual-app feature) is the sweet spot. Model it explicitly:
+
+```
+device(serial) 1──N app_instance(package, clone_id) 1──1 account(game_uid, server, role)
+```
+
+`role` ∈ `{main, farm, scout, alliance_data}` — the `alliance_data` role is what runs the analytics capture routes on a cadence.
+
+---
+
+## 3. Vision layer
+
+Port and harden what you already have in `~/lastwar-bot/`, adding three things it likely lacks:
+
+**Resolution independence.** Never store absolute pixel coordinates. Store template images plus a normalized search region, scale templates by `device_height / reference_height` before matching, and return matches in normalized `[0,1]` coordinates that the transport denormalizes at tap time. This is what stops a new device from requiring a full re-capture of the template library.
+
+**Confidence gating and a template registry.** A YAML manifest per screen:
+
+```yaml
+screens:
+  world_map:
+    anchors:
+      - id: btn_alliance
+        template: templates/world/btn_alliance.png
+        region: [0.78, 0.82, 1.00, 1.00]   # x1,y1,x2,y2 normalized
+        threshold: 0.87
+    identifies_screen: true
+```
+
+A screen is "recognized" when its `identifies_screen` anchors all match above threshold. Everything else keys off recognized screens rather than blind waits.
+
+**OCR, not just template matching.** Template matching cannot read a member's VS score. Use **PaddleOCR** (ONNX runtime, arm64-native, no CGO) over Tesseract — materially better on the stylized, low-contrast, comma-separated numerals Last War uses. Keep the preprocessing tricks the alliance-manager repo documents: crop to the data region, drop UI chrome, upscale 2–3×, CLAHE contrast, binarize.
+
+Per-field OCR config matters more than a global one:
+
+```python
+FIELD_SPECS = {
+  "vs_points":   OcrSpec(charset="0123456789,", strip=",", cast=int),
+  "member_name": OcrSpec(charset=None, min_conf=0.55, fuzzy_match_roster=True),
+  "power":       OcrSpec(charset="0123456789,.KMB", cast=parse_abbrev_number),
+}
+```
+
+---
+
+## 4. Task engine
+
+Each automation is a **finite state machine over recognized screens**, not a fixed click sequence. Fixed sequences break on every popup; FSMs step around them.
+
+```python
+@task(name="join_rallies", cooldown="5m", priority=80, roles=["farm","main"])
+class JoinRallies(Task):
+    entry_screen = "world_map"
+    def run(self, ctx: Ctx):
+        ctx.goto("alliance_war_list")
+        for row in ctx.rows("rally_row", max=6):
+            if row.timer_seconds < ctx.cfg.min_join_seconds: continue
+            if row.boss_name not in ctx.cfg.allowed_bosses: continue
+            ctx.tap(row.join_button)
+            ctx.expect("march_setup", timeout=4)
+            ctx.tap_anchor("btn_deploy")
+            ctx.expect("world_map", timeout=8)
+        return TaskResult.ok(joined=ctx.counter)
+```
+
+Required runtime primitives:
+
+- `ctx.goto(screen)` — BFS over a declared screen-graph (`world_map → alliance_menu → war_list`), executing edge actions. One implementation, every task benefits.
+- `ctx.expect(screen, timeout)` — poll-until-recognized, raising `ScreenLost` on timeout.
+- **Panic route** — on `ScreenLost` or any unrecognized screen, spam `back` up to 5×, then force-restart the app, then re-recognize. Never let an agent flail blind.
+- **Humanization** — tap at a random point inside the matched bbox (not its center), jitter all sleeps ±25% log-normally, insert 3–8% random no-op pauses, and refuse to run a device 24/7: give each account a randomized 5–7h offline window that drifts daily.
+- **Idempotency** — every task must be safe to re-run mid-way. Assume kills at any point.
+
+### Task catalog (mirrors the GNBots feature set)
+Tier 1 (build first, ~80% of value): daily gather marches, radar/secret missions, help-all, alliance donation, collect mail/chests/trucks, join alliance rallies, hunt zombies, auto-heal.
+Tier 2: building upgrade queue, research queue, troop training, hero recruit/upgrade, excavation & drone events.
+Tier 3: auto-shield on incoming attack detection, map scan, gold zombie hunt.
+
+Tier 3 auto-shield is genuinely hard — it needs sub-minute reaction, meaning a near-continuous poll loop, which is both the most useful and the most detectable feature. Defer it until Tier 1 is stable.
+
+### Scheduler
+Priority queue per account, with each task carrying `(priority, cooldown, allowed_window, energy_cost)`. The scheduler picks the highest-priority task whose cooldown has elapsed and whose preconditions hold, and never runs two tasks on one device concurrently. A global `PAUSE_ALL` flag and per-account kill switch are non-negotiable — you will need to stop everything in five seconds during an alliance event.
+
+---
+
+## 5. Alliance participation analytics
+
+This is the half the reference bot doesn't do at all, and where owning your data pays off.
+
+### Collection routes
+An `alliance_data`-role account runs scripted capture routes on a cadence. Each route navigates to a screen, scrolls a list in fixed increments, and captures overlapping frames:
+
+| Route | Screen path | Cadence | Yields |
+|---|---|---|---|
+| `roster` | Alliance → Members | daily | name, rank, power, last-active, join date |
+| `vs_ranking` | Events → VS Duel → Ranking | daily @ server-reset−30m | per-member VS points, day index |
+| `alliance_duel` | Events → Alliance Duel | per event | per-member contribution |
+| `gift_chest` | Alliance → Gifts | daily | chest level history (activity proxy) |
+| `tech_donation` | Alliance → Tech | daily | donation counts |
+| `rally_log` | Alliance → War → History | 4× daily | rally participation events |
+
+Scroll-and-stitch is the tricky part: capture with ~30% overlap, dedupe rows by `(name_hash, row_signature)` rather than by position, and reconcile against the known roster size to detect missed rows. If parsed row count ≠ expected member count, flag the capture as `partial` rather than silently under-reporting someone's participation.
+
+### Ingest pipeline
+```
+raw screenshot → region crop → preprocess → PaddleOCR → row segmentation
+  → field parse → fuzzy roster match → confidence score → facts table
+                                          ↓ (conf < 0.80)
+                                    review queue (dashboard)
+```
+
+Fuzzy matching is essential — Last War names are full of unicode decorations, homoglyphs, and alliance tags. Use rapidfuzz `token_set_ratio` against the roster with a per-member alias table, auto-accept ≥ 92, queue 75–92 for human confirm, reject below. Every human confirmation writes a new alias, so accuracy compounds.
+
+**Never overwrite on ambiguity.** Facts are append-only with provenance:
+
+```sql
+CREATE TABLE participation_facts (
+  id            bigserial PRIMARY KEY,
+  member_id     bigint REFERENCES members(id),
+  metric        text NOT NULL,          -- 'vs_points','rally_joins','donations',...
+  value         numeric NOT NULL,
+  observed_at   timestamptz NOT NULL,
+  period_key    text NOT NULL,          -- '2026-W29', '2026-07-19', 'duel:2026-07-14'
+  source        text NOT NULL,          -- 'ocr:vs_ranking' | 'manual' | 'bot_event'
+  screenshot_id bigint REFERENCES screenshots(id),
+  confidence    real NOT NULL,
+  superseded_by bigint REFERENCES participation_facts(id),
+  UNIQUE (member_id, metric, period_key, source, observed_at)
+);
+```
+
+Corrections supersede rather than mutate, so every number on the dashboard can be traced back to the pixel it came from. That property is what makes the stats defensible when an R4 disputes their score.
+
+### Derived metrics
+A nightly job materializes `member_participation_weekly`:
+
+- **VS compliance** — days hitting the alliance's minimum point threshold ÷ days in period
+- **Train attendance** — scheduled conductor slots honored ÷ assigned (carry the vervelak train model over; it's a good one)
+- **Rally participation rate** — rallies joined ÷ rallies available while online
+- **Donation consistency** — days with ≥1 tech donation
+- **Power growth** — Δ power / week, and vs. alliance median
+- **Activity streak & last-seen decay**
+- **Composite participation score** — configurable weights, exposed in settings, with the per-component breakdown always shown alongside the total
+
+Then the outputs that actually change behavior: a leaderboard, a **carry list** (bottom decile on composite, sorted by power — the people costing you the most), an **inactivity watchlist** (7/14/21-day no-activity tiers for kick decisions), and generated alliance-chat messages using the placeholder/template system from the reference repo.
+
+---
+
+## 6. Data model (core tables)
+
+```
+devices(id, serial, transport, resolution_w, resolution_h, status, last_heartbeat)
+app_instances(id, device_id, package, clone_id)
+accounts(id, app_instance_id, game_uid, nickname, server, role, alliance_id, enabled)
+tasks(id, name, config_json, enabled_for_roles[])
+task_runs(id, account_id, task_name, started_at, ended_at, status, result_json, error, screenshot_ids[])
+screenshots(id, account_id, captured_at, screen_id, object_key, sha256)
+alliances(id, tag, name, server)
+members(id, alliance_id, game_uid, name, rank, joined_at, left_at, active)
+member_aliases(id, member_id, alias, source, created_at)
+participation_facts(...)                    -- see above
+member_participation_weekly(member_id, period_key, metric, value, computed_at)
+train_schedule(id, alliance_id, date, conductor_id, backup_id, honored)
+review_queue(id, screenshot_id, raw_text, candidates_json, status, resolved_by)
+audit_log(id, actor, action, entity, before, after, at)
+```
+
+---
+
+## 7. Interfaces
+
+**REST** (`/api/v1`): fleet CRUD, `POST /accounts/{id}/tasks/{name}/run`, `POST /fleet/pause`, `GET /members`, `GET /rankings?period=`, `GET /participation/{member_id}`, `POST /review/{id}/resolve`, `GET /messages/weekly`.
+
+**WebSocket** `/ws/fleet`: live task status, per-device thumbnails (throttled to ~1 fps), error stream.
+
+**MCP server** — build this; it's how you'll actually operate the thing day to day from Claude:
+
+```
+fleet_status()                          → devices, accounts, running tasks
+run_task(account, task, args)           → dispatch, returns run_id
+pause_fleet(reason) / resume_fleet()
+capture_now(account, route)             → force an analytics capture
+alliance_rankings(period, metric)       → leaderboard rows
+member_report(name_or_uid)              → full participation profile
+inactivity_watchlist(days)              → kick candidates
+review_pending()                        → OCR items needing confirmation
+draft_alliance_message(template, period)
+```
+
+**Dashboard** (server-rendered + htmx, or SvelteKit — avoid a heavy SPA): Fleet, Tasks, Members, Rankings, VS Compliance, Train, Review Queue, Settings. Mobile-first for the review queue specifically, since you'll clear it from your phone.
+
+---
+
+## 8. Repo layout
+
+```
+lastwar-platform/
+├── CLAUDE.md                    # conventions, invariants, how to run tests
+├── docker-compose.yml           # postgres, minio, control, worker
+├── control/                     # FastAPI + scheduler + MCP + dashboard
+│   ├── api/  scheduler/  mcp/  web/  models/  migrations/
+├── agent/
+│   ├── transport/               # adb.py, cliclick.py, replay.py
+│   ├── vision/                  # matcher.py, ocr.py, registry.py, preprocess.py
+│   ├── runtime/                 # ctx.py, fsm.py, screen_graph.py, panic.py
+│   └── tasks/                   # one module per task
+├── ingest/                      # route parsers, roster matcher, fact writer
+├── analytics/                   # derived metric jobs, scoring
+├── templates/                   # screen anchor images + manifest.yaml
+├── fixtures/                    # recorded screenshot sets for offline tests
+└── tests/
+```
+
+---
+
+## 9. Phased delivery
+
+Each phase ends in something runnable. Don't let Claude Code build past a failing phase gate.
+
+**M0 — Foundations (1 wk).** Postgres + migrations, config, structured logging, `Transport` interface with `AdbTransport` + `ReplayTransport`, screenshot capture to object store.
+*Gate:* `agent capture --device X` writes a screenshot row and file.
+
+**M1 — Vision core (1–2 wk).** Template registry, scale-invariant matcher, screen recognizer, PaddleOCR wrapper, preprocessing. Capture a fixture set of 200+ screenshots across every screen you care about *first* — the whole system's test suite depends on it.
+*Gate:* screen recognizer ≥ 98% accuracy on the fixture set, offline, no device attached.
+
+**M2 — Task runtime + Tier 1 tasks (2 wk).** FSM ctx, screen graph, panic route, humanization, scheduler, kill switch. Then daily gather, help-all, mail/chest collect, donation, radar.
+*Gate:* one account runs unattended 24h, ≥95% task success, zero stuck-screen incidents.
+
+**M3 — Fleet (1 wk).** Multi-device orchestration, account registry, per-account schedules, dashboard Fleet + Tasks views, WebSocket status.
+*Gate:* 4 accounts running concurrently, independently pausable.
+
+**M4 — Analytics collection (2 wk).** Capture routes, scroll-and-stitch, row segmentation, field parsing, fuzzy roster matcher, review queue, facts table.
+*Gate:* daily VS capture matches a hand-checked screenshot within ±1% on ≥95% of rows; every discrepancy lands in review, none silently dropped.
+
+**M5 — Participation surface (1–2 wk).** Derived metrics, leaderboard, VS compliance, inactivity watchlist, train schedule + auto-assign, message templates, MCP tools.
+*Gate:* one full week of real alliance data producing a leaderboard you'd actually post in chat.
+
+**M6 — Hardening.** Auto-shield, map scan, alerting on agent death, backup/restore, template-drift detection (alert when a screen's match confidence trends down across runs — this is your early warning for a game update).
+
+---
+
+## 10. Risks and mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Game update breaks every template | Fixture-based tests catch it in minutes; template drift alerting catches it before tasks fail; keep templates in one versioned directory with a per-screen owner |
+| Detection / ban | Alts only; humanized timing; enforced offline windows; physical devices over emulator; no memory or packet access; per-account activity caps |
+| OCR misreads inflate/deflate someone's score | Confidence gating + review queue + append-only facts with screenshot provenance; never let a low-confidence read reach a leaderboard |
+| Agent hangs on an unhandled popup | Panic route + watchdog timeout per task + heartbeat monitoring with auto-restart |
+| Roster churn breaks matching | Alias table, soft-delete members (`left_at`), graveyard view |
+| Silent partial captures | Row-count reconciliation against roster size; mark captures `partial` and exclude from derived metrics until resolved |
+
+---
+
+## 11. What to put in CLAUDE.md
+
+Invariants Claude Code should treat as non-negotiable while building:
+
+1. No absolute pixel coordinates anywhere outside a transport implementation. Normalized only.
+2. Every task must be idempotent and interruptible.
+3. No task may run without a matched screen anchor first. Blind taps are a bug.
+4. Facts are append-only. Corrections supersede; nothing is mutated in place.
+5. Every OCR-derived number carries a confidence and a screenshot reference.
+6. All new vision logic ships with fixture-based tests that run without a device.
+7. Sleeps go through `ctx.sleep()` (jittered). Never bare `time.sleep`.
+8. The kill switch is checked between every task step.
+
+---
+
+## 12. Immediate first steps
+
+1. Decide the device plane (physical vs emulator) — it's the only decision that's expensive to reverse.
+2. Build the fixture corpus **before** writing any vision code. 200+ screenshots, every screen, at ≥2 resolutions. Everything downstream is tested against this.
+3. Port the existing `~/lastwar-bot/` matcher into `agent/vision/matcher.py` behind the new normalized-coordinate contract.
+4. Stand up Postgres + migrations and get M0's capture path working end to end.
+5. Hand this doc plus a generated CLAUDE.md to Claude Code and start at M0.
