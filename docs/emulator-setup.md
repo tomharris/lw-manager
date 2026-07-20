@@ -13,7 +13,7 @@ Everything below lives under `$HOME` and needed no root — **except KVM**.
 | platform-tools (adb) | `~/Android/platform-tools` | symlinked into `~/.local/bin` |
 | cmdline-tools | `~/Android/cmdline-tools/latest` | sdkmanager, avdmanager |
 | JDK 21 | `~/.local/jdk/jdk-21*` | sdkmanager needs 17+; Pop!_OS ships 11 |
-| emulator + system image | `~/Android/emulator`, `~/Android/system-images` | Android 35, `google_apis_playstore`, x86_64 |
+| emulator + system image | `~/Android/emulator`, `~/Android/system-images` | Android **34** (35 cannot run the game), `google_apis_playstore`, x86_64 |
 
 Put them on PATH with:
 
@@ -98,12 +98,16 @@ emulator -accel-check     # must not say "/dev/kvm is not found"
 
 ## Creating and running an AVD
 
-The `lastwar` AVD already exists at `~/.android/avd/lastwar.avd`. To recreate:
+The working AVD is `lastwar34` at `~/.android/avd/lastwar34.avd`. To recreate:
 
 ```bash
 source scripts/android-env.sh
-avdmanager create avd -n lastwar -k "system-images;android-35;google_apis_playstore;x86_64" -d pixel_6
+sdkmanager --install "system-images;android-34;google_apis_playstore;x86_64"
+avdmanager create avd -n lastwar34 -k "system-images;android-34;google_apis_playstore;x86_64" -d pixel_6
 ```
+
+**Use android-34.** The `lastwar` AVD on android-35 also exists and boots, but
+cannot run the game — see the translator section above.
 
 Its `config.ini` is tuned past the stingy defaults, which matter for a 3D
 game — the stock 2 GB RAM and 2 GB data partition are not enough:
@@ -120,7 +124,7 @@ a reasonable reference for the template library the vision milestone builds.
 
 ```bash
 # -no-snapshot-load gives a clean boot; drop it for faster restarts later
-emulator -avd lastwar -no-snapshot-load &
+emulator -avd lastwar34 -no-snapshot-load &
 
 adb wait-for-device
 adb devices          # should list emulator-5554
@@ -148,7 +152,7 @@ ERROR | Could not initialize emulated framebuffer
 `-no-window` and `-gpu` are orthogonal knobs. Override both:
 
 ```bash
-emulator -avd lastwar -no-snapshot-load -no-boot-anim \
+emulator -avd lastwar34 -no-snapshot-load -no-boot-anim \
          -no-window -no-audio -no-metrics -gpu swiftshader_indirect &
 ```
 
@@ -164,8 +168,9 @@ draw every frame of a 3D game. If Last War is unusably slow headless, run it
 windowed from a desktop session (dropping `-no-window -gpu ...`), where
 `hw.gpu.mode=host` gives real GPU rendering.
 
-Then install Last War from the Play Store inside the emulator and sign in to an
-**alt account** — never a main. See the ToS note in `CLAUDE.md`.
+Then install Last War — either from the Play Store inside the emulator, or by
+sideloading the split APKs (see below, which avoids a fresh sign-in) — and
+sign in to an **alt account**, never a main. See the ToS note in `CLAUDE.md`.
 
 ## Registering it with the platform
 
@@ -175,10 +180,20 @@ Then install Last War from the Play Store inside the emulator and sign in to an
 ./bin/agent capture --account <id printed above>
 ```
 
+## Use android-34, not android-35
+
+**The android-35 system image cannot run Last War.** Its `libndk_translation`
+aborts ~30 s into startup, before the login screen, every time. The android-34
+image ships a different translator build and runs the game fine.
+
+This is why the working AVD is `lastwar34` on
+`system-images;android-34;google_apis_playstore;x86_64`. The details below are
+kept because the symptom is badly misleading and will otherwise be
+rediscovered the hard way.
+
 ## Last War is arm64-only — and translation is not enough
 
-This is the biggest known obstacle to the emulator device plane. Confirmed on
-this machine, not theorised:
+Confirmed on this machine, not theorised:
 
 ```
 $ adb shell pm dump com.fun.lastwar.gp | grep CpuAbi
@@ -214,12 +229,21 @@ When a symptom shows up at a component boundary, instrument both sides before
 theorising: the host terminal and `adb logcat` are different processes, and
 here only one of them had the real error.
 
-### Options
+### Resolution
+
+Dropping to **android-34** fixes it. Same architecture, same translation, but
+a `libndk_translation` build without this bug — the game survived indefinitely
+where android-35 died at 30 s, and reached the age-verification screen under
+software rendering.
+
+That is a workaround, not a guarantee. We are depending on a translator bug
+being absent rather than on anything supported, and a future SDK update could
+reintroduce it. If android-34 ever breaks:
 
 | Option | Verdict |
 |---|---|
-| Different API level x86_64 image | Each level ships a different `libndk_translation`; the bug may not be present. Cheap to test, but builds on a translator we do not control. |
-| arm64-v8a system image | No translation, so this bug cannot occur — but arm64 on an x86_64 host is full CPU emulation with no KVM. Likely too slow for a 3D game. |
+| Another API level | Cheapest test. 33 and 36 are untried; each ships its own translator build. |
+| arm64-v8a system image | No translation, so this class of bug cannot occur — but arm64 on an x86_64 host is full CPU emulation with no KVM. Likely too slow for a 3D game. |
 | Physical device | Runs natively, needs no `ADBTransport` changes, and separately removes the emulator-fingerprint detection risk. The reliable answer for anything long-running. |
 
 ### Reinstalling without a Play Store sign-in
