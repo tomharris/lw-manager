@@ -21,6 +21,13 @@ test:
 test-integration:
 	$(GO) test -tags=integration ./...
 
+# Tests that need a real device on adb. Separate from `integration` because
+# the infrastructure is different: an emulator or handset, not Docker. They
+# skip rather than fail when no device is attached.
+.PHONY: test-device
+test-device:
+	$(GO) test -tags=device -count=1 ./internal/transport/...
+
 .PHONY: lint
 lint:
 	$(GO) vet ./...

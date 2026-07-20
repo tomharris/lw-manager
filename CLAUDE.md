@@ -68,6 +68,10 @@ instead of creating a duplicate account.
   `transport.ReplayTransport`, `blob.FSStore`, and package-local store fakes.
 - `make test-integration` — needs `docker compose up -d`. Tagged
   `//go:build integration`.
+- `make test-device` — needs an emulator or handset on adb. Tagged
+  `//go:build device`, kept separate from `integration` because the
+  infrastructure differs: adb, not Docker. Skips when no device is attached.
+  This is the only place `ADBTransport` is exercised for real.
 - New packages get a fake or a replay path before they get a real
   implementation. `ReplayTransport` was written before `ADBTransport` was
   trusted, and that ordering is the pattern to follow.

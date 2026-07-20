@@ -68,11 +68,26 @@ Mode** (AMD) or **VT-x / Intel Virtualization Technology** (Intel).
 
 After rebooting, `kvm_amd` should load automatically and `/dev/kvm` will exist.
 
-Some systems also need the invoking user in the `kvm` group:
+### Second gate: permission on /dev/kvm
+
+`/dev/kvm` existing is not the same as being allowed to open it. The node is
+`root:kvm 0660`, so a user outside the `kvm` group gets:
+
+```
+ProbeKVM: This user doesn't have permissions to use KVM (/dev/kvm).
+```
+
+Pop!_OS ships an empty `kvm` group (`kvm:x:108:`) with a udev ACL granting
+only `cosmic-greeter`, so this bites on a fresh install:
 
 ```bash
-sudo usermod -aG kvm "$USER"   # log out and back in to take effect
+sudo gpasswd -a "$USER" kvm          # durable; needs a re-login to take effect
+sudo setfacl -m u:"$USER":rw /dev/kvm # immediate; lasts until reboot
 ```
+
+Both, because group membership is fixed at login time and will not reach an
+already-running shell. The ACL covers the gap until the next login, after
+which the group membership carries it.
 
 Confirm acceleration is working before trying to boot:
 
@@ -110,6 +125,44 @@ emulator -avd lastwar -no-snapshot-load &
 adb wait-for-device
 adb devices          # should list emulator-5554
 ```
+
+### Running without a desktop session
+
+From a shell with no `DISPLAY` (an ssh session, or an agent shell), the above
+dies with:
+
+```
+Info: Could not load the Qt platform plugin "xcb"
+Fatal: This application failed to start because no Qt platform plugin could be initialized.
+```
+
+`-no-window` alone is **not** enough. It suppresses the Qt UI, but the
+renderer still initializes, and the AVD's `hw.gpu.mode=host` makes it demand
+an EGL/GLX display:
+
+```
+GlxEnginegetDefaultDisplay: Failed to open display 0. DISPLAY: [(null)]
+ERROR | Could not initialize emulated framebuffer
+```
+
+`-no-window` and `-gpu` are orthogonal knobs. Override both:
+
+```bash
+emulator -avd lastwar -no-snapshot-load -no-boot-anim \
+         -no-window -no-audio -no-metrics -gpu swiftshader_indirect &
+```
+
+`swiftshader_indirect` is a software rasterizer that needs no display server.
+This costs nothing for our purposes — the design is screen-in via
+`exec-out screencap`, touch-out via `input tap`, and never reads the host
+framebuffer — so a headless emulator exercises exactly the same `Transport`
+path a headless server would.
+
+The caveat is **rendering speed**, which is a separate axis from CPU
+virtualization: KVM accelerates the guest CPU, but a software rasterizer must
+draw every frame of a 3D game. If Last War is unusably slow headless, run it
+windowed from a desktop session (dropping `-no-window -gpu ...`), where
+`hw.gpu.mode=host` gives real GPU rendering.
 
 Then install Last War from the Play Store inside the emulator and sign in to an
 **alt account** — never a main. See the ToS note in `CLAUDE.md`.
