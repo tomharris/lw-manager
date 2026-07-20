@@ -23,6 +23,24 @@ func TestURLRefusesNonTestDatabase(t *testing.T) {
 	}
 }
 
+// A `dbname`/`database` query parameter overrides the URL path in pgx's
+// parser, so the suffix guard has to read the name the same way pgx does.
+// Otherwise `.../lw_manager_test?dbname=lw_manager` reads as a *_test path but
+// connects to the real database — the guard's exact failure mode. The
+// integration suite truncates freely, so this bypass would destroy dev data.
+func TestURLRefusesTestSuffixSmuggledPastQueryParam(t *testing.T) {
+	for _, url := range []string{
+		"postgres://lw:lw@localhost:5433/lw_manager_test?dbname=lw_manager&sslmode=disable",
+		"postgres://lw:lw@localhost:5433/lw_manager_test?database=lw_manager&sslmode=disable",
+	} {
+		t.Setenv("LW_TEST_DATABASE_URL", url)
+		_, err := URL(context.Background())
+		if !errors.Is(err, ErrUnsafeDatabase) {
+			t.Errorf("URL() with %q: error = %v, want ErrUnsafeDatabase", url, err)
+		}
+	}
+}
+
 func TestURLRejectsMissingDatabaseName(t *testing.T) {
 	t.Setenv("LW_TEST_DATABASE_URL", "postgres://lw:lw@localhost:5433/")
 	if _, err := URL(context.Background()); err == nil {

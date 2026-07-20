@@ -102,16 +102,22 @@ func URL(ctx context.Context) (string, error) {
 }
 
 // databaseName extracts the database name from a postgres URL.
+//
+// It parses with pgx, not net/url, on purpose: the suffix guard is only safe
+// if it inspects the exact name pgx will connect to. pgconn maps a `dbname`
+// (or `database`) query parameter onto the database and lets it override the
+// URL path, so a net/url reading of the path would see `..._test` and pass
+// the guard while pgx quietly connected to the real database named in the
+// query string. Parsing with pgx closes that differential.
 func databaseName(raw string) (string, error) {
-	u, err := url.Parse(raw)
+	cfg, err := pgx.ParseConfig(raw)
 	if err != nil {
 		return "", fmt.Errorf("dbtest: parsing database url: %w", err)
 	}
-	name := strings.TrimPrefix(u.Path, "/")
-	if name == "" {
+	if cfg.Database == "" {
 		return "", fmt.Errorf("dbtest: database url has no database name")
 	}
-	return name, nil
+	return cfg.Database, nil
 }
 
 // ensureDatabase creates the test database if it is missing, by connecting to
@@ -165,11 +171,20 @@ func databaseExists(ctx context.Context, conn *pgx.Conn, name string) (bool, err
 }
 
 // withDatabase returns raw with its database name replaced.
+//
+// It clears any dbname/database query parameter as well as rewriting the path:
+// pgx honours that parameter over the path (see databaseName), so leaving it
+// in place would send the maintenance connection to the original database
+// instead of the one named here.
 func withDatabase(raw, name string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "", fmt.Errorf("dbtest: parsing database url: %w", err)
 	}
 	u.Path = "/" + name
+	q := u.Query()
+	q.Del("dbname")
+	q.Del("database")
+	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
