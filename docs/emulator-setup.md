@@ -175,11 +175,64 @@ Then install Last War from the Play Store inside the emulator and sign in to an
 ./bin/agent capture --account <id printed above>
 ```
 
-## Known risks
+## Last War is arm64-only — and translation is not enough
 
-- **ARM-only APKs.** Last War may ship arm64 binaries. Android 11+ x86_64
-  images include ARM translation, but if the game refuses to install or
-  crashes on launch, that is the first thing to suspect. The fallback is an
-  arm64 system image (much slower on x86 hardware) or a physical device.
+This is the biggest known obstacle to the emulator device plane. Confirmed on
+this machine, not theorised:
+
+```
+$ adb shell pm dump com.fun.lastwar.gp | grep CpuAbi
+    primaryCpuAbi=arm64-v8a
+    secondaryCpuAbi=null
+```
+
+Play delivers `split_config.arm64_v8a.apk`. Since the x86_64 image advertises
+`ro.product.cpu.abilist=x86_64,arm64-v8a` — x86_64 **first** — Play would
+have shipped an x86_64 split if the bundle had one. It does not.
+
+The game therefore runs under `libndk_translation`, and installs and launches
+fine. It then dies ~30 s in, before the login screen, every time:
+
+```
+F libc  : Fatal signal 6 (SIGABRT) in tid NNNN (Thread-130), pid NNNN (.fun.lastwar.gp)
+F DEBUG : Abort message: 'Guest call didn't restore sp: expected 0x...fd0, actual 0x...fc0'
+```
+
+The translator detected that a translated ARM call returned with the stack
+pointer 16 bytes off (exactly ARM64's stack alignment unit) and aborted rather
+than continue on a corrupt stack. Deterministic across runs: same thread, same
+timing, same offset.
+
+### The misleading symptom
+
+The emulator's terminal prints **`Failed to find ColorBuffer`**, which looks
+like a GPU problem and is not. It is the host renderer noticing that buffers
+vanished when the app died. The string never appears in `logcat` at all —
+it exists only in the host process. Changing `-gpu` settings does nothing.
+
+When a symptom shows up at a component boundary, instrument both sides before
+theorising: the host terminal and `adb logcat` are different processes, and
+here only one of them had the real error.
+
+### Options
+
+| Option | Verdict |
+|---|---|
+| Different API level x86_64 image | Each level ships a different `libndk_translation`; the bug may not be present. Cheap to test, but builds on a translator we do not control. |
+| arm64-v8a system image | No translation, so this bug cannot occur — but arm64 on an x86_64 host is full CPU emulation with no KVM. Likely too slow for a 3D game. |
+| Physical device | Runs natively, needs no `ADBTransport` changes, and separately removes the emulator-fingerprint detection risk. The reliable answer for anything long-running. |
+
+### Reinstalling without a Play Store sign-in
+
+Pull the split APKs off a working AVD once, then sideload them anywhere:
+
+```bash
+adb shell pm path com.fun.lastwar.gp        # lists base + splits
+adb pull <each path> ~/lw-apk/
+# on the new device:
+adb install-multiple ~/lw-apk/*.apk
+```
+
+## Known risks
 - **Emulator fingerprints** are the most detectable signal in this design.
   Fine for development; prefer physical devices for anything long-running.
