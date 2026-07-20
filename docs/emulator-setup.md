@@ -257,6 +257,47 @@ adb pull <each path> ~/lw-apk/
 adb install-multiple ~/lw-apk/*.apk
 ```
 
+## The game blocks account login on the emulator
+
+Reaching the game is not the same as being able to log in. Under android-34 the
+game boots through age verification to the account screen, but tapping **Already
+Have an Account** returns a **DEVICE ISSUE** dialog:
+
+```
+Login issue detected. Please access the game on a mobile device.
+```
+
+Switch Accounts / Contact Us do not help — the block is device-level, not
+account-level. It is emulator-fingerprint detection, not a bug in our stack.
+Every cheap signal the client can read says "emulator":
+
+| Signal | Value on the AVD | Why it is a tell |
+|---|---|---|
+| `ro.kernel.qemu` | `1` | The single most-checked emulator flag |
+| `ro.hardware` | `ranchu` | The AVD virtual platform; no phone reports it |
+| `ro.product.model` | `sdk_gphone64_x86_64` | Literally "sdk_gphone" |
+| `ro.build.fingerprint` | `google/sdk_gphone64_x86_64/emu64xa:14/...` | "emu64xa" = emulator |
+| GPU renderer | Google **SwiftShader** | Software rasterizer; no real device renders with it |
+
+Reproduce the evidence with `adb shell getprop <key>` and
+`adb shell dumpsys SurfaceFlinger | grep GLES`.
+
+**What still works:** the M0 capture path (screenshot → blob → row) against
+pre-login / splash / tutorial screens — it never authenticates. The wall is
+specifically **authenticated login**, which the M1 alliance fixtures
+(Alliance → Members → VS Ranking) depend on.
+
+**Decision:** use a **physical Android phone** for anything past login rather
+than fight the fingerprint arms race. A rootable image plus Magisk/props
+spoofing was considered and rejected as brittle — SwiftShader and the
+arm64-translation environment stay detectable, and it needs re-tuning whenever
+im30 updates detection. `ADBTransport` is unchanged against a real handset over
+adb.
+
 ## Known risks
-- **Emulator fingerprints** are the most detectable signal in this design.
-  Fine for development; prefer physical devices for anything long-running.
+- **Emulator account login is blocked outright**, not merely risky — see the
+  section above. The emulator remains fine for capture-path and vision
+  development against pre-login and synthetic fixtures; authenticated work needs
+  a physical device.
+- **Emulator fingerprints** are the most detectable signal in this design even
+  where login is not gated. Prefer physical devices for anything long-running.
