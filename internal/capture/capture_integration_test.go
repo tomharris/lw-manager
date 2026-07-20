@@ -7,12 +7,12 @@ import (
 	"context"
 	"image"
 	"image/color"
-	"os"
 	"testing"
 
 	"github.com/tomharris/lw-manager/internal/blob"
 	"github.com/tomharris/lw-manager/internal/config"
 	"github.com/tomharris/lw-manager/internal/db"
+	"github.com/tomharris/lw-manager/internal/dbtest"
 	"github.com/tomharris/lw-manager/internal/transport"
 )
 
@@ -21,12 +21,9 @@ import (
 func TestCaptureEndToEnd(t *testing.T) {
 	ctx := context.Background()
 
-	url := os.Getenv("LW_DATABASE_URL")
-	if url == "" {
-		url = "postgres://lw:lw@localhost:5433/lw_manager?sslmode=disable"
-	}
-	if err := db.Migrate(ctx, url); err != nil {
-		t.Fatalf("Migrate(): %v", err)
+	url, err := dbtest.Prepare(ctx, db.Migrate)
+	if err != nil {
+		t.Fatalf("dbtest.Prepare(): %v", err)
 	}
 	pool, err := db.Connect(ctx, url)
 	if err != nil {

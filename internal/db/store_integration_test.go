@@ -5,19 +5,17 @@ package db
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
+
+	"github.com/tomharris/lw-manager/internal/dbtest"
 )
 
 func testPool(t *testing.T) *Pool {
 	t.Helper()
-	url := os.Getenv("LW_DATABASE_URL")
-	if url == "" {
-		url = "postgres://lw:lw@localhost:5433/lw_manager?sslmode=disable"
-	}
 	ctx := context.Background()
-	if err := Migrate(ctx, url); err != nil {
-		t.Fatalf("Migrate(): %v", err)
+	url, err := dbtest.Prepare(ctx, Migrate)
+	if err != nil {
+		t.Fatalf("dbtest.Prepare(): %v", err)
 	}
 	p, err := Connect(ctx, url)
 	if err != nil {

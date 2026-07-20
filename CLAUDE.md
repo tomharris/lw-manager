@@ -67,7 +67,8 @@ instead of creating a duplicate account.
 - `make test` — unit tests. **Must pass with nothing running.** Fakes:
   `transport.ReplayTransport`, `blob.FSStore`, and package-local store fakes.
 - `make test-integration` — needs `docker compose up -d`. Tagged
-  `//go:build integration`.
+  `//go:build integration`. Runs against **`lw_manager_test`**, never the dev
+  database — see below.
 - `make test-device` — needs an emulator or handset on adb. Tagged
   `//go:build device`, kept separate from `integration` because the
   infrastructure differs: adb, not Docker. Skips when no device is attached.
@@ -75,6 +76,43 @@ instead of creating a duplicate account.
 - New packages get a fake or a replay path before they get a real
   implementation. `ReplayTransport` was written before `ADBTransport` was
   trusted, and that ordering is the pattern to follow.
+
+### The test database is separate, and deliberately hard to misdirect
+
+Integration tests truncate and delete freely, so they run against
+`lw_manager_test` via `internal/dbtest`, which creates and migrates it on
+demand. Nothing to set up by hand.
+
+Two properties are load-bearing:
+
+- **Tests do not read `LW_DATABASE_URL`.** That is the application's variable;
+  honouring it means a developer with it exported points the suite at real
+  data. Tests read `LW_TEST_DATABASE_URL` and fall back to a default, never to
+  the app's setting.
+- **`dbtest` refuses any database not named `*_test`** (`ErrUnsafeDatabase`),
+  checked before it connects. The guard, not the default, is what makes this
+  safe.
+
+`dbtest.Prepare` takes the migrate function as an argument rather than
+importing `internal/db`: the db package's own integration tests are in
+`package db`, so importing dbtest from there would be a cycle.
+
+To start over: `docker compose exec postgres psql -U lw -d postgres -c 'DROP
+DATABASE lw_manager_test'`. The next run recreates it.
+
+### Parallel test binaries race on a clean database
+
+`go test ./...` runs package binaries concurrently, so on a server with no
+`lw_manager_test` yet, two of them reach `CREATE DATABASE` at once. The loser
+does **not** reliably get `42P04` (`duplicate_database`) — Postgres reports
+that only when its own name lookup catches the conflict first. A real race
+surfaces as `23505` from the unique index on `pg_database`. `dbtest` re-checks
+existence after a failed create rather than matching SQLSTATEs, and holds a
+Postgres advisory lock across migration for the same reason.
+
+This only ever fails on a clean database, which means it fails on CI and on a
+new developer's first run and nowhere else. Test it with a `DROP DATABASE`
+first, not by re-running a suite that already passed.
 
 ### ReplayTransport exhaustion
 
