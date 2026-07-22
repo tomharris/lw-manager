@@ -77,6 +77,57 @@ func TestMatchScoresLowWhenAbsent(t *testing.T) {
 	}
 }
 
+func TestMatchScalesByFractionAndDownscale(t *testing.T) {
+	tmpl := distinctTemplate(16, 16)
+
+	cases := []struct {
+		name      string
+		frameH    int
+		refHeight int
+		newSize   int // expected scaled template edge
+	}{
+		{"upscale 1.5x", 96, 64, 24},
+		{"downscale 0.5x", 64, 128, 8},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			scaled := resizeGray(Grayscale(tmpl), c.newSize, c.newSize)
+			frame := paste(c.frameH, c.frameH, 100, scaled, 20, 20)
+
+			m, err := Match(frame, tmpl, transport.Rect{X1: 0, Y1: 0, X2: 1, Y2: 1}, c.refHeight)
+			if err != nil {
+				t.Fatalf("Match: %v", err)
+			}
+			if m.Score < 0.99 {
+				t.Errorf("score: got %.4f, want ≥0.99", m.Score)
+			}
+			wantX := (20.0 + float64(c.newSize)/2) / float64(c.frameH)
+			if math.Abs(m.Center.X-wantX) > 0.03 {
+				t.Errorf("center X: got %.4f, want ~%.4f", m.Center.X, wantX)
+			}
+		})
+	}
+}
+
+func TestMatchOnCroppedSubImageReturnsValidNorm(t *testing.T) {
+	tmpl := distinctTemplate(8, 8)
+	full := paste(64, 64, 100, tmpl, 40, 20) // template at absolute (40,20)
+	crop := Crop(full, transport.Rect{X1: 0.5, Y1: 0, X2: 1, Y2: 1})
+
+	m, err := Match(crop, tmpl, transport.Rect{X1: 0, Y1: 0, X2: 1, Y2: 1}, 64)
+	if err != nil {
+		t.Fatalf("Match: %v", err)
+	}
+	if !m.Center.Valid() || !m.Box.Valid() {
+		t.Fatalf("match on crop produced out-of-range coords: center=%+v box=%+v", m.Center, m.Box)
+	}
+	// In the crop's own frame (x 32..64), the template's center pixel (44) is
+	// at (44-32)/32 = 0.375.
+	if math.Abs(m.Center.X-0.375) > 0.03 {
+		t.Errorf("center X within crop: got %.4f, want ~0.375", m.Center.X)
+	}
+}
+
 func TestMatchIsScaleInvariant(t *testing.T) {
 	tmpl := distinctTemplate(8, 8)
 	big := Upscale(tmpl, 2) // how the anchor appears at 2× res

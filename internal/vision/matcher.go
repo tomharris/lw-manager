@@ -39,14 +39,22 @@ func Match(img image.Image, tmpl image.Image, region transport.Rect, refHeight i
 	frame := Grayscale(img)
 	tpl := Grayscale(tmpl)
 
-	// Scale the template to this frame's resolution.
+	// Scale the template to this frame's resolution. The ratio is rarely a
+	// whole number and is often < 1 (templates are usually captured at a
+	// higher reference resolution than a given device), so resize to the exact
+	// target dimensions rather than an integer upscale.
 	scale := float64(frame.Bounds().Dy()) / float64(refHeight)
 	if math.Abs(scale-1) > 1e-9 {
-		f := int(math.Round(scale))
-		if f < 1 {
-			f = 1
+		tb := tpl.Bounds()
+		nw := int(math.Round(float64(tb.Dx()) * scale))
+		nh := int(math.Round(float64(tb.Dy()) * scale))
+		if nw < 1 {
+			nw = 1
 		}
-		tpl = Upscale(tpl, f)
+		if nh < 1 {
+			nh = 1
+		}
+		tpl = resizeGray(tpl, nw, nh)
 	}
 
 	fb := frame.Bounds()
@@ -87,14 +95,17 @@ func Match(img image.Image, tmpl image.Image, region transport.Rect, refHeight i
 			score := ncc(frame, ox, oy, tdev, tVar, tw, th)
 			if score > best.Score {
 				best.Score = score
-				cx := float64(ox+tw/2) / float64(fb.Dx())
-				cy := float64(oy+th/2) / float64(fb.Dy())
+				// Normalize relative to the frame's own origin: fb.Min is
+				// non-zero when img is a cropped sub-image, and without
+				// subtracting it the coordinates drift past [0,1].
+				cx := float64(ox+tw/2-fb.Min.X) / float64(fb.Dx())
+				cy := float64(oy+th/2-fb.Min.Y) / float64(fb.Dy())
 				best.Center = transport.Norm{X: cx, Y: cy}
 				best.Box = transport.Rect{
-					X1: float64(ox) / float64(fb.Dx()),
-					Y1: float64(oy) / float64(fb.Dy()),
-					X2: float64(ox+tw) / float64(fb.Dx()),
-					Y2: float64(oy+th) / float64(fb.Dy()),
+					X1: float64(ox-fb.Min.X) / float64(fb.Dx()),
+					Y1: float64(oy-fb.Min.Y) / float64(fb.Dy()),
+					X2: float64(ox+tw-fb.Min.X) / float64(fb.Dx()),
+					Y2: float64(oy+th-fb.Min.Y) / float64(fb.Dy()),
 				}
 			}
 		}
@@ -134,6 +145,23 @@ func ncc(frame *image.Gray, ox, oy int, tdev []float64, tVar float64, tw, th int
 		return 0 // flat patch: no correlation possible
 	}
 	return num / math.Sqrt(tVar*pVar)
+}
+
+// resizeGray nearest-neighbour resizes src to w×h. Nearest neighbour keeps the
+// template's hard edges (and matches Upscale for integer factors), which is
+// what NCC correlates against; interpolation would blur the very structure the
+// match depends on.
+func resizeGray(src *image.Gray, w, h int) *image.Gray {
+	sb := src.Bounds()
+	out := image.NewGray(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		sy := sb.Min.Y + y*sb.Dy()/h
+		for x := 0; x < w; x++ {
+			sx := sb.Min.X + x*sb.Dx()/w
+			out.SetGray(x, y, src.GrayAt(sx, sy))
+		}
+	}
+	return out
 }
 
 func meanGray(g *image.Gray, b image.Rectangle) float64 {
