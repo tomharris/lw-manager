@@ -223,3 +223,95 @@ func (p *Pool) InsertScreenshot(ctx context.Context, accountID int64, objectKey,
 	}
 	return s, nil
 }
+
+// KillState is everything the runtime kill switch needs in one read: the
+// global pause flag plus this account's enabled bit.
+type KillState struct {
+	PauseAll       bool
+	Reason         string
+	AccountEnabled bool
+}
+
+// KillState reads the global pause flag and the account's enabled bit.
+func (p *Pool) KillState(ctx context.Context, accountID int64) (KillState, error) {
+	const q = `
+		SELECT f.pause_all, f.reason, a.enabled
+		FROM flags f
+		CROSS JOIN accounts a
+		WHERE a.id = $1`
+
+	var s KillState
+	err := p.QueryRow(ctx, q, accountID).Scan(&s.PauseAll, &s.Reason, &s.AccountEnabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return KillState{}, fmt.Errorf("db: kill state for account %d: %w", accountID, ErrNotFound)
+	}
+	if err != nil {
+		return KillState{}, fmt.Errorf("db: reading kill state for account %d: %w", accountID, err)
+	}
+	return s, nil
+}
+
+// SetPauseAll flips the global kill switch.
+func (p *Pool) SetPauseAll(ctx context.Context, paused bool, reason string) error {
+	const q = `UPDATE flags SET pause_all = $1, reason = $2, updated_at = now()`
+	if _, err := p.Exec(ctx, q, paused, reason); err != nil {
+		return fmt.Errorf("db: setting pause_all=%t: %w", paused, err)
+	}
+	return nil
+}
+
+// TaskRun is one recorded task execution.
+type TaskRun struct {
+	ID            int64
+	AccountID     int64
+	TaskName      string
+	StartedAt     time.Time
+	EndedAt       *time.Time
+	Status        string
+	Error         *string
+	ScreenshotIDs []int64
+}
+
+// StartTaskRun records that a task is beginning, before it acts. A killed
+// process therefore leaves a stale 'running' row — evidence, not silence.
+func (p *Pool) StartTaskRun(ctx context.Context, accountID int64, taskName string) (int64, error) {
+	const q = `INSERT INTO task_runs (account_id, task_name) VALUES ($1, $2) RETURNING id`
+	var id int64
+	if err := p.QueryRow(ctx, q, accountID, taskName).Scan(&id); err != nil {
+		return 0, fmt.Errorf("db: starting task run %q for account %d: %w", taskName, accountID, err)
+	}
+	return id, nil
+}
+
+// FinishTaskRun closes a run with its outcome.
+func (p *Pool) FinishTaskRun(ctx context.Context, id int64, status string, errMsg *string, screenshotIDs []int64) error {
+	const q = `
+		UPDATE task_runs
+		SET ended_at = now(), status = $2, error = $3, screenshot_ids = $4
+		WHERE id = $1`
+	tag, err := p.Exec(ctx, q, id, status, errMsg, screenshotIDs)
+	if err != nil {
+		return fmt.Errorf("db: finishing task run %d as %q: %w", id, status, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("db: task run %d: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
+// TaskRunByID fetches one run.
+func (p *Pool) TaskRunByID(ctx context.Context, id int64) (TaskRun, error) {
+	const q = `
+		SELECT id, account_id, task_name, started_at, ended_at, status, error, screenshot_ids
+		FROM task_runs WHERE id = $1`
+	var r TaskRun
+	err := p.QueryRow(ctx, q, id).Scan(
+		&r.ID, &r.AccountID, &r.TaskName, &r.StartedAt, &r.EndedAt, &r.Status, &r.Error, &r.ScreenshotIDs)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TaskRun{}, fmt.Errorf("db: task run %d: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return TaskRun{}, fmt.Errorf("db: reading task run %d: %w", id, err)
+	}
+	return r, nil
+}
