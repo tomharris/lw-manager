@@ -92,10 +92,10 @@ func TestSleepRespectsContextCancel(t *testing.T) {
 	}
 }
 
-func TestUnrecognizedScreenReachesStubRecovery(t *testing.T) {
-	// Until the panic route lands (Task 7), an unrecognized screen must
-	// surface ErrLost — never vision.ErrNoScreenRecognized, which task code
-	// is not supposed to see.
+func TestUnrecognizedScreenSurfacesLost(t *testing.T) {
+	// A permanently unrecognized screen must surface ErrLost after failed
+	// recovery — never vision.ErrNoScreenRecognized, which task code is not
+	// supposed to see.
 	c, _ := newCtx(t, &runtimetest.FakeKill{}, "")
 	_, err := c.CurrentScreen(context.Background())
 	if !errors.Is(err, runtime.ErrLost) {
