@@ -191,6 +191,11 @@ func (t *ReplayTransport) AppRestart(ctx context.Context) error {
 	return nil
 }
 
+func (t *ReplayTransport) Back(ctx context.Context) error {
+	t.record(Action{Kind: "back"})
+	return nil
+}
+
 func (t *ReplayTransport) Resolution() image.Point { return t.size }
 
 func (t *ReplayTransport) Close() error { return nil }
