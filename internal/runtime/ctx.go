@@ -207,9 +207,3 @@ func (c *Ctx) Sleep(ctx context.Context, min, max time.Duration) error {
 		return nil
 	}
 }
-
-// panicRoute recovers from an unrecognized screen. Stub until the recovery
-// task lands: report lost immediately.
-func (c *Ctx) panicRoute(ctx context.Context) (Recognition, error) {
-	return Recognition{}, ErrLost
-}

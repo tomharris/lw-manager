@@ -50,10 +50,14 @@ func TestSwipeRefusedOnUnrecognizedScreen(t *testing.T) {
 	err := c.Swipe(context.Background(),
 		transport.Norm{X: 0.5, Y: 0.8}, transport.Norm{X: 0.5, Y: 0.2})
 	if !errors.Is(err, runtime.ErrLost) {
-		t.Fatalf("got %v, want ErrLost (stub recovery)", err)
+		t.Fatalf("got %v, want ErrLost after failed recovery", err)
 	}
-	if len(tr.Actions()) != 0 {
-		t.Fatalf("swiped blind: %+v", tr.Actions())
+	// The panic route may press back/restart, but no swipe may ever land on
+	// an unrecognized screen.
+	for _, a := range tr.Actions() {
+		if a.Kind == "swipe" {
+			t.Fatalf("swiped blind: %+v", tr.Actions())
+		}
 	}
 }
 
