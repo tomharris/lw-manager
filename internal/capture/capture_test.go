@@ -203,3 +203,27 @@ func TestCapturePropagatesLookupFailure(t *testing.T) {
 		t.Fatalf("error = %v, want db.ErrNotFound", err)
 	}
 }
+
+func TestRecordStoresFrameWithScreenID(t *testing.T) {
+	svc, store, blobs := newHarness(t, frame(100, 200, 1))
+	screen := "vs_ranking"
+
+	res, err := svc.Record(context.Background(), 7, frame(40, 80, 9), &screen)
+	if err != nil {
+		t.Fatalf("Record(): %v", err)
+	}
+	if res.Resolution != (image.Point{X: 40, Y: 80}) {
+		t.Errorf("resolution: got %v, want the recorded image's size", res.Resolution)
+	}
+	if len(store.screenshots) != 1 {
+		t.Fatalf("screenshot rows: got %d, want 1", len(store.screenshots))
+	}
+	row := store.screenshots[0]
+	if row.ScreenID == nil || *row.ScreenID != screen {
+		t.Errorf("screen_id: got %v, want %q", row.ScreenID, screen)
+	}
+	ok, err := blobs.Exists(context.Background(), res.ObjectKey)
+	if err != nil || !ok {
+		t.Errorf("blob %s not stored (exists=%t err=%v)", res.ObjectKey, ok, err)
+	}
+}

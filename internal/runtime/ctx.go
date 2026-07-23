@@ -19,10 +19,6 @@ type Recognition struct {
 	Confidence float64
 }
 
-// Capturer persists an already-captured frame; the real interface (backed by
-// internal/capture) is wired in the capture task.
-type Capturer interface{}
-
 // Options configures a Ctx. Transport, Registry, Graph, and Kill are
 // required; the rest default sensibly.
 type Options struct {
@@ -30,6 +26,9 @@ type Options struct {
 	Registry  *vision.Registry
 	Graph     *Graph
 	Kill      KillSwitch
+	// Capture persists frames for analytics tasks. Nil is allowed: Ctx
+	// works without one, and Capture() then errors.
+	Capture   Capturer
 	AccountID int64
 
 	// Rand drives all jitter. Nil means time-seeded; tests inject a seeded
@@ -55,7 +54,7 @@ type Ctx struct {
 	rec            *vision.Recognizer
 	graph          *Graph
 	ks             KillSwitch
-	cap            Capturer // nil until a capturer is configured (Task 9)
+	cap            Capturer // nil ⇒ Capture unavailable
 	accountID      int64
 	rand           *rand.Rand
 	poll           time.Duration
@@ -84,6 +83,7 @@ func New(opts Options) (*Ctx, error) {
 		rec:            vision.NewRecognizer(opts.Registry),
 		graph:          opts.Graph,
 		ks:             opts.Kill,
+		cap:            opts.Capture,
 		accountID:      opts.AccountID,
 		rand:           r,
 		poll:           opts.PollInterval,
