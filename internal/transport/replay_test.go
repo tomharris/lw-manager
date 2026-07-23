@@ -182,3 +182,19 @@ func TestReplayResolutionFromFirstFrame(t *testing.T) {
 // ReplayTransport must satisfy Transport, or it cannot stand in for a device.
 var _ Transport = (*ReplayTransport)(nil)
 var _ Transport = (*ADBTransport)(nil)
+
+func TestReplayRecordsBack(t *testing.T) {
+	rt, err := NewReplayTransportFromImages(image.NewGray(image.Rect(0, 0, 4, 4)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Back(context.Background()); err != nil {
+		t.Fatalf("Back: %v", err)
+	}
+	acts := rt.Actions()
+	if len(acts) != 1 || acts[0].Kind != "back" {
+		t.Fatalf("actions: got %+v, want one back", acts)
+	}
+	// The interface must carry Back, or the panic route cannot use it.
+	var _ Transport = rt
+}

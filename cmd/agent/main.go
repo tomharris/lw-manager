@@ -5,18 +5,23 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/tomharris/lw-manager/internal/blob"
 	"github.com/tomharris/lw-manager/internal/capture"
 	"github.com/tomharris/lw-manager/internal/config"
 	"github.com/tomharris/lw-manager/internal/db"
 	"github.com/tomharris/lw-manager/internal/logging"
+	"github.com/tomharris/lw-manager/internal/runtime"
+	"github.com/tomharris/lw-manager/internal/tasks"
 	"github.com/tomharris/lw-manager/internal/transport"
+	"github.com/tomharris/lw-manager/internal/vision"
 )
 
 func main() {
@@ -32,6 +37,7 @@ func usage() {
 commands:
   register  register a device and account, probing the device over adb
   capture   capture one screenshot for an account
+  run-task  run one task for an account, on demand
   devices   list attached adb devices
   accounts  list registered accounts
 `)
@@ -58,6 +64,8 @@ func run() error {
 		return runRegister(ctx, cfg, os.Args[2:])
 	case "capture":
 		return runCapture(ctx, cfg, os.Args[2:])
+	case "run-task":
+		return runTask(ctx, cfg, os.Args[2:])
 	case "devices":
 		return runDevices(ctx, cfg)
 	case "accounts":
@@ -252,4 +260,76 @@ func runDevices(ctx context.Context, cfg config.Config) error {
 		t.Close()
 	}
 	return nil
+}
+
+func runTask(ctx context.Context, cfg config.Config, args []string) error {
+	fs := flag.NewFlagSet("run-task", flag.ExitOnError)
+	accountID := fs.Int64("account", 0, "account id to run for (required)")
+	taskName := fs.String("task", "", "task to run; one of: "+strings.Join(tasks.Names(), ", "))
+	manifest := fs.String("templates", "templates/manifest.yaml", "template manifest path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *accountID == 0 || *taskName == "" {
+		fs.Usage()
+		return fmt.Errorf("--account and --task are required")
+	}
+	fn, ok := tasks.Get(*taskName)
+	if !ok {
+		return fmt.Errorf("unknown task %q, want one of: %s", *taskName, strings.Join(tasks.Names(), ", "))
+	}
+
+	// Registry load and graph validation happen before any connection is
+	// opened: a manifest missing the graph's screens must fail here, loudly,
+	// not as a mid-task mystery.
+	reg, err := vision.LoadRegistry(*manifest)
+	if err != nil {
+		return err
+	}
+	graph := runtime.DefaultGraph()
+
+	pool, err := db.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	blobs, err := blob.New(ctx, cfg.Blob)
+	if err != nil {
+		return err
+	}
+
+	target, err := pool.CaptureTargetByAccount(ctx, *accountID)
+	if err != nil {
+		return err
+	}
+	tr, err := transport.NewADBTransport(ctx, transport.ADBOptions{
+		ADBPath: cfg.ADBPath,
+		Serial:  target.Serial,
+		Package: target.Package,
+	})
+	if err != nil {
+		return fmt.Errorf("opening transport for device %s: %w", target.Serial, err)
+	}
+	defer tr.Close()
+
+	rt, err := runtime.New(runtime.Options{
+		Transport: tr,
+		Registry:  reg,
+		Graph:     graph,
+		Kill:      runtime.NewDBKillSwitch(pool, *accountID),
+		Capture:   capture.New(pool, blobs, nil),
+		AccountID: *accountID,
+		Rand:      rand.New(rand.NewSource(time.Now().UnixNano())),
+	})
+	if err != nil {
+		return err
+	}
+
+	out, err := runtime.Run(ctx, pool, rt, *taskName, fn)
+	if out.RunID != 0 {
+		// stdout stays machine-readable; the error itself goes to stderr via
+		// the main error path.
+		fmt.Printf("run_id=%d task=%s account=%d status=%s\n", out.RunID, *taskName, *accountID, out.Status)
+	}
+	return err
 }

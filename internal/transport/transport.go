@@ -64,6 +64,10 @@ type Transport interface {
 	TypeText(ctx context.Context, s string) error
 	// AppRestart force-restarts the game. The panic route's last resort.
 	AppRestart(ctx context.Context) error
+	// Back presses the Android back button. Unlike Tap it needs no anchor:
+	// it is the panic route's first resort, used precisely when the current
+	// screen is unknown.
+	Back(ctx context.Context) error
 	// Resolution reports the device screen size in pixels.
 	Resolution() image.Point
 	// Close releases any resources held by the transport.

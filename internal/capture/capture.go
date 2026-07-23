@@ -103,6 +103,26 @@ func (s *Service) Capture(ctx context.Context, accountID int64) (Result, error) 
 		return Result{}, fmt.Errorf("capture: screenshotting %s: %w", target.Serial, err)
 	}
 
+	res2, err := s.Record(ctx, accountID, img, nil)
+	if err != nil {
+		return Result{}, err
+	}
+
+	s.log.Info("captured",
+		"account", accountID,
+		"nickname", target.Nickname,
+		"serial", target.Serial,
+		"screenshot_id", res2.ScreenshotID,
+		"bytes", res2.Bytes,
+		"deduplicated", res2.Deduplicated)
+
+	return res2, nil
+}
+
+// Record stores an already-captured frame: encode → blob → screenshot row.
+// It exists so the task runtime, which holds its own transport and frames,
+// can persist observations without opening a second device connection.
+func (s *Service) Record(ctx context.Context, accountID int64, img image.Image, screenID *string) (Result, error) {
 	data, err := encodePNG(img)
 	if err != nil {
 		return Result{}, err
@@ -114,32 +134,23 @@ func (s *Service) Capture(ctx context.Context, accountID int64) (Result, error) 
 	if err != nil {
 		return Result{}, fmt.Errorf("capture: checking blob %s: %w", key, err)
 	}
-
 	if _, _, err := blob.PutContent(ctx, s.blobs, data); err != nil {
 		return Result{}, err
 	}
 
-	// screen_id stays nil at M0: nothing recognizes screens yet.
-	row, err := s.store.InsertScreenshot(ctx, accountID, key, sum, nil)
+	row, err := s.store.InsertScreenshot(ctx, accountID, key, sum, screenID)
 	if err != nil {
 		return Result{}, err
 	}
 
-	s.log.Info("captured",
-		"account", accountID,
-		"nickname", target.Nickname,
-		"serial", target.Serial,
-		"screenshot_id", row.ID,
-		"bytes", len(data),
-		"deduplicated", existed)
-
+	b := img.Bounds()
 	return Result{
 		ScreenshotID: row.ID,
 		AccountID:    accountID,
 		ObjectKey:    key,
 		SHA256:       sum,
 		Bytes:        len(data),
-		Resolution:   res,
+		Resolution:   image.Point{X: b.Dx(), Y: b.Dy()},
 		CapturedAt:   row.CapturedAt,
 		Deduplicated: existed,
 	}, nil
