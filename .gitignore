@@ -1,4 +1,7 @@
 bin/
+# Stray binaries from ad-hoc `go build ./cmd/...` (the Makefile builds to bin/).
+/agent
+/control
 *.env
 .env
 .env.local
