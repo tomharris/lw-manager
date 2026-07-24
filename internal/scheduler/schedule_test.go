@@ -87,7 +87,7 @@ func TestPlanSkipsRoleMismatch(t *testing.T) {
 }
 
 func TestPlanWeekdayGate(t *testing.T) {
-	s, now := baseSnapshot(t) // now is a Wednesday (weekday 3)
+	s, now := baseSnapshot(t)                                  // now is a Wednesday (weekday 3)
 	s.Tasks[0].Days = []time.Weekday{time.Monday, time.Friday} // not Wednesday
 	if got := Plan(now, s); len(got) != 0 {
 		t.Fatalf("planned on a disallowed weekday: %+v", got)
