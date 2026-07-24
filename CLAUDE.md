@@ -19,6 +19,10 @@ make build                    # bin/agent, bin/control
 ./bin/agent devices                                  # confirm the probe works
 ./bin/agent register --nickname myalt --role alliance_data
 ./bin/agent capture --account <id printed above>
+./bin/agent run-task --account <id> --task help_all   # runs once templates exist
+./bin/agent run                                       # scheduler loop, all attached devices
+./bin/control pause --reason "alliance event"         # global kill switch
+./bin/control resume
 ./bin/agent accounts                                 # what is registered
 ```
 
@@ -131,6 +135,9 @@ internal/db     schema, embedded migrations, hand-written pgx queries
 internal/blob   content-addressed object store (fs + s3 backends)
 internal/transport  Transport interface; adb.go, replay.go
 internal/capture    screenshot -> blob -> db
+internal/runtime    task runtime: Ctx primitives, screen graph, panic route, kill switch
+internal/tasks      Tier 1 task skeletons; self-registering catalogue
+internal/scheduler  cadence-driven planner + loop; decides what runs when
 fixtures/       recorded screenshots for device-free tests
 ```
 

@@ -33,6 +33,8 @@ func usage() {
 commands:
   migrate   apply database migrations
   serve     run the control-plane HTTP server
+  pause     set the global kill switch
+  resume    clear the global kill switch
 `)
 }
 
@@ -60,6 +62,10 @@ func run() error {
 		return nil
 	case "serve":
 		return runServe(ctx, cfg, os.Args[2:])
+	case "pause":
+		return runPause(ctx, cfg, os.Args[2:])
+	case "resume":
+		return runResume(ctx, cfg)
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -125,5 +131,40 @@ func runServe(ctx context.Context, cfg config.Config, args []string) error {
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("control: serving: %w", err)
 	}
+	return nil
+}
+
+func runPause(ctx context.Context, cfg config.Config, args []string) error {
+	fs := flag.NewFlagSet("pause", flag.ExitOnError)
+	reason := fs.String("reason", "", "why the fleet is being paused (required, it ends up in every ErrPaused)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *reason == "" {
+		fs.Usage()
+		return fmt.Errorf("--reason is required: future-you wants to know why everything stopped")
+	}
+	pool, err := db.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if err := pool.SetPauseAll(ctx, true, *reason); err != nil {
+		return err
+	}
+	fmt.Printf("pause_all=true reason=%q\n", *reason)
+	return nil
+}
+
+func runResume(ctx context.Context, cfg config.Config) error {
+	pool, err := db.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if err := pool.SetPauseAll(ctx, false, ""); err != nil {
+		return err
+	}
+	fmt.Println("pause_all=false")
 	return nil
 }
