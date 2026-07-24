@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"os"
 	"os/signal"
@@ -19,6 +20,7 @@ import (
 	"github.com/tomharris/lw-manager/internal/db"
 	"github.com/tomharris/lw-manager/internal/logging"
 	"github.com/tomharris/lw-manager/internal/runtime"
+	"github.com/tomharris/lw-manager/internal/scheduler"
 	"github.com/tomharris/lw-manager/internal/tasks"
 	"github.com/tomharris/lw-manager/internal/transport"
 	"github.com/tomharris/lw-manager/internal/vision"
@@ -38,6 +40,7 @@ commands:
   register  register a device and account, probing the device over adb
   capture   capture one screenshot for an account
   run-task  run one task for an account, on demand
+  run       run the scheduler loop against attached devices
   devices   list attached adb devices
   accounts  list registered accounts
 `)
@@ -66,6 +69,8 @@ func run() error {
 		return runCapture(ctx, cfg, os.Args[2:])
 	case "run-task":
 		return runTask(ctx, cfg, os.Args[2:])
+	case "run":
+		return runScheduler(ctx, cfg, os.Args[2:])
 	case "devices":
 		return runDevices(ctx, cfg)
 	case "accounts":
@@ -332,4 +337,115 @@ func runTask(ctx context.Context, cfg config.Config, args []string) error {
 		fmt.Printf("run_id=%d task=%s account=%d status=%s\n", out.RunID, *taskName, *accountID, out.Status)
 	}
 	return err
+}
+
+// runtimeExecutor runs one task on a real device via the task runtime. It is
+// the scheduler's production Executor.
+type runtimeExecutor struct {
+	pool    *db.Pool
+	blobs   blob.Store
+	reg     *vision.Registry
+	graph   *runtime.Graph
+	adbPath string
+}
+
+func (e *runtimeExecutor) Execute(ctx context.Context, accountID int64, taskName string) error {
+	fn, ok := tasks.Get(taskName)
+	if !ok {
+		return fmt.Errorf("unknown task %q", taskName)
+	}
+	target, err := e.pool.CaptureTargetByAccount(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	tr, err := transport.NewADBTransport(ctx, transport.ADBOptions{
+		ADBPath: e.adbPath,
+		Serial:  target.Serial,
+		Package: target.Package,
+	})
+	if err != nil {
+		return fmt.Errorf("opening transport for device %s: %w", target.Serial, err)
+	}
+	defer tr.Close()
+
+	rt, err := runtime.New(runtime.Options{
+		Transport: tr,
+		Registry:  e.reg,
+		Graph:     e.graph,
+		Kill:      runtime.NewDBKillSwitch(e.pool, accountID),
+		Capture:   capture.New(e.pool, e.blobs, nil),
+		AccountID: accountID,
+		Rand:      rand.New(rand.NewSource(time.Now().UnixNano())),
+	})
+	if err != nil {
+		return err
+	}
+	_, err = runtime.Run(ctx, e.pool, rt, taskName, fn)
+	return err
+}
+
+func runScheduler(ctx context.Context, cfg config.Config, args []string) error {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	manifest := fs.String("templates", "templates/manifest.yaml", "template manifest path")
+	tick := fs.Duration("tick", 60*time.Second, "base interval between scheduler ticks")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	// Load and validate the registry + graph before any DB work: a manifest
+	// missing the graph's screens must fail here, loudly.
+	reg, err := vision.LoadRegistry(*manifest)
+	if err != nil {
+		return err
+	}
+	graph := runtime.DefaultGraph()
+
+	// Only drive devices attached to this host. An account registered
+	// against a device that is not attached here is another agent's job.
+	serials, err := transport.ListDevices(ctx, cfg.ADBPath)
+	if err != nil {
+		return err
+	}
+	if len(serials) == 0 {
+		return fmt.Errorf("no devices attached; start an emulator or connect a handset")
+	}
+
+	pool, err := db.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	blobs, err := blob.New(ctx, cfg.Blob)
+	if err != nil {
+		return err
+	}
+
+	// Fail loudly at startup if any enabled task row names a task the
+	// registry does not know — the same discipline as graph validation.
+	snap, err := pool.SchedulerSnapshot(ctx, serials)
+	if err != nil {
+		return err
+	}
+	for _, t := range snap.Tasks {
+		if !t.Enabled {
+			continue
+		}
+		if _, ok := tasks.Get(t.Name); !ok {
+			return fmt.Errorf("tasks table enables %q but no such task is registered", t.Name)
+		}
+	}
+
+	exec := &runtimeExecutor{pool: pool, blobs: blobs, reg: reg, graph: graph, adbPath: cfg.ADBPath}
+	loop, err := scheduler.New(scheduler.Options{
+		Store:    scheduler.NewDBStore(pool),
+		Executor: exec,
+		Serials:  serials,
+		Tick:     *tick,
+	})
+	if err != nil {
+		return err
+	}
+
+	slog.Info("scheduler starting", "devices", serials, "tick", tick.String())
+	return loop.Run(ctx)
 }
