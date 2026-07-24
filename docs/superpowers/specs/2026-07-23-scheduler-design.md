@@ -37,6 +37,7 @@ internal/scheduler
   backoff.go    consecutive-failure backoff (pure)
   loop.go       Loop: snapshot → Plan → execute → sleep; Store and Executor ifaces
 internal/db     migration 00003 (tasks table); SchedulerSnapshot query
+internal/tasks  split radar skeleton into radar_quick + radar_claim
 cmd/agent       new: `agent run` — the scheduler loop against the local device
 ```
 
@@ -56,6 +57,9 @@ CREATE TABLE tasks (
     name              text        PRIMARY KEY,
     cadence_seconds   integer     NOT NULL CHECK (cadence_seconds > 0),
     enabled_for_roles text[]      NOT NULL DEFAULT '{}',
+    -- Go time.Weekday numbers (0=Sun … 6=Sat) on which the task may run.
+    -- Default is every day; a subset gates the task to those weekdays.
+    days_of_week      smallint[]  NOT NULL DEFAULT '{0,1,2,3,4,5,6}',
     enabled           boolean     NOT NULL DEFAULT true,
     created_at        timestamptz NOT NULL DEFAULT now()
 );
@@ -68,13 +72,29 @@ the same spirit as graph validation refusing unknown screens.
 
 Seeded rows:
 
-| name | cadence | enabled_for_roles |
-|---|---|---|
-| `help_all` | 30m | `{main, farm, scout, alliance_data}` |
-| `daily_gather` | 4h | `{main, farm, scout, alliance_data}` |
-| `radar` | 3h | `{main, farm, scout, alliance_data}` |
-| `mail_collect` | 24h | `{main, farm, scout, alliance_data}` |
-| `tech_donate` | 24h | `{main, farm, scout, alliance_data}` |
+| name | cadence | days_of_week | enabled_for_roles |
+|---|---|---|---|
+| `help_all` | 3m | every day | `{main, farm, scout, alliance_data}` |
+| `daily_gather` | 4h | every day | `{main, farm, scout, alliance_data}` |
+| `tech_donate` | 2h | every day | `{main, farm, scout, alliance_data}` |
+| `mail_collect` | 24h | every day | `{main, farm, scout, alliance_data}` |
+| `radar_quick` | 3h | every day | `{main, farm, scout, alliance_data}` |
+| `radar_claim` | 24h | Mon/Wed/Fri/Sat `{1,3,5,6}` | `{main, farm, scout, alliance_data}` |
+
+`radar` splits into two rows because its two on-screen actions have different
+schedules. **Quick Execute** is worth doing every time the radar is seen, so
+`radar_quick` runs every 3h on all days. **Claim All** only awards points on
+VS-scoring days, so `radar_claim` runs at most once a day and only on
+Mon/Wed/Fri/Sat. Making `radar_claim` its own task means its 24h cadence
+answers "did we already claim today?" for free — no sub-action bookkeeping.
+This requires splitting the single `radar` skeleton in `internal/tasks` into
+`radar_quick` and `radar_claim` (both still skeletons: navigate to the radar
+screen and tap their button); it is a device-free change.
+
+`help_all` at 3m (±20% jitter → roughly 2.4–3.6m) reflects that alliance help
+requests expire in minutes, so a slow cadence misses most of them.
+`tech_donate` at 2h reflects that donation slots refresh slowly through the
+day rather than all at once.
 
 Every seed enables every role. `help_all` and `tech_donate` genuinely
 require alliance membership, but membership is not what `role` encodes — a
@@ -106,8 +126,13 @@ func Plan(now time.Time, s Snapshot) []Decision
 
 A `(account, task)` pair is skipped when any of these hold: the global pause
 flag is set, the account is disabled, the task is disabled, the account's
-role is not in `enabled_for_roles`, `now` falls inside the account's offline
-window, or the cooldown has not elapsed. Survivors become `Decision`s.
+role is not in `enabled_for_roles`, `now`'s weekday is not in the task's
+`days_of_week`, `now` falls inside the account's offline window, or the
+cooldown has not elapsed. Survivors become `Decision`s.
+
+The weekday gate uses `now.In(loc).Weekday()` in the scheduler's configured
+`time.Location` — the same location the offline window uses — so "Saturday"
+means the operator's Saturday, not an accident of UTC.
 
 Due time is `lastRun + cadence + jitter + backoff(consecutiveFailures)`. A
 pair that has never run is due immediately.
@@ -197,13 +222,26 @@ Registry and graph load once at startup and validate loudly, plus one extra
 startup check: every enabled row in `tasks` must name a task the registry
 knows, or the loop refuses to start.
 
+## Task-behavior notes (for the real bodies, hardware-gated)
+
+These are *what each task does on screen*, not scheduling, so they belong to
+the real task bodies that need the phone. Recorded here so the intent is not
+lost; the skeletons in this slice remain navigate-and-tap placeholders.
+
+- **`daily_gather`** — collect the gold resource only, not the full set. Other
+  resources are farmed differently and over-collecting them is wasteful.
+- **`radar_quick`** — perform Quick Execute on the radar screen.
+- **`radar_claim`** — perform Claim All on the radar screen (scheduled only on
+  VS days by `days_of_week`, so the body itself needs no calendar logic).
+
 ## Testing
 
 Device-free throughout; DB-free except the query layer.
 
 - **`Plan`** — table-driven: cooldown elapsed and not, never-run, role
-  mismatch, task disabled, account disabled, global pause, inside the
-  offline window, backoff applied, overdue-first ordering, name tie-break.
+  mismatch, task disabled, account disabled, global pause, wrong weekday
+  (and right weekday), inside the offline window, backoff applied,
+  overdue-first ordering, name tie-break.
 - **`OfflineWindow`** — duration always in [5h, 7h]; determinism for
   identical inputs; drift across consecutive days; containment across the
   midnight wrap; start-time spread across many accounts.
