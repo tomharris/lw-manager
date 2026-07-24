@@ -36,13 +36,15 @@ var spots = map[string]spot{
 	"alliance_tech": {28, 28, transport.Rect{X1: 0.42, Y1: 0.42, X2: 0.58, Y2: 0.58}},
 }
 
-// tapAnchors names the tap target each Tier 1 skeleton uses, per screen.
-var tapAnchors = map[string]string{
-	"base":          "gather_button",
-	"alliance":      "help_all_button",
-	"mail":          "collect_all_button",
-	"alliance_tech": "donate_button",
-	"radar":         "radar_claim_button",
+// tapAnchors names the tap targets each Tier 1 skeleton uses, per screen.
+// The radar screen carries two because its task split into radar_quick and
+// radar_claim, each with its own button.
+var tapAnchors = map[string][]string{
+	"base":          {"gather_button"},
+	"alliance":      {"help_all_button"},
+	"mail":          {"collect_all_button"},
+	"alliance_tech": {"donate_button"},
+	"radar":         {"radar_quick_button", "radar_claim_button"},
 }
 
 func pattern() *image.Gray {
@@ -63,13 +65,13 @@ func Registry() *vision.Registry {
 	reg := &vision.Registry{ReferenceHeight: 64}
 	for _, name := range []string{"alliance", "alliance_tech", "base", "mail", "radar"} {
 		s := spots[name]
-		reg.Screens = append(reg.Screens, vision.Screen{
-			Name: name,
-			Anchors: []vision.Anchor{
-				{ID: "id", Template: p, Region: s.region, Threshold: 0.9, IdentifiesScreen: true},
-				{ID: tapAnchors[name], Template: p, Region: s.region, Threshold: 0.9},
-			},
-		})
+		anchors := []vision.Anchor{
+			{ID: "id", Template: p, Region: s.region, Threshold: 0.9, IdentifiesScreen: true},
+		}
+		for _, btn := range tapAnchors[name] {
+			anchors = append(anchors, vision.Anchor{ID: btn, Template: p, Region: s.region, Threshold: 0.9})
+		}
+		reg.Screens = append(reg.Screens, vision.Screen{Name: name, Anchors: anchors})
 	}
 	return reg
 }

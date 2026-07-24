@@ -12,7 +12,7 @@ import (
 )
 
 func TestAllTierOneTasksRegistered(t *testing.T) {
-	want := []string{"daily_gather", "help_all", "mail_collect", "radar", "tech_donate"}
+	want := []string{"daily_gather", "help_all", "mail_collect", "radar_claim", "radar_quick", "tech_donate"}
 	if got := tasks.Names(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Names: got %v, want %v", got, want)
 	}
@@ -30,7 +30,8 @@ var skeletonScripts = map[string][]string{
 	"mail_collect": {"base", "base", "mail", "mail", "mail"},
 	// base → alliance → alliance_tech
 	"tech_donate": {"base", "base", "alliance", "alliance", "alliance_tech", "alliance_tech", "alliance_tech"},
-	"radar":       {"base", "base", "radar", "radar", "radar"},
+	"radar_quick": {"base", "base", "radar", "radar", "radar"},
+	"radar_claim": {"base", "base", "radar", "radar", "radar"},
 }
 
 func TestSkeletonsRunAgainstSyntheticScreens(t *testing.T) {
