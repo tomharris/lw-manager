@@ -31,7 +31,7 @@ type Separation struct {
 	Overlap   bool    // no threshold can separate: recrop, do not retune
 }
 
-// Separations computes one Separation per anchor.
+// Separations computes one Separation per (anchor, screen) pair.
 //
 // The gap between the worst in-screen score and the best out-of-screen score
 // is the anchor's discriminative margin. A positive gap means a threshold
@@ -43,22 +43,32 @@ type Separation struct {
 // corpus gap, and reporting it as a healthy wide margin would be worse than
 // useless.
 func Separations(obs []AnchorObservation) []Separation {
-	type acc struct {
+	type key struct {
+		anchorID string
 		screen   string
+	}
+	type acc struct {
 		worstIn  float64
 		bestOut  float64
 		inCount  int
 		outCount int
 	}
-	byAnchor := map[string]*acc{}
+	// registry.go declares anchors per-screen with no global uniqueness
+	// constraint, so the same AnchorID can legitimately name a different
+	// anchor on a different screen (e.g. two screens each with a
+	// back_button). Keying on AnchorID alone would blend those anchors'
+	// scores together and let a healthy one mask a non-discriminative
+	// namesake — exactly the papering-over this report exists to expose.
+	byAnchor := map[key]*acc{}
 
 	for _, o := range obs {
-		a := byAnchor[o.AnchorID]
+		k := key{anchorID: o.AnchorID, screen: o.Screen}
+		a := byAnchor[k]
 		if a == nil {
 			// NCC scores floor at 0, so an anchor never seen off its own
 			// screen gets a well-defined margin instead of an infinite one.
-			a = &acc{screen: o.Screen, worstIn: 1, bestOut: 0}
-			byAnchor[o.AnchorID] = a
+			a = &acc{worstIn: 1, bestOut: 0}
+			byAnchor[k] = a
 		}
 		if o.FrameLabel == o.Screen {
 			a.inCount++
@@ -74,10 +84,10 @@ func Separations(obs []AnchorObservation) []Separation {
 	}
 
 	out := make([]Separation, 0, len(byAnchor))
-	for id, a := range byAnchor {
+	for k, a := range byAnchor {
 		s := Separation{
-			AnchorID: id,
-			Screen:   a.screen,
+			AnchorID: k.anchorID,
+			Screen:   k.screen,
 			InCount:  a.inCount,
 			OutCount: a.outCount,
 			BestOut:  a.bestOut,
@@ -96,7 +106,15 @@ func Separations(obs []AnchorObservation) []Separation {
 		}
 		out = append(out, s)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].AnchorID < out[j].AnchorID })
+	// Screen is the tiebreak so ordering is a total order — otherwise two
+	// anchors sharing an ID across screens would sort arbitrarily and the
+	// report would vary between runs.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].AnchorID != out[j].AnchorID {
+			return out[i].AnchorID < out[j].AnchorID
+		}
+		return out[i].Screen < out[j].Screen
+	})
 	return out
 }
 
