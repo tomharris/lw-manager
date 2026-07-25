@@ -9,6 +9,10 @@ bin/
 # Local filesystem blob store
 data/
 
+# Isolated worktrees and subagent scratch (see docs/superpowers/).
+.claude/worktrees/
+.superpowers/
+
 # Captured fixtures are large; track deliberately, not by accident.
 fixtures/**/*.png
 !fixtures/**/manifest.yaml
