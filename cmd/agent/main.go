@@ -43,6 +43,7 @@ commands:
   run       run the scheduler loop against attached devices
   record    burst-capture frames into the fixture corpus
   corpus    manage the fixture corpus: index, push, pull
+  studio    serve the corpus labelling and cropping UI
   devices   list attached adb devices
   accounts  list registered accounts
 `)
@@ -77,6 +78,8 @@ func run() error {
 		return runRecord(ctx, cfg, os.Args[2:])
 	case "corpus":
 		return runCorpus(ctx, cfg, os.Args[2:])
+	case "studio":
+		return runStudio(ctx, cfg, os.Args[2:])
 	case "devices":
 		return runDevices(ctx, cfg)
 	case "accounts":
