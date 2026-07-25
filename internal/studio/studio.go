@@ -113,6 +113,10 @@ func RequireToken(addr string) bool {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /frame/{hash}", s.handleFrame)
+	mux.HandleFunc("GET /", s.handleUnsorted)
+	mux.HandleFunc("GET /labeled", s.handleLabeled)
+	mux.HandleFunc("POST /label", s.handleLabel)
+	mux.HandleFunc("POST /capture", s.handleCapture)
 	return s.authenticate(mux)
 }
 
