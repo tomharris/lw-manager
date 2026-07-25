@@ -117,6 +117,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /labeled", s.handleLabeled)
 	mux.HandleFunc("POST /label", s.handleLabel)
 	mux.HandleFunc("POST /capture", s.handleCapture)
+	mux.HandleFunc("GET /crop", s.handleCropView)
+	mux.HandleFunc("POST /crop", s.handleCrop)
 	return s.authenticate(mux)
 }
 

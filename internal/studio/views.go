@@ -88,3 +88,57 @@ type group struct {
 	Label  string
 	Frames []corpus.Frame
 }
+
+var cropTmpl = template.Must(template.New("crop").Parse(layout + `
+<h1>crop an anchor</h1>
+<p>drag a rectangle over the frame, then name the anchor.</p>
+<div style="display:flex;gap:1rem;align-items:flex-start">
+ <div style="position:relative;max-width:420px">
+  <img id="f" src="/frame/{{.Frame.Hash}}" style="width:100%;display:block;user-select:none">
+  <div id="sel" style="position:absolute;border:2px solid #8cf;background:rgba(136,204,255,.2);display:none"></div>
+ </div>
+ <form method="post" action="/crop" style="min-width:260px">
+  <input type="hidden" name="hash" value="{{.Frame.Hash}}">
+  <label>screen<select name="screen">{{range $.Labels}}<option value="{{.}}" {{if eq . $.Frame.Label}}selected{{end}}>{{.}}</option>{{end}}</select></label>
+  <label>anchor id<input name="anchor_id" required pattern="[a-z0-9_]+"></label>
+  <label>threshold<input name="threshold" type="number" step="0.01" min="0" max="1" value="0.85"></label>
+  <label><input type="checkbox" name="identifies_screen" checked> identifies this screen</label>
+  <input type="hidden" name="x1" id="x1"><input type="hidden" name="y1" id="y1">
+  <input type="hidden" name="x2" id="x2"><input type="hidden" name="y2" id="y2">
+  <button>cut template</button>
+ </form>
+</div>
+<script>
+// The rectangle is reported as fractions of the *displayed* image, never
+// pixels, so a scaled-down view gives the same answer as a full-size one.
+// That is what keeps invariant #1 true: no absolute coordinate leaves here.
+(function () {
+  const img = document.getElementById('f'), sel = document.getElementById('sel');
+  let sx = 0, sy = 0, dragging = false;
+  const frac = e => {
+    const r = img.getBoundingClientRect();
+    return [
+      Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1),
+      Math.min(Math.max((e.clientY - r.top) / r.height, 0), 1),
+    ];
+  };
+  img.addEventListener('mousedown', e => {
+    e.preventDefault();
+    [sx, sy] = frac(e); dragging = true; sel.style.display = 'block';
+  });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const [cx, cy] = frac(e);
+    const x1 = Math.min(sx, cx), y1 = Math.min(sy, cy);
+    const x2 = Math.max(sx, cx), y2 = Math.max(sy, cy);
+    sel.style.left = (x1 * 100) + '%'; sel.style.top = (y1 * 100) + '%';
+    sel.style.width = ((x2 - x1) * 100) + '%'; sel.style.height = ((y2 - y1) * 100) + '%';
+    document.getElementById('x1').value = x1.toFixed(5);
+    document.getElementById('y1').value = y1.toFixed(5);
+    document.getElementById('x2').value = x2.toFixed(5);
+    document.getElementById('y2').value = y2.toFixed(5);
+  });
+  window.addEventListener('mouseup', () => { dragging = false; });
+})();
+</script>
+`))
