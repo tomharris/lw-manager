@@ -99,7 +99,7 @@ func RequireToken(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
-		return true // a hostname we cannot resolve to loopback: assume exposed
+		return true // not a literal IP recognised as loopback: assume exposed
 	}
 	return !ip.IsLoopback()
 }
@@ -117,7 +117,13 @@ func (s *Server) Handler() http.Handler {
 }
 
 // authenticate admits a request carrying the token in a cookie, or in ?t= on
-// a first visit, in which case it sets the cookie so later requests carry it.
+// a first visit, in which case it sets the cookie and redirects to the same
+// URL with the token stripped.
+//
+// The redirect matters: serving the request straight through would leave the
+// token sitting in the address bar, browser history, and any outgoing
+// Referer header, on every request that happens to carry ?t=. One redirect
+// after the cookie lands closes that off.
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if t := r.URL.Query().Get("t"); t != "" && s.tokenOK(t) {
@@ -128,7 +134,11 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 				HttpOnly: true,
 				SameSite: http.SameSiteLaxMode,
 			})
-			next.ServeHTTP(w, r)
+			redirect := *r.URL
+			q := redirect.Query()
+			q.Del("t")
+			redirect.RawQuery = q.Encode()
+			http.Redirect(w, r, redirect.RequestURI(), http.StatusSeeOther)
 			return
 		}
 		c, err := r.Cookie(CookieName)
@@ -148,7 +158,11 @@ func (s *Server) tokenOK(got string) bool {
 
 func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	data, err := s.corpus.Read(r.PathValue("hash"))
-	if errors.Is(err, corpus.ErrNotFound) {
+	// A malformed hash (e.g. a path-traversal attempt smuggled through the
+	// {hash} wildcard) gets the same 404 as an absent one: a caller has no
+	// use for knowing whether a request merely missed or was actually an
+	// attempt to escape the corpus root.
+	if errors.Is(err, corpus.ErrNotFound) || errors.Is(err, corpus.ErrInvalidHash) {
 		http.Error(w, "no such frame", http.StatusNotFound)
 		return
 	}

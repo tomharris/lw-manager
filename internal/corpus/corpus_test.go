@@ -3,6 +3,7 @@ package corpus_test
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tomharris/lw-manager/internal/blob"
@@ -94,8 +95,33 @@ func TestRelabelMovesTheFrame(t *testing.T) {
 
 func TestFindReportsErrNotFoundForUnknownHash(t *testing.T) {
 	s := corpus.New(t.TempDir())
-	if _, err := s.Find("deadbeef"); !errors.Is(err, corpus.ErrNotFound) {
+	// Well-formed (64 lowercase hex) but absent, so this still tests "not
+	// found" rather than "malformed" now that Find validates hash shape.
+	unknown := strings.Repeat("ab", 32)
+	if _, err := s.Find(unknown); !errors.Is(err, corpus.ErrNotFound) {
 		t.Fatalf("Find error = %v, want ErrNotFound", err)
+	}
+}
+
+// The hash reaches Find/Read/Relabel from a URL path segment (the studio's
+// /frame/{hash} route), so a malformed hash must be rejected before it ever
+// reaches filepath.Join — that join is exactly how "../../etc/passwd" would
+// escape the corpus root.
+func TestFindAndReadRejectMalformedHashes(t *testing.T) {
+	s := corpus.New(t.TempDir())
+	bad := []string{
+		"../../etc/passwd",
+		strings.Repeat("g", 64),  // right length, non-hex
+		strings.Repeat("AB", 32), // uppercase hex
+		"",
+	}
+	for _, hash := range bad {
+		if _, err := s.Find(hash); !errors.Is(err, corpus.ErrInvalidHash) {
+			t.Errorf("Find(%q) error = %v, want ErrInvalidHash", hash, err)
+		}
+		if _, err := s.Read(hash); !errors.Is(err, corpus.ErrInvalidHash) {
+			t.Errorf("Read(%q) error = %v, want ErrInvalidHash", hash, err)
+		}
 	}
 }
 

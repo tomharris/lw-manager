@@ -43,12 +43,34 @@ var (
 	ErrNotFound = errors.New("corpus: frame not found")
 	// ErrInvalidLabel reports a label that is not a safe directory name.
 	ErrInvalidLabel = errors.New("corpus: invalid label")
+	// ErrInvalidHash reports a hash that is not a well-formed content digest.
+	ErrInvalidHash = errors.New("corpus: invalid hash")
 )
 
 // validLabel constrains labels to a shape that cannot escape the corpus root.
 // Labels arrive from the studio's browser UI, so this is a boundary check and
 // not a style rule: "../../etc" must never become a directory name.
 var validLabel = regexp.MustCompile(`^_?[a-z0-9][a-z0-9_]*$`)
+
+// validHash matches exactly what blob.Sum produces: a full lowercase-hex
+// SHA-256 digest. Nothing else is a legitimate hash this package should ever
+// look up.
+var validHash = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// CheckHash validates hash, returning ErrInvalidHash if it is not a
+// well-formed content digest.
+//
+// A hash reaches this package from a URL path segment (the studio's
+// /frame/{hash} route), so this is a boundary check, not a style rule:
+// filepath.Join(s.root, label, hash+".png") must never see a hash containing
+// "/" or "..", or a caller-controlled string walks the join straight out of
+// the corpus root.
+func CheckHash(hash string) error {
+	if !validHash.MatchString(hash) {
+		return fmt.Errorf("%w: %q", ErrInvalidHash, hash)
+	}
+	return nil
+}
 
 // Frame is one corpus image on disk.
 type Frame struct {
@@ -104,6 +126,9 @@ func (s *Store) Add(label string, data []byte) (Frame, bool, error) {
 
 // Find locates a frame by its full hash, searching every label.
 func (s *Store) Find(hash string) (Frame, error) {
+	if err := CheckHash(hash); err != nil {
+		return Frame{}, err
+	}
 	labels, err := s.Labels()
 	if err != nil {
 		return Frame{}, err
@@ -190,6 +215,9 @@ func (s *Store) All() ([]Frame, error) {
 
 // Relabel moves a frame into a different label directory.
 func (s *Store) Relabel(hash, label string) (Frame, error) {
+	if err := CheckHash(hash); err != nil {
+		return Frame{}, err
+	}
 	if err := CheckLabel(label); err != nil {
 		return Frame{}, err
 	}
@@ -213,6 +241,9 @@ func (s *Store) Relabel(hash, label string) (Frame, error) {
 
 // Read returns a frame's bytes.
 func (s *Store) Read(hash string) ([]byte, error) {
+	if err := CheckHash(hash); err != nil {
+		return nil, err
+	}
 	f, err := s.Find(hash)
 	if err != nil {
 		return nil, err

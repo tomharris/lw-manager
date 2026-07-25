@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/tomharris/lw-manager/internal/corpus"
@@ -76,15 +78,22 @@ func TestUnauthenticatedRequestsTo404PathsAreStillRejected(t *testing.T) {
 	}
 }
 
-func TestTokenInQueryStringSetsACookieAndAdmits(t *testing.T) {
+// A token in the query string sets the cookie and then redirects with the
+// token stripped, rather than serving the request straight through — leaving
+// it in place would keep the token in the address bar, browser history, and
+// any outgoing Referer header on every request that happened to carry it.
+func TestTokenInQueryStringSetsACookieAndRedirectsWithoutIt(t *testing.T) {
 	srv, store := newTestServer(t, "s3cret")
 	hash := seedFrame(t, store, "frame-bytes")
 	rec := httptest.NewRecorder()
 
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/frame/"+hash+"?t=s3cret", nil))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); strings.Contains(loc, "t=") {
+		t.Fatalf("Location = %q, still carries the token", loc)
 	}
 	var found bool
 	for _, c := range rec.Result().Cookies() {
@@ -151,10 +160,35 @@ func TestFrameEndpointServesTheStoredBytes(t *testing.T) {
 	}
 }
 
+// Go 1.22's ServeMux matches routes against the escaped path, so a
+// percent-encoded "/" never splits a path segment and the whole remainder
+// matches {hash} — but PathValue returns it decoded, real "/" and ".."
+// included. Without a shape check at the corpus layer this reaches
+// filepath.Join and reads outside the corpus root; this asserts the studio
+// route as a whole does not let that through, whatever hash arrives.
+func TestFrameEndpointRejectsPathTraversalInTheHash(t *testing.T) {
+	srv, _ := newTestServer(t, "s3cret")
+
+	req := httptest.NewRequest(http.MethodGet, "/frame/"+url.PathEscape("../../../etc/hosts"), nil)
+	req.AddCookie(&http.Cookie{Name: studio.CookieName, Value: "s3cret"})
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("status = 200, a traversal attempt must never be served")
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
 func TestFrameEndpointIs404ForAnUnknownHash(t *testing.T) {
 	srv, _ := newTestServer(t, "s3cret")
 
-	req := httptest.NewRequest(http.MethodGet, "/frame/deadbeef", nil)
+	// Well-formed (64 lowercase hex) but absent, so this tests "unknown"
+	// specifically — the malformed case has its own test above.
+	unknown := strings.Repeat("ab", 32)
+	req := httptest.NewRequest(http.MethodGet, "/frame/"+unknown, nil)
 	req.AddCookie(&http.Cookie{Name: studio.CookieName, Value: "s3cret"})
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
