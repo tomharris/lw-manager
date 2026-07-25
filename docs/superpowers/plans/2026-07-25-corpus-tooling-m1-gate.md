@@ -2321,6 +2321,17 @@ import (
 	"github.com/tomharris/lw-manager/internal/studio"
 )
 
+// seedFrame stores one frame and returns its hash, so auth tests can target a
+// route that actually exists rather than a placeholder.
+func seedFrame(t *testing.T, store *corpus.Store, body string) string {
+	t.Helper()
+	f, _, err := store.Add(corpus.Unsorted, []byte(body))
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	return f.Hash
+}
+
 func newTestServer(t *testing.T, token string) (*studio.Server, *corpus.Store) {
 	t.Helper()
 	store := corpus.New(t.TempDir())
@@ -2352,10 +2363,24 @@ func TestRequireTokenIsTrueOnlyForNonLoopbackBinds(t *testing.T) {
 }
 
 func TestUnauthenticatedRequestsAreRejected(t *testing.T) {
+	srv, store := newTestServer(t, "s3cret")
+	hash := seedFrame(t, store, "frame-bytes")
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/frame/"+hash, nil))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+// Auth is checked before routing, so an unknown path must still 401 rather
+// than leaking which routes exist.
+func TestUnauthenticatedRequestsTo404PathsAreStillRejected(t *testing.T) {
 	srv, _ := newTestServer(t, "s3cret")
 	rec := httptest.NewRecorder()
 
-	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
@@ -2363,10 +2388,11 @@ func TestUnauthenticatedRequestsAreRejected(t *testing.T) {
 }
 
 func TestTokenInQueryStringSetsACookieAndAdmits(t *testing.T) {
-	srv, _ := newTestServer(t, "s3cret")
+	srv, store := newTestServer(t, "s3cret")
+	hash := seedFrame(t, store, "frame-bytes")
 	rec := httptest.NewRecorder()
 
-	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?t=s3cret", nil))
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/frame/"+hash+"?t=s3cret", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -2383,9 +2409,10 @@ func TestTokenInQueryStringSetsACookieAndAdmits(t *testing.T) {
 }
 
 func TestCookieAdmitsAndAWrongTokenDoesNot(t *testing.T) {
-	srv, _ := newTestServer(t, "s3cret")
+	srv, store := newTestServer(t, "s3cret")
+	hash := seedFrame(t, store, "frame-bytes")
 
-	ok := httptest.NewRequest(http.MethodGet, "/", nil)
+	ok := httptest.NewRequest(http.MethodGet, "/frame/"+hash, nil)
 	ok.AddCookie(&http.Cookie{Name: studio.CookieName, Value: "s3cret"})
 	recOK := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(recOK, ok)
@@ -2393,7 +2420,7 @@ func TestCookieAdmitsAndAWrongTokenDoesNot(t *testing.T) {
 		t.Fatalf("valid cookie: status = %d, want 200", recOK.Code)
 	}
 
-	bad := httptest.NewRequest(http.MethodGet, "/", nil)
+	bad := httptest.NewRequest(http.MethodGet, "/frame/"+hash, nil)
 	bad.AddCookie(&http.Cookie{Name: studio.CookieName, Value: "wrong"})
 	recBad := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(recBad, bad)
@@ -2566,15 +2593,14 @@ func RequireToken(addr string) bool {
 }
 
 // Handler returns the routed, token-gated handler.
+//
+// Routes are registered by the task that implements them: Task 8 adds the
+// label grid and capture routes, Task 9 the crop routes. Registering a route
+// before its handler exists would mean shipping stubs, and a stub is
+// indistinguishable from dead code to everyone who reads it later.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", s.handleUnsorted)
-	mux.HandleFunc("GET /labeled", s.handleLabeled)
-	mux.HandleFunc("GET /crop", s.handleCropView)
 	mux.HandleFunc("GET /frame/{hash}", s.handleFrame)
-	mux.HandleFunc("POST /label", s.handleLabel)
-	mux.HandleFunc("POST /capture", s.handleCapture)
-	mux.HandleFunc("POST /crop", s.handleCrop)
 	return s.authenticate(mux)
 }
 
@@ -2627,24 +2653,14 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-The remaining handlers (`handleUnsorted`, `handleLabeled`, `handleCropView`,
-`handleLabel`, `handleCapture`, `handleCrop`) arrive in Tasks 8 and 9. To keep
-this task compiling and its tests meaningful, add temporary stubs at the
-bottom of `studio.go` that Task 8 replaces:
-
-```go
-func (s *Server) handleUnsorted(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
-func (s *Server) handleLabeled(w http.ResponseWriter, r *http.Request)  { w.WriteHeader(http.StatusOK) }
-func (s *Server) handleCropView(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
-func (s *Server) handleLabel(w http.ResponseWriter, r *http.Request)    { w.WriteHeader(http.StatusOK) }
-func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request)  { w.WriteHeader(http.StatusOK) }
-func (s *Server) handleCrop(w http.ResponseWriter, r *http.Request)     { w.WriteHeader(http.StatusOK) }
-```
+Write **no** stub handlers. The remaining handlers arrive with their routes in
+Tasks 8 and 9. A stub that returns 200 is indistinguishable from dead code to
+every later reader, and it makes a route look implemented when it is not.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./internal/studio/... -v`
-Expected: PASS, seven tests.
+Expected: PASS, eight tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2664,7 +2680,7 @@ rule itself testable, and treats a bare port as the most exposed case."
 
 **Files:**
 - Create: `internal/studio/views.go`, `internal/studio/handlers.go`, `internal/studio/handlers_test.go`
-- Modify: `internal/studio/studio.go` (delete the four stubs this task replaces)
+- Modify: `internal/studio/studio.go` (register this task's four routes)
 
 **Interfaces:**
 - Consumes: `Server` fields from Task 7; `corpus.Store.List/Labels/Relabel/Add`; `transport.Transport.Screenshot`.
@@ -2841,8 +2857,8 @@ func TestLabeledBrowserGroupsFramesByLabel(t *testing.T) {
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./internal/studio/... -run 'Unsorted|Label|Capture'`
-Expected: FAIL — the stubs return 200 with an empty body, so the hash and
-label assertions fail.
+Expected: FAIL — the routes are not registered yet, so every request 404s
+and the status assertions fail.
 
 - [ ] **Step 3: Write the views**
 
@@ -3070,8 +3086,15 @@ Add `"html/template"` to the import block for the `render` signature. The
 buffer-first behaviour is the part that matters: a template failure must not
 arrive after a 200 has already been committed.
 
-Finally, delete the corresponding stubs from `studio.go`, leaving only
-`handleCropView` and `handleCrop` for Task 9.
+Finally, register this task's routes in `Handler()` in `studio.go`, alongside
+the `GET /frame/{hash}` line Task 7 added:
+
+```go
+	mux.HandleFunc("GET /", s.handleUnsorted)
+	mux.HandleFunc("GET /labeled", s.handleLabeled)
+	mux.HandleFunc("POST /label", s.handleLabel)
+	mux.HandleFunc("POST /capture", s.handleCapture)
+```
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -3103,7 +3126,7 @@ attached so a phoneless machine can still label."
 ## Task 9: Crop view and template cutting
 
 **Files:**
-- Modify: `internal/studio/views.go`, `internal/studio/handlers.go`, `internal/studio/handlers_test.go`, `internal/studio/studio.go` (delete the last two stubs)
+- Modify: `internal/studio/views.go`, `internal/studio/handlers.go`, `internal/studio/handlers_test.go`, `internal/studio/studio.go` (register this task's two routes)
 
 **Interfaces:**
 - Consumes: `vision.Crop(img image.Image, r transport.Rect) image.Image`, `vision.WriteAnchor`, `vision.AnchorSpec` (Task 6); `transport.Rect`.
@@ -3282,7 +3305,8 @@ func pngBytes(t *testing.T, w, h int) []byte {
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./internal/studio/... -run Crop`
-Expected: FAIL — the stubs return 200 with an empty body.
+Expected: FAIL — the crop routes are not registered yet, so both requests
+404.
 
 - [ ] **Step 3: Add the crop view**
 
@@ -3462,7 +3486,12 @@ func rectFromForm(r *http.Request) (transport.Rect, error) {
 
 Add `"fmt"`, `"strconv"`, `"github.com/tomharris/lw-manager/internal/transport"`
 and `"github.com/tomharris/lw-manager/internal/vision"` to the imports. Then
-delete the last two stubs from `studio.go`.
+register this task's routes in `Handler()` in `studio.go`:
+
+```go
+	mux.HandleFunc("GET /crop", s.handleCropView)
+	mux.HandleFunc("POST /crop", s.handleCrop)
+```
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
