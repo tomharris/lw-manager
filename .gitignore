@@ -13,6 +13,10 @@ data/
 .claude/worktrees/
 .superpowers/
 
-# Captured fixtures are large; track deliberately, not by accident.
+# Captured fixtures are large; track deliberately, not by accident. This
+# already covers the corpus tool's frames (fixtures/corpus/<label>/<hash>.png):
+# they live in the blob store, not git. fixtures/corpus/index.yaml is a
+# .yaml file, so it falls outside this rule and stays committable, same as
+# the manifest.yaml exception below.
 fixtures/**/*.png
 !fixtures/**/manifest.yaml

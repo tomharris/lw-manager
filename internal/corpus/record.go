@@ -20,7 +20,10 @@ type RecordOptions struct {
 	Count int
 	// Sleep waits between frames. It is injected rather than taken from
 	// internal/runtime so this package stays a filesystem leaf; the caller
-	// supplies a jittered sleep and satisfies invariant #7 there.
+	// supplies a jittered sleep and satisfies invariant #7 there. A nil Sleep
+	// defaults to a no-op, so a nil Sleep combined with Count: 0 provides no
+	// pacing at all, and the loop then yields only on context cancellation or
+	// a source error.
 	Sleep func(ctx context.Context) error
 	// Meta is stamped on every frame captured during this run. It cannot be
 	// recovered from a PNG's bytes, so it has to be carried in.
