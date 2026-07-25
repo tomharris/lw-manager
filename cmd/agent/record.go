@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"image/png"
+	"log/slog"
 	"math/rand"
 	"time"
 
@@ -112,15 +113,35 @@ func runRecord(ctx context.Context, cfg config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	if dupes := corpus.Duplicates(frames); len(dupes) > 0 {
-		return fmt.Errorf("corpus: %d frame(s) filed under more than one label, refusing to write %s: %v (delete the copy under the wrong label)",
-			len(dupes), store.IndexPath(), dupes)
-	}
 	if err := store.WriteIndex(corpus.Reindex(prev, frames, result.Metas)); err != nil {
 		return err
 	}
 
+	// stdout stays machine-readable; it must appear whether or not the
+	// duplicate check below finds anything. An operator who just captured
+	// 200 frames needs to see what survived even when this run also
+	// surfaces a pre-existing defect.
 	fmt.Printf("captured=%d duplicates=%d corpus=%s device=%s resolution=%dx%d game_version=%s\n",
 		result.Captured, result.Duplicates, *root, model, res.X, res.Y, gameVersion)
+
+	// Report, don't refuse, on a cross-label duplicate here — the opposite of
+	// what `agent corpus index` does, deliberately. corpus.Record writes
+	// through Store.Add, which dedups by content hash against the whole
+	// tree before a second copy of the same bytes is ever created, so
+	// record itself cannot produce this condition; a duplicate found here
+	// predates the session (a `cp` where a `mv` was meant). This session's
+	// Meta — device model, game version, capture timestamps — exists only
+	// in memory until the WriteIndex above, and the frames are already
+	// durably on disk, so refusing to write would destroy real, freshly
+	// captured metadata to punish a defect this run did not cause. Warn
+	// loudly, exit non-zero so the defect is not missed, but only after the
+	// index and summary are safely out. `agent corpus index` hard-fails
+	// instead because producing a trustworthy canonical index is its entire
+	// job, and there is nothing of this session's to lose there.
+	if dupes := corpus.Duplicates(frames); len(dupes) > 0 {
+		slog.Warn("corpus has frames filed under more than one label; index was still written",
+			"hashes", dupes, "fix", "delete the copy under the wrong label, then run: agent corpus index")
+		return fmt.Errorf("corpus: %d frame(s) filed under more than one label (see warning above)", len(dupes))
+	}
 	return nil
 }

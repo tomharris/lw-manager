@@ -249,9 +249,13 @@ func ParseVersionName(dumpsys string) string {
 // general shell escape hatch to it would hand every caller a way around
 // invariant #1.
 //
-// Neither value is essential to capturing, so a failure to read one yields an
-// empty string rather than an error: an unknown game version is worth
-// recording as unknown, and is not a reason to abandon a capture session.
+// A failed model read is a hard error: getprop failing on a device that is
+// already attached and probed is genuinely anomalous, not a condition worth
+// papering over. The game version is different — it is not essential to
+// capturing, and the game may not be installed on a device used only for
+// capture — so a failed dumpsys yields an empty gameVersion rather than an
+// error: unknown is worth recording as unknown, and is not a reason to
+// abandon a capture session.
 func DeviceProps(ctx context.Context, adbPath, serial, pkg string) (model, gameVersion string, err error) {
 	args := func(rest ...string) []string {
 		return append([]string{"-s", serial}, rest...)
