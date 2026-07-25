@@ -5,12 +5,13 @@ import (
 	"time"
 )
 
-// jitter draws a uniform duration in [min, max]. Fixed timing is the most
-// detectable signal the platform emits, so every wait in the runtime funnels
-// through here (invariant #7). Inverted or equal bounds collapse to min
-// rather than panicking: a misconfigured range should still humanize, not
-// crash mid-task.
-func jitter(r *rand.Rand, min, max time.Duration) time.Duration {
+// Jitter draws a uniform duration in [min, max]. Fixed timing is the most
+// detectable signal the platform emits, so every wait funnels through here
+// (invariant #7). It is exported so callers outside the task runtime — the
+// corpus recorder, for one — can comply without constructing a Ctx.
+// Inverted or equal bounds collapse to min rather than panicking: a
+// misconfigured range should still humanize, not crash mid-task.
+func Jitter(r *rand.Rand, min, max time.Duration) time.Duration {
 	if max <= min {
 		return min
 	}
