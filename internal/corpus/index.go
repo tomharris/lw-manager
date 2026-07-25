@@ -69,7 +69,38 @@ func Reindex(prev Index, frames []Frame, metas map[string]Meta) Index {
 		}
 		out.Frames = append(out.Frames, e)
 	}
-	sort.Slice(out.Frames, func(i, j int) bool { return out.Frames[i].Hash < out.Frames[j].Hash })
+	sort.SliceStable(out.Frames, func(i, j int) bool { return out.Frames[i].Hash < out.Frames[j].Hash })
+	return out
+}
+
+// Duplicates returns the hashes that appear under more than one label,
+// sorted.
+//
+// Store.Add cannot produce this: it dedups by content hash before writing.
+// But the package doc explicitly invites hand-editing the tree with mv over
+// SSH, and a human typing cp instead of mv leaves the same bytes under two
+// label directories. A duplicated frame is then scored twice under two
+// different labels, so one of the two scores is necessarily wrong — quietly
+// lowering recognizer accuracy with no visible cause. Reindex does not pick
+// a winning label for a duplicate; it is not this package's call to make
+// silently. `agent corpus index` fails loudly on a non-empty result instead
+// (wired up in a later task).
+func Duplicates(frames []Frame) []string {
+	labels := make(map[string]map[string]bool)
+	for _, f := range frames {
+		if labels[f.Hash] == nil {
+			labels[f.Hash] = make(map[string]bool)
+		}
+		labels[f.Hash][f.Label] = true
+	}
+
+	var out []string
+	for hash, ls := range labels {
+		if len(ls) > 1 {
+			out = append(out, hash)
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 
