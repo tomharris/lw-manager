@@ -147,6 +147,16 @@ func ncc(frame *image.Gray, ox, oy int, tdev []float64, tVar float64, tw, th int
 	return num / math.Sqrt(tVar*pVar)
 }
 
+// Resize scales an image to exact dimensions, in grayscale.
+//
+// Exported so the scoring harness can synthesize a second resolution from a
+// one-handset corpus. That measures the matcher's scale handling; it is not
+// evidence of cross-device generalization, because a real second device
+// differs in DPI and therefore in layout and font hinting, not only in scale.
+func Resize(img image.Image, w, h int) *image.Gray {
+	return resizeGray(Grayscale(img), w, h)
+}
+
 // resizeGray nearest-neighbour resizes src to w×h. Nearest neighbour keeps the
 // template's hard edges (and matches Upscale for integer factors), which is
 // what NCC correlates against; interpolation would blur the very structure the

@@ -44,6 +44,7 @@ commands:
   record    burst-capture frames into the fixture corpus
   corpus    manage the fixture corpus: index, push, pull
   studio    serve the corpus labelling and cropping UI
+  score     score the recognizer against the labeled corpus (the M1 gate)
   devices   list attached adb devices
   accounts  list registered accounts
 `)
@@ -80,6 +81,8 @@ func run() error {
 		return runCorpus(ctx, cfg, os.Args[2:])
 	case "studio":
 		return runStudio(ctx, cfg, os.Args[2:])
+	case "score":
+		return runScore(ctx, cfg, os.Args[2:])
 	case "devices":
 		return runDevices(ctx, cfg)
 	case "accounts":

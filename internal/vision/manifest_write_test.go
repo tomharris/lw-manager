@@ -185,7 +185,7 @@ func TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails(t *testin
 	// A replacement strictly larger than the original, padded with filler
 	// bytes past the valid PNG data — it is never expected to be decoded,
 	// only to overrun the size limit below.
-	replacementBytes := append(append([]byte{}, original...), bytes.Repeat([]byte{0}, 64)...)
+	replacementBytes := append(append([]byte{}, original...), bytes.Repeat([]byte{0}, 131072)...)
 
 	// Exceeding RLIMIT_FSIZE delivers SIGXFSZ, whose default disposition
 	// kills the process; ignoring it makes the write syscall return EFBIG
@@ -196,7 +196,19 @@ func TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails(t *testin
 		t.Fatalf("Getrlimit: %v", err)
 	}
 	limited := oldLimit
-	limited.Cur = uint64(len(original)) + 8 // room for the restore write, not for the replacement
+	// Room for the restore write, not for the replacement. This margin has
+	// to be generous, not just "a few bytes": RLIMIT_FSIZE is process-wide,
+	// so while it is lowered it also constrains Go's own out-of-band test
+	// cache instrumentation (the "testlog" that records file accesses for
+	// cache invalidation and lives for the whole test binary run, not just
+	// this test), which can append to an unrelated file at any moment
+	// during the run. Measured at ~11KB for this package's suite as of the
+	// Evaluate/Rescale tests added in task 13; a margin of a few bytes or
+	// even 4KB was observed to make that unrelated write fail with "file
+	// too large" well before this test's own assertions run. 64KB is
+	// generous headroom over that, without being so large a real disk-full
+	// write of an oversized replacement could no longer exceed it.
+	limited.Cur = uint64(len(original)) + 65536
 	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limited); err != nil {
 		t.Fatalf("Setrlimit: %v", err)
 	}
