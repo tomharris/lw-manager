@@ -45,6 +45,42 @@ func TestScoreCountsANegativeCorrectOnlyWhenNothingWasRecognized(t *testing.T) {
 	}
 }
 
+// An empty label carries no ground truth. Score is the arbiter of the
+// accuracy gate, so malformed input must never read as a pass — not even
+// when the recognizer also failed and the two empty strings would otherwise
+// compare equal.
+func TestScoreNeverCreditsAnEmptyLabelWhenPredictionAlsoEmpty(t *testing.T) {
+	r := vision.Score([]vision.Prediction{
+		{Hash: "a", Label: "", Predicted: ""},
+	})
+
+	if r.Total != 1 {
+		t.Fatalf("Total = %d, want 1", r.Total)
+	}
+	if r.Correct != 0 {
+		t.Fatalf("Correct = %d, want 0", r.Correct)
+	}
+	if got := r.Matrix[""][vision.NonePrediction]; got != 1 {
+		t.Fatalf(`Matrix[""][%s] = %d, want 1`, vision.NonePrediction, got)
+	}
+}
+
+func TestScoreNeverCreditsAnEmptyLabelWhenPredictionNonEmpty(t *testing.T) {
+	r := vision.Score([]vision.Prediction{
+		{Hash: "b", Label: "", Predicted: "base"},
+	})
+
+	if r.Total != 1 {
+		t.Fatalf("Total = %d, want 1", r.Total)
+	}
+	if r.Correct != 0 {
+		t.Fatalf("Correct = %d, want 0", r.Correct)
+	}
+	if got := r.Matrix[""]["base"]; got != 1 {
+		t.Fatalf(`Matrix[""]["base"] = %d, want 1`, got)
+	}
+}
+
 func TestScoreOnAnEmptyCorpusIsZeroAccuracyNotNaN(t *testing.T) {
 	r := vision.Score(nil)
 

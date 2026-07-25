@@ -56,13 +56,19 @@ func Score(preds []Prediction) Report {
 		r.Matrix[p.Label][predicted]++
 		cols[predicted] = true
 
-		if p.Label == NoneLabel {
+		switch {
+		case p.Label == "":
+			// An empty label carries no ground truth, so nothing — not even
+			// another empty string — can match it correctly. Score is the
+			// arbiter of the accuracy gate, and malformed input must never
+			// read as a pass. It still counts toward Total and gets a matrix
+			// row: a corpus that produced blank labels is for the operator to
+			// see, not for this function to quietly absorb.
+		case p.Label == NoneLabel:
 			if p.Predicted == "" {
 				r.Correct++
 			}
-			continue
-		}
-		if p.Predicted == p.Label {
+		case p.Predicted == p.Label:
 			r.Correct++
 		}
 	}
