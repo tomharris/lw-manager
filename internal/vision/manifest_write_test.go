@@ -3,7 +3,7 @@ package vision_test
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -20,13 +20,16 @@ import (
 	"github.com/tomharris/lw-manager/internal/vision"
 )
 
-// writeAnchorCorruptChildEnv, when set in the environment, identifies this
-// process as the re-exec'd subprocess for
+// writeAnchorCorruptChildEnv, when set in the environment together with
+// writeAnchorCorruptChildDirEnv naming a directory that actually exists,
+// identifies this process as the re-exec'd subprocess for
 // TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails rather
-// than a normal test run; writeAnchorCorruptChildDirEnv carries the temp dir
-// the parent already seeded. The child never re-execs itself: it only ever
-// reaches runWriteAnchorCorruptChild, which calls os.Exit instead of
-// returning control to the testing framework.
+// than a normal test run — see isWriteAnchorCorruptChild. Requiring both,
+// and that the directory be real, means a lone stray marker (leaked from a
+// debug session, an exported shell variable, a CI step) falls through to
+// the ordinary parent path instead of being mistaken for a child. The child
+// never re-execs itself: the only place that spawns the subprocess is the
+// parent branch below, which the child never reaches.
 const (
 	writeAnchorCorruptChildEnv    = "LW_VISION_WRITE_ANCHOR_CORRUPT_CHILD"
 	writeAnchorCorruptChildDirEnv = "LW_VISION_WRITE_ANCHOR_CORRUPT_DIR"
@@ -195,12 +198,13 @@ func TestWriteAnchorRollsBackWhenTheResultWouldNotLoad(t *testing.T) {
 // directly — not through `go test`, which is what keeps the testlog
 // instrumentation out of it — with a marker environment variable. The
 // child, identified by that marker in runWriteAnchorCorruptChild, sets the
-// limit on itself, attempts the replacement, and exits; only the parent
-// makes assertions.
+// limit on itself, attempts the replacement, and reports through the normal
+// *testing.T failure path; only the parent makes assertions about the
+// resulting file state.
 func TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails(t *testing.T) {
-	if os.Getenv(writeAnchorCorruptChildEnv) != "" {
-		runWriteAnchorCorruptChild(os.Getenv(writeAnchorCorruptChildDirEnv))
-		return // unreachable: runWriteAnchorCorruptChild always calls os.Exit
+	if isWriteAnchorCorruptChild() {
+		runWriteAnchorCorruptChild(t, os.Getenv(writeAnchorCorruptChildDirEnv))
+		return
 	}
 
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
@@ -236,12 +240,22 @@ func TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails(t *testin
 		writeAnchorCorruptChildEnv+"=1",
 		writeAnchorCorruptChildDirEnv+"="+dir,
 	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			t.Fatalf("child process timed out before reporting the file-size-limited template write:\n%s", output)
+	output, runErr := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("child process timed out before reporting the file-size-limited template write:\n%s", output)
+	}
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			// The child itself is a normal test run, so its own t.Fatalf
+			// text — captured in output above — carries the specific
+			// reason: an unexpected successful write, a Getrlimit/Setrlimit
+			// setup error, or (if this ever ran with a stray marker and no
+			// real seeded dir) something else entirely. This message only
+			// needs to say where to look.
+			t.Fatalf("child process exited non-zero (%s) instead of confirming the file-size-limited template write failed as expected; see its test output above for why:\n%s", exitErr.ProcessState, output)
 		}
-		t.Fatalf("child process did not report the expected file-size-limited template write failure: %v\n%s", err, output)
+		t.Fatalf("child process could not be started or run to completion (%v), independent of the write itself:\n%s", runErr, output)
 	}
 
 	after, err := os.ReadFile(tmplPath)
@@ -256,23 +270,45 @@ func TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails(t *testin
 	}
 }
 
+// isWriteAnchorCorruptChild reports whether this process was re-exec'd to
+// play the corrupting-child role, rather than merely having the marker
+// environment variable present by accident. Both the marker and the
+// directory variable must be set, and the directory must actually exist:
+// a lone leaked marker (a debug session, an exported shell variable, a CI
+// step) is not enough to divert a normal test run into the child branch.
+func isWriteAnchorCorruptChild() bool {
+	if os.Getenv(writeAnchorCorruptChildEnv) == "" {
+		return false
+	}
+	dir := os.Getenv(writeAnchorCorruptChildDirEnv)
+	if dir == "" {
+		return false
+	}
+	info, err := os.Stat(dir)
+	return err == nil && info.IsDir()
+}
+
 // runWriteAnchorCorruptChild is the subprocess side of
 // TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails. It runs
 // in a re-exec'd copy of the test binary, invoked as a plain executable
 // rather than through `go test`, so setting a process-wide RLIMIT_FSIZE and
 // ignoring SIGXFSZ here never touches the shared test binary every other
-// test in this package runs in. It never re-execs itself — the marker check
-// in the caller only routes here once — and it asserts nothing beyond its
-// own setup: its only job is to leave the template file on disk corrupted
-// and then restored (or not, if the bug under test has regressed) for the
-// parent to inspect once it exits. It always calls os.Exit and never
-// returns control to the testing framework.
-func runWriteAnchorCorruptChild(dir string) {
+// test in this package runs in.
+//
+// It reports every failure — setup problems and an unexpectedly successful
+// write alike — through the ordinary t.Fatalf path rather than os.Exit.
+// That still yields a non-zero process exit for the parent's
+// cmd.CombinedOutput() check to see, but it means a misfire here (for
+// instance isWriteAnchorCorruptChild letting a stray marker through) costs
+// exactly this one test, the same as any other test failure, rather than
+// os.Exit tearing down the whole binary and silently skipping every test
+// that would have run after it — the same shared-process blast radius this
+// task exists to remove, just moved from a syscall to an exit call.
+func runWriteAnchorCorruptChild(t *testing.T, dir string) {
 	tmplPath := filepath.Join(dir, "alliance", "alliance_button.png")
 	original, err := os.ReadFile(tmplPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "child: reading seeded template: %v\n", err)
-		os.Exit(2)
+		t.Fatalf("child: reading seeded template: %v", err)
 	}
 
 	// A replacement strictly larger than the original, padded with filler
@@ -287,13 +323,11 @@ func runWriteAnchorCorruptChild(dir string) {
 	signal.Ignore(syscall.SIGXFSZ)
 	var limited syscall.Rlimit
 	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &limited); err != nil {
-		fmt.Fprintf(os.Stderr, "child: Getrlimit: %v\n", err)
-		os.Exit(2)
+		t.Fatalf("child: Getrlimit: %v", err)
 	}
 	limited.Cur = uint64(len(original)) + templateWriteMargin
 	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limited); err != nil {
-		fmt.Fprintf(os.Stderr, "child: Setrlimit: %v\n", err)
-		os.Exit(2)
+		t.Fatalf("child: Setrlimit: %v", err)
 	}
 
 	manifest := filepath.Join(dir, "manifest.yaml")
@@ -301,11 +335,9 @@ func runWriteAnchorCorruptChild(dir string) {
 	replacement.Threshold = 0.5
 	writeErr := vision.WriteAnchor(manifest, 2400, replacement, replacementBytes)
 	if writeErr == nil {
-		fmt.Fprintln(os.Stderr, "child: WriteAnchor did not report the file-size-limited template write; RLIMIT_FSIZE did not constrain it as expected")
-		os.Exit(1)
+		t.Fatal("child: WriteAnchor did not report the file-size-limited template write; RLIMIT_FSIZE did not constrain it as expected")
 	}
-	fmt.Fprintf(os.Stderr, "child: WriteAnchor failed as expected: %v\n", writeErr)
-	os.Exit(0)
+	t.Logf("child: WriteAnchor failed as expected: %v", writeErr)
 }
 
 func TestWriteAnchorRejectsAChangeOfReferenceHeight(t *testing.T) {
