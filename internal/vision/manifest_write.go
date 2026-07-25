@@ -43,7 +43,7 @@ func WriteAnchor(manifestPath string, refHeight int, spec AnchorSpec, pngBytes [
 			spec.Screen, spec.ID, spec.Threshold)
 	}
 
-	mf, prevManifest, err := readManifest(manifestPath)
+	mf, prevManifest, manifestExisted, err := readManifest(manifestPath)
 	if err != nil {
 		return err
 	}
@@ -65,11 +65,18 @@ func WriteAnchor(manifestPath string, refHeight int, spec AnchorSpec, pngBytes [
 	if err != nil {
 		return err
 	}
+	// os.WriteFile truncates before writing, so a failure partway through
+	// (disk full, permissions revoked) can leave a previously-good template
+	// corrupt while the manifest still names it as valid. Define the
+	// restore before attempting the write so that failure is covered too,
+	// not just the later manifest-write and revalidation failures.
+	restoreTemplate := func() { restore(tmplPath, prevTemplate, hadTemplate) }
 
 	if err := os.MkdirAll(filepath.Dir(tmplPath), 0o755); err != nil {
 		return fmt.Errorf("vision: creating %s: %w", filepath.Dir(tmplPath), err)
 	}
 	if err := os.WriteFile(tmplPath, pngBytes, 0o644); err != nil {
+		restoreTemplate()
 		return fmt.Errorf("vision: writing template %s: %w", tmplPath, err)
 	}
 
@@ -99,8 +106,8 @@ func WriteAnchor(manifestPath string, refHeight int, spec AnchorSpec, pngBytes [
 	mf.Screens[spec.Screen] = sm
 
 	rollback := func() {
-		restore(manifestPath, prevManifest, len(prevManifest) > 0)
-		restore(tmplPath, prevTemplate, hadTemplate)
+		restore(manifestPath, prevManifest, manifestExisted)
+		restoreTemplate()
 	}
 	if err := writeManifestFile(manifestPath, mf); err != nil {
 		rollback()
@@ -120,7 +127,7 @@ func WriteAnchor(manifestPath string, refHeight int, spec AnchorSpec, pngBytes [
 // `agent score --apply-thresholds`, and silently skipping a key there would
 // report success while leaving the anchor that actually needs fixing alone.
 func SetThresholds(manifestPath string, thresholds map[string]float64) error {
-	mf, prevManifest, err := readManifest(manifestPath)
+	mf, prevManifest, manifestExisted, err := readManifest(manifestPath)
 	if err != nil {
 		return err
 	}
@@ -148,32 +155,35 @@ func SetThresholds(manifestPath string, thresholds map[string]float64) error {
 	}
 
 	if err := writeManifestFile(manifestPath, mf); err != nil {
-		restore(manifestPath, prevManifest, len(prevManifest) > 0)
+		restore(manifestPath, prevManifest, manifestExisted)
 		return err
 	}
 	if _, err := LoadRegistry(manifestPath); err != nil {
-		restore(manifestPath, prevManifest, len(prevManifest) > 0)
+		restore(manifestPath, prevManifest, manifestExisted)
 		return fmt.Errorf("vision: threshold update would break the manifest, rolled back: %w", err)
 	}
 	return nil
 }
 
-// readManifest loads the manifest for editing, returning its raw bytes so a
-// failed write can be rolled back exactly. A missing file is an empty
-// manifest: the first crop creates it.
-func readManifest(path string) (manifestFile, []byte, error) {
-	raw, err := os.ReadFile(path)
+// readManifest loads the manifest for editing, returning its raw bytes and
+// whether the file existed at all so a failed write can be rolled back
+// exactly. Inferring "existed" from a non-empty byte slice would misclassify
+// a pre-existing zero-byte manifest as absent and delete it instead of
+// restoring it, so the existed bool is threaded explicitly, the same way
+// readIfExists does for the template. A missing file is an empty manifest:
+// the first crop creates it.
+func readManifest(path string) (mf manifestFile, raw []byte, existed bool, err error) {
+	raw, err = os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return manifestFile{}, nil, nil
+		return manifestFile{}, nil, false, nil
 	}
 	if err != nil {
-		return manifestFile{}, nil, fmt.Errorf("vision: reading manifest %s: %w", path, err)
+		return manifestFile{}, nil, false, fmt.Errorf("vision: reading manifest %s: %w", path, err)
 	}
-	var mf manifestFile
 	if err := yaml.Unmarshal(raw, &mf); err != nil {
-		return manifestFile{}, nil, fmt.Errorf("vision: parsing manifest %s: %w", path, err)
+		return manifestFile{}, nil, false, fmt.Errorf("vision: parsing manifest %s: %w", path, err)
 	}
-	return mf, raw, nil
+	return mf, raw, true, nil
 }
 
 func writeManifestFile(path string, mf manifestFile) error {

@@ -6,7 +6,10 @@ import (
 	"image/color"
 	"image/png"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"runtime"
+	"syscall"
 	"testing"
 
 	"github.com/tomharris/lw-manager/internal/transport"
@@ -125,6 +128,100 @@ func TestWriteAnchorRollsBackWhenTheResultWouldNotLoad(t *testing.T) {
 	}
 	if _, err := vision.LoadRegistry(manifest); err != nil {
 		t.Fatalf("registry no longer loads after a rolled-back write: %v", err)
+	}
+}
+
+// TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails guards
+// the failure mode where os.WriteFile truncates a file before writing its
+// new contents: if the write that replaces an existing template fails
+// partway through (disk full, in production), the previously-good template
+// is already gone by the time the error surfaces, while the manifest still
+// names it as valid — the exact failure this package's rollback exists to
+// prevent, just relocated from the manifest to the file it names.
+//
+// A chmod on the file or its directory does not reproduce this: an
+// existing, already-open-for-write-permitted file can still be truncated
+// regardless of the directory's mode, and denying write on the file itself
+// makes the open() call fail outright, before any truncation — so the
+// original content is never actually touched, and the test would pass
+// whether or not the rollback code runs at all (verified by temporarily
+// removing the rollback call: a permission-denied version of this test
+// still passed). A per-process file-size limit (RLIMIT_FSIZE) does
+// reproduce it: the O_TRUNC open succeeds, some bytes land, and the write
+// is cut off mid-stream, corrupting the file for real.
+//
+// The limit has to sit strictly between the original template's size and
+// the replacement's: too low, and the internal restore — which writes back
+// exactly the original byte count — would be truncated by the same limit
+// it is trying to recover from, making the scenario unrecoverable by any
+// implementation and the test meaningless. Sized correctly, the replacing
+// write overruns the limit and corrupts the file, while the restore's
+// smaller write fits under it and succeeds — the same relationship a real
+// disk-full failure has, since O_TRUNC frees the original content's space
+// before the write, leaving room for something no larger than what was
+// just freed.
+func TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("RLIMIT_FSIZE is POSIX-only")
+	}
+
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "manifest.yaml")
+	original := tinyPNG(t)
+	good := spec("alliance", "alliance_button")
+	if err := vision.WriteAnchor(manifest, 2400, good, original); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	tmplPath := filepath.Join(dir, "alliance", "alliance_button.png")
+	onDisk, err := os.ReadFile(tmplPath)
+	if err != nil {
+		t.Fatalf("reading seeded template: %v", err)
+	}
+	if !bytes.Equal(onDisk, original) {
+		t.Fatalf("seeded template on disk (%d bytes) does not match what was written (%d bytes)", len(onDisk), len(original))
+	}
+
+	// A replacement strictly larger than the original, padded with filler
+	// bytes past the valid PNG data — it is never expected to be decoded,
+	// only to overrun the size limit below.
+	replacementBytes := append(append([]byte{}, original...), bytes.Repeat([]byte{0}, 64)...)
+
+	// Exceeding RLIMIT_FSIZE delivers SIGXFSZ, whose default disposition
+	// kills the process; ignoring it makes the write syscall return EFBIG
+	// instead.
+	signal.Ignore(syscall.SIGXFSZ)
+	var oldLimit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &oldLimit); err != nil {
+		t.Fatalf("Getrlimit: %v", err)
+	}
+	limited := oldLimit
+	limited.Cur = uint64(len(original)) + 8 // room for the restore write, not for the replacement
+	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limited); err != nil {
+		t.Fatalf("Setrlimit: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Setrlimit(syscall.RLIMIT_FSIZE, &oldLimit) })
+
+	replacement := spec("alliance", "alliance_button")
+	replacement.Threshold = 0.5
+	writeErr := vision.WriteAnchor(manifest, 2400, replacement, replacementBytes)
+
+	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &oldLimit); err != nil {
+		t.Fatalf("restoring RLIMIT_FSIZE: %v", err)
+	}
+	if writeErr == nil {
+		t.Fatal("WriteAnchor did not report the file-size-limited template write")
+	}
+
+	after, err := os.ReadFile(tmplPath)
+	if err != nil {
+		t.Fatalf("reading template after the failed write: %v", err)
+	}
+	if !bytes.Equal(original, after) {
+		t.Fatalf("template not restored after a truncated write: got %d bytes, want the original %d back", len(after), len(original))
+	}
+	if _, err := vision.LoadRegistry(manifest); err != nil {
+		t.Fatalf("registry no longer loads after a rolled-back template write: %v", err)
 	}
 }
 
