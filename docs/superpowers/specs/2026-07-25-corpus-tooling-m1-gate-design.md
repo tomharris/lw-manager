@@ -45,7 +45,7 @@ studio auth beyond a shared token, multi-device orchestration.
 | Labeling surface | Served web UI | The build host is headless and driven over SSH. A browser on the laptop is the only place a screenshot can be looked at, so labeling *and* cropping must live there |
 | Threshold tuning | Batch CLI report, not UI sliders | The number wanted is the one separating true from false positives across 200 frames. A program computes that better than a human drags a slider — which collapses most of the argument for an interactive studio |
 | Label storage | The directory *is* the label | No sidecar or index file to desynchronize. Fixable over SSH with `mv`, and it makes `internal/corpus` a thin `Store` over a root directory |
-| Frame naming | Content hash, `<sha256[:12]>.png` | Free deduplication. A burst capture of an idle base screen collapses to one frame instead of forty skewing the accuracy denominator |
+| Frame naming | Content hash, `<sha256>.png` | Free deduplication. A burst capture of an idle base screen collapses to one frame instead of forty skewing the accuracy denominator. The full digest rather than a prefix, so a filename is directly a `blob.Key` input and `push` never has to re-hash to find out where a frame belongs |
 | Corpus bytes | Blob store, with a committed `index.yaml` | 200+ full-resolution screenshots is 300–600 MB, which git keeps in history forever. Frames are already content-addressed, so `internal/blob` fits without adaptation |
 | Negatives | Part of the gate, not a separate figure | Without them the gate is passable with thresholds so loose every frame matches something, and a misidentified screen is exactly the blind tap invariant #3 forbids |
 | Second resolution | Synthetic rescale at score time | Only one handset exists and the emulator cannot reach logged-in screens. Tests the matcher's scale handling; explicitly *not* a claim of cross-device generalization |
@@ -68,7 +68,7 @@ cmd/agent         new: `agent record`  — burst capture into _unsorted/
                        `agent studio`  — the served labeling/cropping UI
                        `agent score`   — the gate harness
                        `agent corpus`  — index | push | pull
-fixtures/corpus/  <label>/<hash>.png working tree; index.yaml committed
+fixtures/corpus/  <label>/<sha256>.png working tree; index.yaml committed
 templates/        manifest.yaml + anchor PNGs, written by the crop view
 ```
 
