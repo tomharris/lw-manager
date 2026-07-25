@@ -312,10 +312,18 @@ func pngBytes(t *testing.T, w, h int) []byte {
 
 // handleLabel's redirect target is derived from Referer, which is untrusted
 // input: it can be absent (privacy-hardened browsers, extensions, non-browser
-// clients) or point off-host. Both must fall back to "/" rather than
-// producing an empty Location (which re-requests /label as a GET, and only
-// POST is registered — a 404 mid-labelling) or sending the operator off-site.
-func TestPostLabelWithNoRefererRedirectsHome(t *testing.T) {
+// clients), point off-host, or exploit a parser disagreement between this
+// server and the browser (see safeRedirectTarget). All of that must fall
+// back to "/" rather than producing an empty Location (which re-requests
+// /label as a GET, and only POST is registered — a 404 mid-labelling) or
+// sending the operator off-site.
+//
+// postLabelWithReferer posts a valid /label request carrying the given
+// Referer (or no header at all, when setReferer is false) and returns the
+// resulting Location header. It is shared by the safeRedirectTarget cases
+// below, which all differ only in the Referer they send.
+func postLabelWithReferer(t *testing.T, setReferer bool, referer string) string {
+	t.Helper()
 	srv, store := newTestServer(t, "s3cret")
 	f, _, err := store.Add(corpus.Unsorted, []byte("frame-bytes"))
 	if err != nil {
@@ -324,35 +332,50 @@ func TestPostLabelWithNoRefererRedirectsHome(t *testing.T) {
 
 	form := url.Values{"hash": {f.Hash}, "label": {"alliance"}}
 	req := authed(t, http.MethodPost, "/label", form.Encode())
-	req.Header.Del("Referer")
+	if setReferer {
+		req.Header.Set("Referer", referer)
+	} else {
+		req.Header.Del("Referer")
+	}
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303", rec.Code)
 	}
-	if loc := rec.Header().Get("Location"); loc != "/" {
-		t.Fatalf("Location = %q, want /", loc)
+	return rec.Header().Get("Location")
+}
+
+func TestPostLabelWithNoRefererRedirectsHome(t *testing.T) {
+	if loc := postLabelWithReferer(t, false, ""); loc != "/" {
+		t.Fatalf("Location = %q, want exactly /", loc)
 	}
 }
 
 func TestPostLabelWithAnOffHostRefererRedirectsHomeNotOffSite(t *testing.T) {
-	srv, store := newTestServer(t, "s3cret")
-	f, _, err := store.Add(corpus.Unsorted, []byte("frame-bytes"))
-	if err != nil {
-		t.Fatalf("Add: %v", err)
+	if loc := postLabelWithReferer(t, true, "https://evil.example/whatever"); loc != "/" {
+		t.Fatalf("Location = %q, want exactly / (not the off-host referer)", loc)
 	}
+}
 
-	form := url.Values{"hash": {f.Hash}, "label": {"alliance"}}
-	req := authed(t, http.MethodPost, "/label", form.Encode())
-	req.Header.Set("Referer", "https://evil.example/whatever")
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want 303", rec.Code)
+// Go's url.Parse follows RFC 3986, under which a backslash is not a path
+// separator, so this parses with an empty Host and looks like a harmless
+// relative path. Browsers follow the WHATWG URL spec, which normalizes "\"
+// to "/" before resolving Location, turning this exact string into
+// "//evil.example/phish" — a protocol-relative redirect straight off-site.
+// Host-comparison on the server's own parse of the string cannot catch this,
+// because the server and the browser parse it into different things; only
+// never echoing the header at all closes it.
+func TestPostLabelWithABackslashRefererRedirectsHome(t *testing.T) {
+	if loc := postLabelWithReferer(t, true, `/\evil.example/phish`); loc != "/" {
+		t.Fatalf("Location = %q, want exactly / (not a backslash-normalized off-site redirect)", loc)
 	}
-	if loc := rec.Header().Get("Location"); loc != "/" {
-		t.Fatalf("Location = %q, want / (not the off-host referer)", loc)
+}
+
+// A scheme-relative reference ("//host/path") is a valid off-host redirect
+// target in its own right, with no scheme or backslash trick needed.
+func TestPostLabelWithASchemeRelativeRefererRedirectsHome(t *testing.T) {
+	if loc := postLabelWithReferer(t, true, "//evil.example/phish"); loc != "/" {
+		t.Fatalf("Location = %q, want exactly / (not the scheme-relative referer)", loc)
 	}
 }

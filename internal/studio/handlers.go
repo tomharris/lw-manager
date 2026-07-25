@@ -82,26 +82,36 @@ func (s *Server) handleLabel(w http.ResponseWriter, r *http.Request) {
 // safeRedirectTarget picks where to send the browser back to after a label,
 // preferring the page it came from.
 //
-// Referer is not trusted as a redirect target: it is attacker- and
-// client-controlled, and privacy-hardened browsers, extensions, and
-// non-browser clients simply omit it. An absent Referer would otherwise
-// redirect to an empty Location, which re-requests /label as a GET — and
-// only POST is registered here, so the operator's "back to the grid" click
-// 404s mid-labelling. An off-host Referer is rejected outright rather than
-// followed, so a crafted header can never send the operator off-site.
+// This is an allowlist, not a validated echo of Referer, because a request
+// header cannot be parsed the same way by this server and by the browser
+// that will follow the Location it produces. Go's url.Parse follows
+// RFC 3986, under which a backslash is not a path separator, so
+// "/\evil.example/phish" parses with an empty Host and a literal-backslash
+// Path — it looks like a safe relative path. Browsers follow the WHATWG URL
+// spec instead, which normalizes "\" to "/" before resolving Location,
+// turning that exact same string into "//evil.example/phish": a
+// protocol-relative redirect straight off-site. Comparing parsed Host
+// fields (the previous approach) cannot close that gap, because the two
+// parsers disagree about what the string even is before comparison ever
+// happens. The only safe move is to never use any part of Referer as the
+// target: this studio has exactly two pages that carry a label form, "/"
+// and "/labeled", so their paths are checked and a literal, server-chosen
+// string is returned in every case — an absent Referer, an unparseable one,
+// an off-host one, a backslash-bearing one, or anything else falls back
+// to "/".
 func safeRedirectTarget(r *http.Request) string {
-	ref := r.Header.Get("Referer")
-	if ref == "" {
-		return "/"
-	}
-	u, err := url.Parse(ref)
+	u, err := url.Parse(r.Header.Get("Referer"))
 	if err != nil {
 		return "/"
 	}
-	if u.Host != "" && u.Host != r.Host {
+	switch u.Path {
+	case "/":
+		return "/"
+	case "/labeled":
+		return "/labeled"
+	default:
 		return "/"
 	}
-	return ref
 }
 
 // handleCapture grabs a frame from the device on demand. While cropping, the
