@@ -28,6 +28,13 @@ test-integration:
 test-device:
 	$(GO) test -tags=device -count=1 ./internal/transport/...
 
+# The M1 phase gate: recognizer accuracy against the real corpus. Device-free
+# but slow, so it is tagged out of `make test`. Skips when the corpus has not
+# been pulled.
+.PHONY: gate
+gate:
+	$(GO) test -tags=corpus -count=1 -v ./internal/vision/...
+
 .PHONY: lint
 lint:
 	$(GO) vet ./...

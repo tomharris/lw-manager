@@ -24,6 +24,12 @@ make build                    # bin/agent, bin/control
 ./bin/control pause --reason "alliance event"         # global kill switch
 ./bin/control resume
 ./bin/agent accounts                                 # what is registered
+
+./bin/agent record --interval 2s --duration 10m   # burst-capture the corpus
+./bin/agent studio --addr 0.0.0.0:8088            # label and crop, from a browser
+./bin/agent corpus index && ./bin/agent corpus push
+./bin/agent score                                 # the M1 gate, with diagnostics
+make gate                                         # the same gate, as a test
 ```
 
 `register` probes the device over adb rather than taking a resolution flag:
@@ -77,6 +83,9 @@ instead of creating a duplicate account.
   `//go:build device`, kept separate from `integration` because the
   infrastructure differs: adb, not Docker. Skips when no device is attached.
   This is the only place `ADBTransport` is exercised for real.
+- `make gate` — the M1 phase gate: recognizer accuracy against the real
+  corpus. Tagged `//go:build corpus`, device-free but slow, so it stays out
+  of `make test`. Skips when the corpus has not been pulled.
 - New packages get a fake or a replay path before they get a real
   implementation. `ReplayTransport` was written before `ADBTransport` was
   trusted, and that ordering is the pattern to follow.
@@ -124,6 +133,49 @@ Holds its last frame once fixtures run out, but caps total serves
 (`DefaultMaxServes`). Holding lets poll-until-recognized loops settle like a
 real idle device; the cap makes a non-converging task fail fast rather than
 hang the suite. Override per-test with `rt.MaxServes`.
+
+### The fixture corpus lives in the blob store, not in git
+
+200+ full-resolution screenshots is 300–600 MB, which git would keep in
+history forever. So `fixtures/corpus/<label>/<sha256>.png` is gitignored and
+the bytes live in the content-addressed blob store; only
+`fixtures/corpus/index.yaml` is committed. `agent corpus pull` materializes
+them, `push` uploads new ones, `index` regenerates the projection.
+
+**The label is the directory.** There is no sidecar metadata to fall out of
+sync, so a mislabel is fixed with `mv` and the corpus is inspectable without
+any of our code. `index.yaml` carries only what a PNG cannot: capture time,
+device model, and **game version** — which is what later explains a gate that
+used to pass and now does not.
+
+Two properties are load-bearing:
+
+- **A duplicate frame is dropped**, which is the opposite of the
+  `screenshots`-table rule above. There, identical bytes still earn a row
+  because each capture is a distinct observation. Here a duplicate is noise
+  that would weight the accuracy denominator toward whichever screen the
+  phone happened to idle on.
+- **Negatives are part of the gate.** `_none` frames are correct only when
+  recognition *fails*. Without them the gate is passable with thresholds so
+  loose that every frame matches something, and acting on a misidentified
+  screen is exactly the blind tap invariant #3 forbids.
+
+`agent score` prints a confusion matrix and a separation report keyed on
+**(anchor ID, screen)**, not on anchor ID alone: `registry.go` allows the same
+anchor ID to be declared on two different screens (a `back_button` on both,
+say), and collapsing those rows would let a healthy anchor mask a
+non-discriminative namesake. Each row is the actionable one: a positive gap
+between that anchor-on-that-screen's worst in-screen score and its best
+out-of-screen score means retune the threshold to the suggested midpoint, and
+a non-positive gap — or zero in-screen observations at all — means **recrop**,
+because no threshold can separate them. That distinction matters because
+recognition aggregates anchors by min per screen, so one bad anchor caps its
+entire screen.
+
+The recognizer needs an identifying anchor for **every** labeled screen, not
+just the six `DefaultGraph()` navigates. `alliance_members` and `vs_ranking`
+are in the corpus for M4; without anchors they would be wrong on every
+scoring run forever. Recognition and navigation are separate concerns.
 
 ## Layout
 
