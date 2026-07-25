@@ -2,18 +2,41 @@ package vision_test
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/tomharris/lw-manager/internal/transport"
 	"github.com/tomharris/lw-manager/internal/vision"
+)
+
+// writeAnchorCorruptChildEnv, when set in the environment, identifies this
+// process as the re-exec'd subprocess for
+// TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails rather
+// than a normal test run; writeAnchorCorruptChildDirEnv carries the temp dir
+// the parent already seeded. The child never re-execs itself: it only ever
+// reaches runWriteAnchorCorruptChild, which calls os.Exit instead of
+// returning control to the testing framework.
+const (
+	writeAnchorCorruptChildEnv    = "LW_VISION_WRITE_ANCHOR_CORRUPT_CHILD"
+	writeAnchorCorruptChildDirEnv = "LW_VISION_WRITE_ANCHOR_CORRUPT_DIR"
+
+	// templateWriteMargin sits strictly between the original template's
+	// size and the replacement's: room for the byte-for-byte restore write,
+	// not for the oversized replacement. Nothing else writes in the child
+	// process, so unlike a limit set on a shared, long-lived test binary,
+	// this doesn't need headroom for anything but the restore itself.
+	templateWriteMargin = 4096
 )
 
 // tinyPNG returns a valid 4x4 PNG so template loading succeeds.
@@ -160,7 +183,26 @@ func TestWriteAnchorRollsBackWhenTheResultWouldNotLoad(t *testing.T) {
 // disk-full failure has, since O_TRUNC frees the original content's space
 // before the write, leaving room for something no larger than what was
 // just freed.
+//
+// RLIMIT_FSIZE and the SIGXFSZ disposition are both process-wide, and a Go
+// test binary is one process shared by every test in the package. Setting
+// them here directly used to leave both in effect for whatever ran next:
+// the limit once collided with Go's own testlog (the out-of-band file-access
+// record the test cache uses, which lives for the whole binary run, not just
+// this test, and can write at any moment), and the ignored signal was never
+// reset. So the corrupting write happens in a throwaway subprocess instead:
+// the parent below seeds the good template, then re-execs the test binary
+// directly — not through `go test`, which is what keeps the testlog
+// instrumentation out of it — with a marker environment variable. The
+// child, identified by that marker in runWriteAnchorCorruptChild, sets the
+// limit on itself, attempts the replacement, and exits; only the parent
+// makes assertions.
 func TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails(t *testing.T) {
+	if os.Getenv(writeAnchorCorruptChildEnv) != "" {
+		runWriteAnchorCorruptChild(os.Getenv(writeAnchorCorruptChildDirEnv))
+		return // unreachable: runWriteAnchorCorruptChild always calls os.Exit
+	}
+
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("RLIMIT_FSIZE is POSIX-only")
 	}
@@ -182,6 +224,57 @@ func TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails(t *testin
 		t.Fatalf("seeded template on disk (%d bytes) does not match what was written (%d bytes)", len(onDisk), len(original))
 	}
 
+	// Re-exec this same test binary directly (never through `go test`) as
+	// the one process that carries the hostile rlimit. A generous timeout
+	// plus exec.CommandContext means a hung child gets killed rather than
+	// leaked, and t.TempDir() cleans up dir regardless of how this test
+	// ends.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails$")
+	cmd.Env = append(os.Environ(),
+		writeAnchorCorruptChildEnv+"=1",
+		writeAnchorCorruptChildDirEnv+"="+dir,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			t.Fatalf("child process timed out before reporting the file-size-limited template write:\n%s", output)
+		}
+		t.Fatalf("child process did not report the expected file-size-limited template write failure: %v\n%s", err, output)
+	}
+
+	after, err := os.ReadFile(tmplPath)
+	if err != nil {
+		t.Fatalf("reading template after the child's write attempt: %v\nchild output:\n%s", err, output)
+	}
+	if !bytes.Equal(original, after) {
+		t.Fatalf("template not restored after a truncated write: got %d bytes, want the original %d back\nchild output:\n%s", len(after), len(original), output)
+	}
+	if _, err := vision.LoadRegistry(manifest); err != nil {
+		t.Fatalf("registry no longer loads after a rolled-back template write: %v\nchild output:\n%s", err, output)
+	}
+}
+
+// runWriteAnchorCorruptChild is the subprocess side of
+// TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails. It runs
+// in a re-exec'd copy of the test binary, invoked as a plain executable
+// rather than through `go test`, so setting a process-wide RLIMIT_FSIZE and
+// ignoring SIGXFSZ here never touches the shared test binary every other
+// test in this package runs in. It never re-execs itself — the marker check
+// in the caller only routes here once — and it asserts nothing beyond its
+// own setup: its only job is to leave the template file on disk corrupted
+// and then restored (or not, if the bug under test has regressed) for the
+// parent to inspect once it exits. It always calls os.Exit and never
+// returns control to the testing framework.
+func runWriteAnchorCorruptChild(dir string) {
+	tmplPath := filepath.Join(dir, "alliance", "alliance_button.png")
+	original, err := os.ReadFile(tmplPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "child: reading seeded template: %v\n", err)
+		os.Exit(2)
+	}
+
 	// A replacement strictly larger than the original, padded with filler
 	// bytes past the valid PNG data — it is never expected to be decoded,
 	// only to overrun the size limit below.
@@ -189,52 +282,30 @@ func TestWriteAnchorRestoresACorruptedTemplateWhenTheReplaceWriteFails(t *testin
 
 	// Exceeding RLIMIT_FSIZE delivers SIGXFSZ, whose default disposition
 	// kills the process; ignoring it makes the write syscall return EFBIG
-	// instead.
+	// instead. Both are process-wide, but this process exists only to make
+	// this one write and then exit, so nothing else is affected.
 	signal.Ignore(syscall.SIGXFSZ)
-	var oldLimit syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &oldLimit); err != nil {
-		t.Fatalf("Getrlimit: %v", err)
+	var limited syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &limited); err != nil {
+		fmt.Fprintf(os.Stderr, "child: Getrlimit: %v\n", err)
+		os.Exit(2)
 	}
-	limited := oldLimit
-	// Room for the restore write, not for the replacement. This margin has
-	// to be generous, not just "a few bytes": RLIMIT_FSIZE is process-wide,
-	// so while it is lowered it also constrains Go's own out-of-band test
-	// cache instrumentation (the "testlog" that records file accesses for
-	// cache invalidation and lives for the whole test binary run, not just
-	// this test), which can append to an unrelated file at any moment
-	// during the run. Measured at ~11KB for this package's suite as of the
-	// Evaluate/Rescale tests added in task 13; a margin of a few bytes or
-	// even 4KB was observed to make that unrelated write fail with "file
-	// too large" well before this test's own assertions run. 64KB is
-	// generous headroom over that, without being so large a real disk-full
-	// write of an oversized replacement could no longer exceed it.
-	limited.Cur = uint64(len(original)) + 65536
+	limited.Cur = uint64(len(original)) + templateWriteMargin
 	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limited); err != nil {
-		t.Fatalf("Setrlimit: %v", err)
+		fmt.Fprintf(os.Stderr, "child: Setrlimit: %v\n", err)
+		os.Exit(2)
 	}
-	t.Cleanup(func() { _ = syscall.Setrlimit(syscall.RLIMIT_FSIZE, &oldLimit) })
 
+	manifest := filepath.Join(dir, "manifest.yaml")
 	replacement := spec("alliance", "alliance_button")
 	replacement.Threshold = 0.5
 	writeErr := vision.WriteAnchor(manifest, 2400, replacement, replacementBytes)
-
-	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &oldLimit); err != nil {
-		t.Fatalf("restoring RLIMIT_FSIZE: %v", err)
-	}
 	if writeErr == nil {
-		t.Fatal("WriteAnchor did not report the file-size-limited template write")
+		fmt.Fprintln(os.Stderr, "child: WriteAnchor did not report the file-size-limited template write; RLIMIT_FSIZE did not constrain it as expected")
+		os.Exit(1)
 	}
-
-	after, err := os.ReadFile(tmplPath)
-	if err != nil {
-		t.Fatalf("reading template after the failed write: %v", err)
-	}
-	if !bytes.Equal(original, after) {
-		t.Fatalf("template not restored after a truncated write: got %d bytes, want the original %d back", len(after), len(original))
-	}
-	if _, err := vision.LoadRegistry(manifest); err != nil {
-		t.Fatalf("registry no longer loads after a rolled-back template write: %v", err)
-	}
+	fmt.Fprintf(os.Stderr, "child: WriteAnchor failed as expected: %v\n", writeErr)
+	os.Exit(0)
 }
 
 func TestWriteAnchorRejectsAChangeOfReferenceHeight(t *testing.T) {
