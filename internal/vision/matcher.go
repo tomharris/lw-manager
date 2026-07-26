@@ -103,6 +103,35 @@ func Match(img image.Image, tmpl image.Image, region transport.Rect, refHeight i
 	if y2-y1 < th {
 		y2 = y1 + th
 	}
+	// The expansion above can push x2/y2 past the frame's own far edge when
+	// x1/y1 rounded toward it (a region flush against the right or bottom
+	// edge, sized within a pixel of the scaled template). The placement loop
+	// below is separately bounded by ox+tw<=fb.Max.X / oy+th<=fb.Max.Y and
+	// has no way to claim pixels beyond that, so an unclamped x2 past
+	// fb.Max.X silently shrinks the usable span below tw and the loop admits
+	// nothing. Shift the whole box back by the overrun instead of clamping
+	// only the far edge, so the span the loop actually gets to search keeps
+	// its full tw/th width. Then clamp x1/y1 to fb.Min: for a template that
+	// truly does not fit the frame (already rejected above by the
+	// tw>fb.Dx()/th>fb.Dy() check) this is unreachable, but it keeps the
+	// shift from ever producing a negative origin if that invariant is ever
+	// weakened.
+	if x2 > fb.Max.X {
+		overrun := x2 - fb.Max.X
+		x1 -= overrun
+		x2 -= overrun
+		if x1 < fb.Min.X {
+			x1 = fb.Min.X
+		}
+	}
+	if y2 > fb.Max.Y {
+		overrun := y2 - fb.Max.Y
+		y1 -= overrun
+		y2 -= overrun
+		if y1 < fb.Min.Y {
+			y1 = fb.Min.Y
+		}
+	}
 
 	best := MatchResult{Score: -2} // below any real NCC, which lives in [-1,1]
 	found := false
