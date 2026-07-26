@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -54,6 +55,42 @@ func tinyPNG(t *testing.T) []byte {
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
 		t.Fatalf("encoding test PNG: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// flatPNG returns a valid w×h PNG with every pixel the same value: what
+// cropping a blank stretch of UI produces. NCC is undefined against it (zero
+// variance), so WriteAnchor must never accept one.
+func flatPNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.SetGray(x, y, color.Gray{Y: 128})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encoding flat PNG: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// distinctPNG returns a valid w×h PNG with real, non-uniform structure, so it
+// passes the variance check on its own and any rejection in a test using it
+// must come from somewhere else.
+func distinctPNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.SetGray(x, y, color.Gray{Y: uint8((x*37 + y*53) % 256)})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encoding distinct PNG: %v", err)
 	}
 	return buf.Bytes()
 }
@@ -338,6 +375,99 @@ func runWriteAnchorCorruptChild(t *testing.T, dir string) {
 		t.Fatal("child: WriteAnchor did not report the file-size-limited template write; RLIMIT_FSIZE did not constrain it as expected")
 	}
 	t.Logf("child: WriteAnchor failed as expected: %v", writeErr)
+}
+
+// A flat crop produces a valid PNG with zero variance. Both WriteAnchor and
+// LoadRegistry only decode the PNG, so without a check here the anchor is
+// accepted, and every later Match against it fails with "template has zero
+// variance (uniform), NCC undefined" — a raw error, not ErrNoScreenRecognized,
+// so it aborts every task on every screen instead of routing through the
+// panic route.
+func TestWriteAnchorRejectsAZeroVarianceCropAndLeavesTheManifestUntouched(t *testing.T) {
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "manifest.yaml")
+	good := spec("alliance", "alliance_button")
+	if err := vision.WriteAnchor(manifest, 2400, good, tinyPNG(t)); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	before, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatalf("reading manifest: %v", err)
+	}
+
+	flat := spec("alliance", "flat")
+	err = vision.WriteAnchor(manifest, 2400, flat, flatPNG(t, 40, 30))
+	if err == nil {
+		t.Fatal("WriteAnchor accepted a flat (zero-variance) crop")
+	}
+	if !strings.Contains(err.Error(), "alliance") || !strings.Contains(err.Error(), "flat") {
+		t.Fatalf("error %q does not name the screen and anchor", err)
+	}
+
+	after, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatalf("reading manifest after rejection: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("manifest changed despite a rejected crop:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "alliance", "flat.png")); !os.IsNotExist(err) {
+		t.Fatal("the rejected template PNG was left behind")
+	}
+}
+
+// A region declared far smaller than the template's own proportions can
+// never place it — the same shape of bug as the studio's zero-slack crop
+// (see matcher_test.go), just arriving through a different, unvalidated
+// caller. WriteAnchor is the one place every caller passes through, so this
+// is where it has to be caught.
+func TestWriteAnchorRejectsARegionThatCannotPlaceItsOwnTemplate(t *testing.T) {
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "manifest.yaml")
+
+	s := spec("alliance", "mismatched")
+	s.Region = transport.Rect{X1: 0, Y1: 0, X2: 0.01, Y2: 0.01} // far smaller than the 300x300 template below
+
+	if err := vision.WriteAnchor(manifest, 240, s, distinctPNG(t, 300, 300)); err == nil {
+		t.Fatal("WriteAnchor accepted a region far too small to ever place its own template")
+	}
+	if _, err := os.Stat(manifest); !os.IsNotExist(err) {
+		t.Fatal("a manifest was written despite the anchor being rejected")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "alliance", "mismatched.png")); !os.IsNotExist(err) {
+		t.Fatal("the rejected template PNG was left behind")
+	}
+}
+
+// The single current caller (the studio) already validates Screen and ID
+// before calling WriteAnchor, but that is exactly the shape of gap this
+// branch shipped once already: a value checked one layer up and assumed
+// here. WriteAnchor builds Screen and ID straight into a filesystem path, so
+// it has to enforce this itself.
+func TestWriteAnchorRejectsPathTraversalInScreen(t *testing.T) {
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "manifest.yaml")
+	s := spec("../../pwned", "a")
+
+	if err := vision.WriteAnchor(manifest, 2400, s, tinyPNG(t)); err == nil {
+		t.Fatal("WriteAnchor accepted a path-traversal screen name")
+	}
+	if _, err := os.Stat(manifest); !os.IsNotExist(err) {
+		t.Fatal("a manifest was written despite the invalid screen name")
+	}
+}
+
+func TestWriteAnchorRejectsPathTraversalInID(t *testing.T) {
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "manifest.yaml")
+	s := spec("alliance", "../../../oops")
+
+	if err := vision.WriteAnchor(manifest, 2400, s, tinyPNG(t)); err == nil {
+		t.Fatal("WriteAnchor accepted a path-traversal anchor id")
+	}
+	if _, err := os.Stat(manifest); !os.IsNotExist(err) {
+		t.Fatal("a manifest was written despite the invalid anchor id")
+	}
 }
 
 func TestWriteAnchorRejectsAChangeOfReferenceHeight(t *testing.T) {

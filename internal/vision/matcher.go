@@ -191,6 +191,24 @@ func resizeGray(src *image.Gray, w, h int) *image.Gray {
 	return out
 }
 
+// variance returns the sum of squared deviations from the mean gray value.
+// Zero means every pixel is identical: NCC is undefined against such a
+// template (see the tVar check in Match), and it is exactly what a crop of
+// blank UI produces — a perfectly valid PNG with nothing in it to look for.
+func variance(img image.Image) float64 {
+	g := Grayscale(img)
+	b := g.Bounds()
+	mean := meanGray(g, b)
+	var v float64
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			d := float64(g.GrayAt(x, y).Y) - mean
+			v += d * d
+		}
+	}
+	return v
+}
+
 func meanGray(g *image.Gray, b image.Rectangle) float64 {
 	var sum float64
 	for y := b.Min.Y; y < b.Max.Y; y++ {

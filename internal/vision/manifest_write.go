@@ -1,14 +1,19 @@
 package vision
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
 
 	yaml "go.yaml.in/yaml/v3"
 
+	"github.com/tomharris/lw-manager/internal/corpus"
 	"github.com/tomharris/lw-manager/internal/transport"
 )
 
@@ -31,8 +36,20 @@ type AnchorSpec struct {
 // rather than true: a half-written manifest surfaces hours later, on a
 // different command, with no obvious cause.
 func WriteAnchor(manifestPath string, refHeight int, spec AnchorSpec, pngBytes []byte) error {
-	if spec.Screen == "" || spec.ID == "" {
-		return fmt.Errorf("vision: anchor needs both a screen and an id, got %q/%q", spec.Screen, spec.ID)
+	// Screen and ID both become path segments below
+	// (filepath.Join(dir, spec.Screen, spec.ID+".png")), so they are
+	// validated with the rule the corpus package already uses for its own
+	// label directories. The studio's handleCrop validates both one layer up
+	// before it ever calls this function, but that is exactly the shape of
+	// gap this branch shipped once already: a value checked at one layer and
+	// assumed at another. The check belongs where the path is built, so the
+	// next caller — which will not necessarily repeat handleCrop's check —
+	// is covered too.
+	if err := corpus.CheckLabel(spec.Screen); err != nil {
+		return fmt.Errorf("vision: anchor screen: %w", err)
+	}
+	if err := corpus.CheckLabel(spec.ID); err != nil {
+		return fmt.Errorf("vision: anchor id: %w", err)
 	}
 	if !spec.Region.Valid() {
 		return fmt.Errorf("vision: anchor %s/%s region %+v is not a valid unit-square rect",
@@ -41,6 +58,29 @@ func WriteAnchor(manifestPath string, refHeight int, spec AnchorSpec, pngBytes [
 	if spec.Threshold < 0 || spec.Threshold > 1 {
 		return fmt.Errorf("vision: anchor %s/%s threshold %.3f outside [0,1]",
 			spec.Screen, spec.ID, spec.Threshold)
+	}
+
+	tmplImg, err := png.Decode(bytes.NewReader(pngBytes))
+	if err != nil {
+		return fmt.Errorf("vision: anchor %s/%s template is not a decodable PNG: %w", spec.Screen, spec.ID, err)
+	}
+	// LoadRegistry only decodes the PNG, so a flat crop of blank UI — a
+	// perfectly valid, zero-variance PNG — would otherwise sail through both
+	// this function and the revalidation below, and only fail later inside
+	// Match with "template has zero variance (uniform), NCC undefined": not
+	// ErrNoScreenRecognized, so the panic route never engages and the raw
+	// error aborts every task on every screen.
+	if variance(tmplImg) == 0 {
+		return fmt.Errorf("vision: anchor %s/%s template has zero variance (a flat crop with no visible detail); crop a region with visible detail",
+			spec.Screen, spec.ID)
+	}
+	// A region that cannot even place the exact template it was cropped
+	// with will not survive Match against any real frame either — proven
+	// here, before either is written, rather than left to surface later on
+	// whatever screen happens to be recognized next.
+	if err := verifyPlaceable(tmplImg, spec.Region, refHeight); err != nil {
+		return fmt.Errorf("vision: anchor %s/%s region cannot place its own template: %w",
+			spec.Screen, spec.ID, err)
 	}
 
 	mf, prevManifest, manifestExisted, err := readManifest(manifestPath)
@@ -119,6 +159,55 @@ func WriteAnchor(manifestPath string, refHeight int, spec AnchorSpec, pngBytes [
 			spec.Screen, spec.ID, err)
 	}
 	return nil
+}
+
+// maxSyntheticFrameWidth bounds the synthetic frame verifyPlaceable builds.
+// A region with an implausibly small width fraction (crafted or malformed —
+// rectFromForm only checks ordering and unit-square bounds, not a minimum
+// size) would otherwise force an arbitrarily large allocation before this
+// function ever gets to say no.
+const maxSyntheticFrameWidth = 20000
+
+// verifyPlaceable proves an anchor's region can actually locate its own
+// template, before either is written anywhere. It reconstructs a plausible
+// parent frame: sized so the template, pasted at the region's declared
+// offset, occupies exactly the fraction of the frame the region claims, at
+// this manifest's own reference height. Running the real matcher against
+// that reconstruction is what catches a region defined too small (or
+// mismatched entirely) for the template it is paired with — the same shape
+// of bug as the studio's own zero-slack crop, just arriving from whatever
+// caller comes after the studio, which this package cannot assume will
+// repeat handleCrop's padding.
+func verifyPlaceable(tmpl image.Image, region transport.Rect, refHeight int) error {
+	tb := tmpl.Bounds()
+	rw := region.X2 - region.X1
+
+	frameW := int(math.Round(float64(tb.Dx()) / rw))
+	if frameW < tb.Dx() {
+		frameW = tb.Dx()
+	}
+	if frameW > maxSyntheticFrameWidth {
+		return fmt.Errorf("region width fraction %.6f is implausibly small for a %dpx-wide template", rw, tb.Dx())
+	}
+	frameH := refHeight
+
+	g := Grayscale(tmpl)
+	frame := image.NewGray(image.Rect(0, 0, frameW, frameH))
+	px := int(math.Round(region.X1 * float64(frameW)))
+	py := int(math.Round(region.Y1 * float64(frameH)))
+	gb := g.Bounds()
+	for y := 0; y < gb.Dy(); y++ {
+		for x := 0; x < gb.Dx(); x++ {
+			fx, fy := px+x, py+y
+			if fx < 0 || fy < 0 || fx >= frameW || fy >= frameH {
+				continue
+			}
+			frame.SetGray(fx, fy, g.GrayAt(gb.Min.X+x, gb.Min.Y+y))
+		}
+	}
+
+	_, err := Match(frame, tmpl, region, refHeight)
+	return err
 }
 
 // SetThresholds updates thresholds for anchors keyed "<screen>/<anchorID>".
