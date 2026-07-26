@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -97,7 +98,7 @@ func runStudio(ctx context.Context, cfg config.Config, args []string) error {
 		defer cancel()
 		_ = httpSrv.Shutdown(shutdown)
 	}()
-	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("studio server on %s: %w", *addr, err)
 	}
 	return nil
