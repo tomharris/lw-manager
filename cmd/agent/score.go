@@ -76,6 +76,14 @@ func runScore(ctx context.Context, cfg config.Config, args []string) error {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "applied %d suggested thresholds to %s\n", len(thresholds), *manifest)
+		// The accuracy, matrix, and separations printed below were computed
+		// against the manifest as it was *before* this update — report,
+		// preds, and seps are all already in hand by this point. The
+		// manifest on disk no longer matches them, so nothing below is a
+		// measurement of what was just written.
+		fmt.Fprintln(os.Stderr, "warning: the figures below describe the manifest BEFORE these threshold updates;",
+			"re-run `agent score` (without --apply-thresholds) to measure the manifest as now written",
+			"before trusting the gate — gating on a corpus you just tuned against proves nothing.")
 	}
 
 	if *asJSON {
