@@ -5,8 +5,9 @@
 // with mv over SSH and the corpus stays inspectable without this package.
 //
 // Frames are named by the full SHA-256 of their bytes. That deduplicates a
-// burst capture of an idle screen down to one frame, and it makes a filename
-// directly usable as a blob.Key input.
+// burst capture of an idle screen down to one frame, and it means a Frame's
+// Hash field — not its filename, which also carries the .png suffix — is
+// exactly what blob.Key expects.
 //
 // Note the deliberate divergence from the screenshots table, where identical
 // bytes still earn their own row because each capture is a distinct
