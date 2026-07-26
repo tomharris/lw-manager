@@ -32,15 +32,21 @@ type RecordOptions struct {
 
 // RecordResult reports what a session produced.
 type RecordResult struct {
-	Captured   int
-	Duplicates int
+	Captured int
+	// Recaptured counts frames whose bytes already existed elsewhere in the
+	// corpus: a benign, session-local recapture of an idle screen. Not to be
+	// confused with corpus.Duplicates (index.go), which flags a cross-label
+	// tree defect and triggers a non-zero exit — the two are unrelated, and
+	// the previous field name (Duplicates) sat close enough to that other
+	// meaning to invite confusing them.
+	Recaptured int
 	Metas      map[string]Meta
 }
 
 // Record captures frames from src into the corpus under Unsorted until the
 // context ends or Count frames have been read.
 //
-// Duplicates are counted but not stored: a burst capture of an idle screen
+// Recaptures are counted but not stored: a burst capture of an idle screen
 // yields the same bytes repeatedly, and keeping them would skew the accuracy
 // denominator. A failure on the very first frame is returned, because that is
 // almost always "no device attached" and an empty corpus with a zero exit
@@ -78,7 +84,7 @@ func Record(ctx context.Context, s *Store, src FrameSource, opts RecordOptions) 
 			return res, err
 		}
 		if !added {
-			res.Duplicates++
+			res.Recaptured++
 		} else {
 			res.Captured++
 			res.Metas[f.Hash] = opts.Meta

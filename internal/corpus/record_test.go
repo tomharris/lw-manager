@@ -40,7 +40,7 @@ func (s *sliceSource) Frame(context.Context) ([]byte, error) {
 
 func noSleep(context.Context) error { return nil }
 
-func TestRecordStoresFramesUnsortedAndCountsDuplicates(t *testing.T) {
+func TestRecordStoresFramesUnsortedAndCountsRecaptures(t *testing.T) {
 	s := corpus.New(t.TempDir())
 	src := &sliceSource{frames: [][]byte{[]byte("a"), []byte("a"), []byte("b")}}
 
@@ -55,8 +55,8 @@ func TestRecordStoresFramesUnsortedAndCountsDuplicates(t *testing.T) {
 	if res.Captured != 2 {
 		t.Fatalf("Captured = %d, want 2", res.Captured)
 	}
-	if res.Duplicates != 1 {
-		t.Fatalf("Duplicates = %d, want 1", res.Duplicates)
+	if res.Recaptured != 1 {
+		t.Fatalf("Recaptured = %d, want 1", res.Recaptured)
 	}
 
 	frames, err := s.List(corpus.Unsorted)

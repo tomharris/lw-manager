@@ -106,7 +106,7 @@ func runRecord(ctx context.Context, cfg config.Config, args []string) error {
 			GameVersion: gameVersion,
 		},
 	})
-	if recordErr != nil && result.Captured == 0 && result.Duplicates == 0 {
+	if recordErr != nil && result.Captured == 0 && result.Recaptured == 0 {
 		// Nothing happened at all — almost always "no device attached" on
 		// the very first frame. There is nothing to index or summarize, and
 		// writing an empty index.yaml into a corpus root that did not exist
@@ -130,11 +130,11 @@ func runRecord(ctx context.Context, cfg config.Config, args []string) error {
 	}
 
 	// stdout stays machine-readable; it must appear whether or not the
-	// duplicate check below finds anything. An operator who just captured
-	// 200 frames needs to see what survived even when this run also
+	// cross-label duplicate check below finds anything. An operator who just
+	// captured 200 frames needs to see what survived even when this run also
 	// surfaces a pre-existing defect.
-	fmt.Printf("captured=%d duplicates=%d corpus=%s device=%s resolution=%dx%d game_version=%s\n",
-		result.Captured, result.Duplicates, *root, model, res.X, res.Y, gameVersion)
+	fmt.Printf("captured=%d recaptured=%d corpus=%s device=%s resolution=%dx%d game_version=%s\n",
+		result.Captured, result.Recaptured, *root, model, res.X, res.Y, gameVersion)
 
 	// Report, don't refuse, on a cross-label duplicate here — the opposite of
 	// what `agent corpus index` does, deliberately. corpus.Record writes
