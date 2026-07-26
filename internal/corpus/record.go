@@ -63,7 +63,14 @@ func Record(ctx context.Context, s *Store, src FrameSource, opts RecordOptions) 
 			if i == 0 {
 				return res, fmt.Errorf("corpus: capturing the first frame: %w", err)
 			}
-			return res, nil
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return res, nil
+			}
+			// A later failure (a dropped USB connection, an adb hiccup) must
+			// not read as a clean finish: what was already captured is real
+			// and stays, but the caller needs to know the session ended
+			// early rather than by the ordinary Count/duration/Ctrl-C paths.
+			return res, fmt.Errorf("corpus: capturing frame %d: %w", i, err)
 		}
 
 		f, added, err := s.Add(Unsorted, data)

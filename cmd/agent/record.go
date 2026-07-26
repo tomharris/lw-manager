@@ -88,7 +88,14 @@ func runRecord(ctx context.Context, cfg config.Config, args []string) error {
 	}
 
 	store := corpus.New(*root)
-	result, err := corpus.Record(ctx, store, pngSource{tr: tr}, corpus.RecordOptions{
+	// recordErr is deliberately not returned immediately: a failure partway
+	// through (a dropped USB connection) still leaves real, freshly captured
+	// frames durably on disk, and corpus.Record surfaces exactly that error
+	// now instead of the silent (res, nil) it used to return. Bailing out
+	// here would lose the index write and the summary for what was actually
+	// captured — the same reasoning the cross-label-duplicate handling below
+	// already applies, just for a different defect.
+	result, recordErr := corpus.Record(ctx, store, pngSource{tr: tr}, corpus.RecordOptions{
 		Count: *count,
 		Sleep: sleep,
 		Meta: corpus.Meta{
@@ -99,8 +106,13 @@ func runRecord(ctx context.Context, cfg config.Config, args []string) error {
 			GameVersion: gameVersion,
 		},
 	})
-	if err != nil {
-		return err
+	if recordErr != nil && result.Captured == 0 && result.Duplicates == 0 {
+		// Nothing happened at all — almost always "no device attached" on
+		// the very first frame. There is nothing to index or summarize, and
+		// writing an empty index.yaml into a corpus root that did not exist
+		// before this call would be a pure side effect of a run that
+		// produced nothing.
+		return recordErr
 	}
 
 	// Fold this session's metadata into the index straight away, so a
@@ -142,6 +154,14 @@ func runRecord(ctx context.Context, cfg config.Config, args []string) error {
 		slog.Warn("corpus has frames filed under more than one label; index was still written",
 			"hashes", dupes, "fix", "delete the copy under the wrong label, then run: agent corpus index")
 		return fmt.Errorf("corpus: %d frame(s) filed under more than one label (see warning above)", len(dupes))
+	}
+
+	// A session-ending capture failure must not read as a clean finish: the
+	// index and summary above are already safely out, so surface it now.
+	if recordErr != nil {
+		slog.Warn("recording session ended early; frames captured before the failure were kept",
+			"captured", result.Captured, "err", recordErr)
+		return fmt.Errorf("corpus: recording session ended early after capturing %d frame(s): %w", result.Captured, recordErr)
 	}
 	return nil
 }
