@@ -246,6 +246,45 @@ func TestCropViewRendersTheFrameAndAnchorForm(t *testing.T) {
 	}
 }
 
+// The crop view's "screen" field names an anchor's screen, which the
+// recognizer can then report as a prediction. _none is the negatives
+// bucket, not a screen — offering it here would let the recognizer *name*
+// _none and mark every negative wrong. _unsorted has no anchors of its own
+// either.
+func TestCropViewDoesNotOfferNoneOrUnsortedAsAScreen(t *testing.T) {
+	srv, store := newTestServer(t, "s3cret")
+	f, _, err := store.Add("alliance", pngBytes(t, 1080, 2400))
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, authed(t, http.MethodGet, "/crop?hash="+f.Hash, ""))
+
+	body := rec.Body.String()
+	for _, unwanted := range []string{`value="` + corpus.None + `"`, `value="` + corpus.Unsorted + `"`} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("crop page's screen dropdown offers %q, which is not a real screen", unwanted)
+		}
+	}
+}
+
+// Without _unsorted in the label dropdown, a frame mislabelled through the
+// browser can never be moved back to _unsorted from the browser itself.
+func TestUnsortedGridOffersUnsortedInTheLabelDropdownToUndoAMislabel(t *testing.T) {
+	srv, store := newTestServer(t, "s3cret")
+	if _, _, err := store.Add(corpus.Unsorted, []byte("frame-bytes")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, authed(t, http.MethodGet, "/", ""))
+
+	if !strings.Contains(rec.Body.String(), `value="`+corpus.Unsorted+`"`) {
+		t.Fatal("label dropdown does not offer moving a frame back to _unsorted")
+	}
+}
+
 // handleFrame already folds a malformed hash into the same 404 an absent
 // one gets. handleCropView and handleCrop must be consistent with it rather
 // than falling through to a 500, which would also log a malformed hash as an

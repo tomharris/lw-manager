@@ -187,7 +187,7 @@ func (s *Server) handleCropView(w http.ResponseWriter, r *http.Request) {
 	s.render(w, cropTmpl, map[string]any{
 		"Title":      "crop",
 		"Frame":      f,
-		"Labels":     KnownLabels,
+		"Screens":    AnchorScreens,
 		"CanCapture": s.tr != nil,
 	})
 }

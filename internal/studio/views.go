@@ -6,14 +6,13 @@ import (
 	"github.com/tomharris/lw-manager/internal/corpus"
 )
 
-// KnownLabels is the screen set this corpus is built for.
-//
-// The first six are the screens DefaultGraph navigates. alliance_members and
+// screens is the recognizable game screen set this corpus is built for. The
+// first six are the screens DefaultGraph navigates. alliance_members and
 // vs_ranking are here because the recognizer must be able to *name* every
 // screen the corpus asserts exists — a labelled frame with no identifying
 // anchor is wrong on every scoring run, forever. Adding graph edges to them
 // is M4 capture-route work and is deliberately not part of this.
-var KnownLabels = []string{
+var screens = []string{
 	"base",
 	"world_map",
 	"alliance",
@@ -22,8 +21,20 @@ var KnownLabels = []string{
 	"vs_ranking",
 	"mail",
 	"radar",
-	corpus.None,
 }
+
+// KnownLabels is every label an operator can assign a frame in the corpus:
+// every real screen, the negatives bucket, and _unsorted itself — the last
+// so a mislabelled frame can be moved back to _unsorted from the browser,
+// which nothing else offers.
+var KnownLabels = append(append([]string{}, screens...), corpus.None, corpus.Unsorted)
+
+// AnchorScreens is the subset of KnownLabels a crop's "screen" field may
+// name: real game screens only. corpus.None is the negatives bucket, not a
+// screen — offering it here would let the recognizer *name* _none and mark
+// every negative wrong. corpus.Unsorted frames have no anchors of their own
+// either.
+var AnchorScreens = screens
 
 const layout = `
 <!doctype html>
@@ -99,7 +110,7 @@ var cropTmpl = template.Must(template.New("crop").Parse(layout + `
  </div>
  <form method="post" action="/crop" style="min-width:260px">
   <input type="hidden" name="hash" value="{{.Frame.Hash}}">
-  <label>screen<select name="screen">{{range $.Labels}}<option value="{{.}}" {{if eq . $.Frame.Label}}selected{{end}}>{{.}}</option>{{end}}</select></label>
+  <label>screen<select name="screen">{{range $.Screens}}<option value="{{.}}" {{if eq . $.Frame.Label}}selected{{end}}>{{.}}</option>{{end}}</select></label>
   <label>anchor id<input name="anchor_id" required pattern="[a-z0-9_]+"></label>
   <label>threshold<input name="threshold" type="number" step="0.01" min="0" max="1" value="0.85"></label>
   <label><input type="checkbox" name="identifies_screen" checked> identifies this screen</label>
