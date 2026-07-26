@@ -135,6 +135,66 @@ func TestPostCaptureStoresAFreshFrame(t *testing.T) {
 	}
 }
 
+// Without this, a studio-captured frame's device and game_version stay
+// permanently blank in index.yaml — the design doc's own top suspect for a
+// gate that used to pass and now does not. `agent record` already folds its
+// session's metadata in right after capture; the studio has to do the same.
+func TestPostCaptureFoldsDeviceMetaIntoTheIndex(t *testing.T) {
+	store := corpus.New(t.TempDir())
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	img.Set(1, 1, color.RGBA{R: 255, A: 255})
+	tr, err := transport.NewReplayTransportFromImages(img)
+	if err != nil {
+		t.Fatalf("NewReplayTransportFromImages: %v", err)
+	}
+	srv, err := studio.New(studio.Options{
+		Corpus:       store,
+		Transport:    tr,
+		ManifestPath: t.TempDir() + "/manifest.yaml",
+		RefHeight:    2400,
+		Token:        "s3cret",
+		Meta: corpus.Meta{
+			Width: 1080, Height: 2400,
+			Device: "Pixel 8a", GameVersion: "3.2.1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("studio.New: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, authed(t, http.MethodPost, "/capture", ""))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
+	}
+
+	frames, err := store.List(corpus.Unsorted)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(frames) != 1 {
+		t.Fatalf("stored %d frames, want 1", len(frames))
+	}
+
+	idx, err := store.ReadIndex()
+	if err != nil {
+		t.Fatalf("ReadIndex: %v", err)
+	}
+	if len(idx.Frames) != 1 {
+		t.Fatalf("index has %d entries, want 1", len(idx.Frames))
+	}
+	e := idx.Frames[0]
+	if e.Hash != frames[0].Hash {
+		t.Fatalf("index entry hash %q, want the captured frame's hash %q", e.Hash, frames[0].Hash)
+	}
+	if e.Device != "Pixel 8a" || e.GameVersion != "3.2.1" || e.Width != 1080 || e.Height != 2400 {
+		t.Fatalf("entry = %+v, want the studio's device meta", e)
+	}
+	if e.CapturedAt.IsZero() {
+		t.Fatal("CapturedAt was not stamped")
+	}
+}
+
 // Labelling a corpus on a machine with no phone must still work.
 func TestPostCaptureWithoutATransportIsRejectedNotFatal(t *testing.T) {
 	srv, _ := newTestServer(t, "s3cret") // constructed with no Transport

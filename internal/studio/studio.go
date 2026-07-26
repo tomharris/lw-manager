@@ -39,6 +39,12 @@ type Options struct {
 	RefHeight    int
 	Token        string
 	Logger       *slog.Logger
+	// Meta carries the capture-time metadata a "capture now" frame cannot
+	// recover from its own bytes: device model and game version, the exact
+	// fields the design doc names as the most likely explanation for a gate
+	// that used to pass and now does not. CapturedAt is stamped fresh per
+	// capture, not taken from this static value. Zero when Transport is nil.
+	Meta corpus.Meta
 }
 
 // Server serves the studio UI.
@@ -49,6 +55,7 @@ type Server struct {
 	refHeight int
 	token     string
 	log       *slog.Logger
+	meta      corpus.Meta
 }
 
 // New validates options and builds a server.
@@ -80,6 +87,7 @@ func New(opts Options) (*Server, error) {
 		refHeight: opts.RefHeight,
 		token:     opts.Token,
 		log:       log,
+		meta:      opts.Meta,
 	}, nil
 }
 

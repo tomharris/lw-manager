@@ -25,6 +25,7 @@ func runStudio(ctx context.Context, cfg config.Config, args []string) error {
 	refHeight := fs.Int("ref-height", 0, "template library reference height in pixels; defaults to the attached device's height")
 	serial := fs.String("serial", "", "device serial for capture-now; optional when exactly one device is attached")
 	noDevice := fs.Bool("no-device", false, "run without a device: labelling and cropping only")
+	pkg := fs.String("package", transport.DefaultPackage, "game package name, for the metadata stamp on capture-now frames")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -38,6 +39,7 @@ func runStudio(ctx context.Context, cfg config.Config, args []string) error {
 	}
 
 	var tr transport.Transport
+	var meta corpus.Meta
 	if !*noDevice {
 		resolved, err := resolveSerial(ctx, cfg.ADBPath, *serial)
 		if err != nil {
@@ -49,9 +51,15 @@ func runStudio(ctx context.Context, cfg config.Config, args []string) error {
 		}
 		defer adb.Close()
 		tr = adb
+		res := adb.Resolution()
 		if *refHeight == 0 {
-			*refHeight = adb.Resolution().Y
+			*refHeight = res.Y
 		}
+		model, gameVersion, err := transport.DeviceProps(ctx, cfg.ADBPath, resolved, *pkg)
+		if err != nil {
+			return err
+		}
+		meta = corpus.Meta{Width: res.X, Height: res.Y, Device: model, GameVersion: gameVersion}
 	}
 	if *refHeight == 0 {
 		return fmt.Errorf("--ref-height is required with --no-device")
@@ -64,6 +72,7 @@ func runStudio(ctx context.Context, cfg config.Config, args []string) error {
 		RefHeight:    *refHeight,
 		Token:        *token,
 		Logger:       slog.Default(),
+		Meta:         meta,
 	})
 	if err != nil {
 		return err

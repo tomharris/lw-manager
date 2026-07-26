@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/tomharris/lw-manager/internal/corpus"
 	"github.com/tomharris/lw-manager/internal/transport"
@@ -132,11 +133,41 @@ func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "encoding the captured frame", err)
 		return
 	}
-	if _, _, err := s.corpus.Add(corpus.Unsorted, buf.Bytes()); err != nil {
+	f, added, err := s.corpus.Add(corpus.Unsorted, buf.Bytes())
+	if err != nil {
 		s.fail(w, "storing the captured frame", err)
 		return
 	}
+	// agent record folds its session's metadata into the index right after
+	// capture, so a forgotten `corpus index` cannot lose it; a studio
+	// capture skipped this entirely, leaving device and game_version
+	// permanently blank for every frame captured through the browser — the
+	// design doc's own top suspect for a gate that used to pass. added is
+	// false for a byte-identical recapture, which needs no new index entry.
+	if added {
+		m := s.meta
+		m.CapturedAt = time.Now().UTC()
+		if err := s.foldMeta(f.Hash, m); err != nil {
+			s.fail(w, "indexing the captured frame", err)
+			return
+		}
+	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// foldMeta writes meta for hash into index.yaml, preserving every other
+// entry already there — the same read-modify-write Reindex performs for
+// `agent record`.
+func (s *Server) foldMeta(hash string, meta corpus.Meta) error {
+	prev, err := s.corpus.ReadIndex()
+	if err != nil {
+		return err
+	}
+	frames, err := s.corpus.All()
+	if err != nil {
+		return err
+	}
+	return s.corpus.WriteIndex(corpus.Reindex(prev, frames, map[string]corpus.Meta{hash: meta}))
 }
 
 func (s *Server) handleCropView(w http.ResponseWriter, r *http.Request) {
