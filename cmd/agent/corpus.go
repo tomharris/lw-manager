@@ -35,6 +35,21 @@ func runCorpus(ctx context.Context, cfg config.Config, args []string) error {
 
 	switch args[0] {
 	case "index":
+		// A human editing the tree over SSH can `cp` a screenshot straight
+		// into a label directory instead of going through Add — the package
+		// doc explicitly invites this. Store.List already skips a file whose
+		// name is not a content hash, so it would never silently corrupt
+		// index.yaml, but silently dropping it here is still the wrong
+		// response from the one tool whose job is producing a trustworthy
+		// index: name it and refuse, the same way a cross-label duplicate
+		// does below.
+		if strays, err := store.StrayFiles(); err != nil {
+			return err
+		} else if len(strays) > 0 {
+			return fmt.Errorf("corpus: %d file(s) not named by content hash, refusing to write %s: %v (rename each to its sha256 or remove it)",
+				len(strays), store.IndexPath(), strays)
+		}
+
 		prev, err := store.ReadIndex()
 		if err != nil {
 			return err

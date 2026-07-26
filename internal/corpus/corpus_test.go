@@ -2,6 +2,7 @@ package corpus_test
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -158,6 +159,79 @@ func TestListAndAllAreSortedAndStable(t *testing.T) {
 	}
 	if all[0].Label != corpus.None {
 		t.Fatalf("All not sorted by label first: got %q", all[0].Label)
+	}
+}
+
+// The package doc invites hand-editing the tree over SSH, and a `cp` of a
+// screenshot straight into a label directory leaves a file whose name is not
+// a content hash at all. Add guarantees hash-named files on write; List has
+// to enforce the same shape on read, or that stray file's basename becomes
+// Frame.Hash and reaches every downstream consumer — including index.yaml,
+// the one artifact this design commits to git.
+func TestListSkipsFilesNotNamedByContentHash(t *testing.T) {
+	dir := t.TempDir()
+	s := corpus.New(dir)
+	if _, _, err := s.Add("base", []byte("real-frame")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "base"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "base", "screenshot.png"), []byte("stray"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	got, err := s.List("base")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("List = %+v, want the one real frame and the stray file skipped", got)
+	}
+
+	all, err := s.All()
+	if err != nil {
+		t.Fatalf("All: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("All = %+v, want the stray file skipped", all)
+	}
+}
+
+// StrayFiles is what `agent corpus index` uses to refuse loudly instead of
+// silently dropping a hand-copied file the way List and All do.
+func TestStrayFilesReportsFilesNotNamedByContentHash(t *testing.T) {
+	dir := t.TempDir()
+	s := corpus.New(dir)
+	if _, _, err := s.Add("base", []byte("real-frame")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "base", "screenshot.png"), []byte("stray"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	got, err := s.StrayFiles()
+	if err != nil {
+		t.Fatalf("StrayFiles: %v", err)
+	}
+	want := filepath.Join("base", "screenshot.png")
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("StrayFiles = %+v, want [%s]", got, want)
+	}
+}
+
+func TestStrayFilesIsEmptyOnAnOrdinaryCorpus(t *testing.T) {
+	s := corpus.New(t.TempDir())
+	if _, _, err := s.Add("base", []byte("a")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	got, err := s.StrayFiles()
+	if err != nil {
+		t.Fatalf("StrayFiles: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("StrayFiles = %+v, want none", got)
 	}
 }
 

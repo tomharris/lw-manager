@@ -185,13 +185,60 @@ func (s *Store) List(label string) ([]Frame, error) {
 		if e.IsDir() || !strings.HasSuffix(name, ".png") {
 			continue
 		}
+		hash := strings.TrimSuffix(name, ".png")
+		if CheckHash(hash) != nil {
+			// Add guarantees hash-named files on write; a name that fails
+			// CheckHash got into the tree some other way — the package doc
+			// explicitly invites `cp`ing a screenshot straight into a label
+			// directory over SSH. Silently including it would make its
+			// basename Frame.Hash, which every consumer trusts is a valid
+			// digest: `agent corpus index` would write it into index.yaml,
+			// the one artifact this design commits to git, and push/pull/
+			// score/gate would then all fail on a fresh clone that never had
+			// the stray file. StrayFiles is what surfaces it instead of this
+			// silent skip leaving no trace.
+			continue
+		}
 		out = append(out, Frame{
-			Hash:  strings.TrimSuffix(name, ".png"),
+			Hash:  hash,
 			Label: label,
 			Path:  filepath.Join(dir, name),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Hash < out[j].Hash })
+	return out, nil
+}
+
+// StrayFiles reports every file under a label directory, across the whole
+// corpus, whose name is not a valid content hash — sorted as
+// "<label>/<filename>". List and All silently skip these so one never
+// reaches index.yaml, but silence is the wrong response from the tool an
+// operator runs specifically to produce a trustworthy index: `agent corpus
+// index` uses this to name the offending files and refuse, the same way it
+// already refuses on a cross-label duplicate.
+func (s *Store) StrayFiles() ([]string, error) {
+	labels, err := s.Labels()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, l := range labels {
+		dir := filepath.Join(s.root, l)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return nil, fmt.Errorf("corpus: reading %s: %w", dir, err)
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() || !strings.HasSuffix(name, ".png") {
+				continue
+			}
+			if CheckHash(strings.TrimSuffix(name, ".png")) != nil {
+				out = append(out, filepath.Join(l, name))
+			}
+		}
+	}
+	sort.Strings(out)
 	return out, nil
 }
 
