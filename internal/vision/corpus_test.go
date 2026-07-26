@@ -70,10 +70,11 @@ func TestM1RecognizerGate(t *testing.T) {
 	if n := len(report.Matrix[vision.NoneLabel]); n == 0 {
 		t.Error("corpus has no negatives; without them a loose threshold passes this gate")
 	}
-	for _, label := range []string{
-		"base", "world_map", "alliance", "alliance_tech",
-		"alliance_members", "vs_ranking", "mail", "radar",
-	} {
+	// Driven off the shared vocabulary rather than a list copied to here:
+	// every screen the corpus can be labeled with needs enough frames to say
+	// anything about it, and a screen added to vision.ScreenNames must not be
+	// able to slip past this check by being forgotten in a second list.
+	for _, label := range vision.ScreenNames {
 		if total := rowTotal(report.Matrix[label]); total < 10 {
 			t.Errorf("label %q has only %d frames; too few to say anything", label, total)
 		}

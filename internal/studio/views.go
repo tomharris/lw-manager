@@ -4,6 +4,7 @@ import (
 	"html/template"
 
 	"github.com/tomharris/lw-manager/internal/corpus"
+	"github.com/tomharris/lw-manager/internal/vision"
 )
 
 // screens is the recognizable game screen set this corpus is built for. The
@@ -12,16 +13,10 @@ import (
 // screen the corpus asserts exists — a labelled frame with no identifying
 // anchor is wrong on every scoring run, forever. Adding graph edges to them
 // is M4 capture-route work and is deliberately not part of this.
-var screens = []string{
-	"base",
-	"world_map",
-	"alliance",
-	"alliance_tech",
-	"alliance_members",
-	"vs_ranking",
-	"mail",
-	"radar",
-}
+// screens is the recognizable game screen set this corpus is built for. The
+// vocabulary itself is declared once, in the package that recognizes against
+// it; see vision.ScreenNames for why a screen is on the list.
+var screens = vision.ScreenNames
 
 // KnownLabels is every label an operator can assign a frame in the corpus:
 // every real screen, the negatives bucket, and _unsorted itself — the last
