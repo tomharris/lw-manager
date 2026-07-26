@@ -106,6 +106,49 @@ func TestTokenInQueryStringSetsACookieAndRedirectsWithoutIt(t *testing.T) {
 	}
 }
 
+// A GET request-target beginning with "//" parses on the server, via Go's
+// RFC 3986 request-target rules, as an ordinary path with an empty Host —
+// authenticate's redirect used to echo it straight back in Location. A
+// browser resolving that Location follows the WHATWG URL spec instead,
+// which reads a leading "//" as a scheme-relative reference and navigates
+// off-host, even though the server-side parse never saw a Host at all.
+func TestTokenInQueryStringWithSchemeRelativePathRedirectsSameHost(t *testing.T) {
+	srv, _ := newTestServer(t, "s3cret")
+	req := httptest.NewRequest(http.MethodGet, "//evil.example/x?t=s3cret", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if strings.HasPrefix(loc, "//") {
+		t.Fatalf("Location = %q, a leading // is read by browsers as an off-host redirect", loc)
+	}
+}
+
+// Go's RFC 3986 parser does not treat a backslash as a path separator, so
+// this request-target parses with a literal backslash in Path. Browsers
+// normalize "\" to "/" before resolving Location, turning the same string
+// into "//evil.example/phish" once reflected back — the same off-host jump
+// as the scheme-relative case above, reached a different way.
+func TestTokenInQueryStringWithBackslashPathRedirectsSameHost(t *testing.T) {
+	srv, _ := newTestServer(t, "s3cret")
+	req := httptest.NewRequest(http.MethodGet, `/\evil.example/phish?t=s3cret`, nil)
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if strings.HasPrefix(loc, "//") || strings.HasPrefix(loc, `/\`) {
+		t.Fatalf("Location = %q, browser-normalizes to an off-host redirect", loc)
+	}
+}
+
 func TestCookieAdmitsAndAWrongTokenDoesNot(t *testing.T) {
 	srv, store := newTestServer(t, "s3cret")
 	hash := seedFrame(t, store, "frame-bytes")

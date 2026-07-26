@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/tomharris/lw-manager/internal/corpus"
@@ -140,11 +141,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 				HttpOnly: true,
 				SameSite: http.SameSiteLaxMode,
 			})
-			redirect := *r.URL
-			q := redirect.Query()
-			q.Del("t")
-			redirect.RawQuery = q.Encode()
-			http.Redirect(w, r, redirect.RequestURI(), http.StatusSeeOther)
+			http.Redirect(w, r, selfRedirectPath(r.URL), http.StatusSeeOther)
 			return
 		}
 		c, err := r.Cookie(CookieName)
@@ -154,6 +151,35 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// selfRedirectPath rebuilds the current request's path and query (with the
+// token stripped) into a redirect target that can only ever point back at
+// this host.
+//
+// It does not simply reflect u.RequestURI(): a GET request-target beginning
+// with "//" (or, after browser-side "\"→"/" normalization, one beginning
+// with "/\") parses on this server, under RFC 3986's request-target rules,
+// as an ordinary path with an empty Host — the same bug class already fixed
+// twice in handleLabel's safeRedirectTarget, and the same remedy applies:
+// never echo a part of the request that a browser can parse differently
+// than this server just did. Collapsing every leading '/' or '\' down to
+// exactly one guarantees the Location this produces begins with a single
+// "/", which no URL spec reads as anything but a same-host absolute path.
+func selfRedirectPath(u *url.URL) string {
+	p := u.Path
+	i := 0
+	for i < len(p) && (p[i] == '/' || p[i] == '\\') {
+		i++
+	}
+	p = "/" + p[i:]
+
+	q := u.Query()
+	q.Del("t")
+	if enc := q.Encode(); enc != "" {
+		p += "?" + enc
+	}
+	return p
 }
 
 // tokenOK compares in constant time. The studio is on a LAN, not the open
