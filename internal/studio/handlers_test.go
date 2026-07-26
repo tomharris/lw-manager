@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -185,6 +186,101 @@ func TestCropViewRendersTheFrameAndAnchorForm(t *testing.T) {
 	}
 }
 
+// handleFrame already folds a malformed hash into the same 404 an absent
+// one gets. handleCropView and handleCrop must be consistent with it rather
+// than falling through to a 500, which would also log a malformed hash as an
+// internal server error instead of the ordinary "not found" it is.
+func TestCropViewIs404ForAMalformedHash(t *testing.T) {
+	srv, _ := newTestServer(t, "s3cret")
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, authed(t, http.MethodGet, "/crop?hash=not-a-hash", ""))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestPostCropIs404ForAMalformedHash(t *testing.T) {
+	srv, _ := newTestServer(t, "s3cret")
+
+	form := url.Values{
+		"hash": {"not-a-hash"}, "screen": {"alliance"}, "anchor_id": {"a"},
+		"x1": {"0.1"}, "y1": {"0.1"}, "x2": {"0.3"}, "y2": {"0.2"},
+		"threshold": {"0.85"},
+	}
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, authed(t, http.MethodPost, "/crop", form.Encode()))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+// The manifest-rollback guarantee is currently only exercised at the vision
+// package level (manifest_write_test.go). This drives it through an actual
+// HTTP request, the way an operator's browser actually calls it, so a future
+// change to how handleCrop wires WriteAnchor can't quietly break the
+// rollback the design doc promises without a test noticing here too.
+func TestPostCropRollsBackWhenTheResultWouldNotLoad(t *testing.T) {
+	store := corpus.New(t.TempDir())
+	manifest := filepath.Join(t.TempDir(), "manifest.yaml")
+	srv, err := studio.New(studio.Options{
+		Corpus: store, ManifestPath: manifest, RefHeight: 2400, Token: "s3cret",
+	})
+	if err != nil {
+		t.Fatalf("studio.New: %v", err)
+	}
+
+	good, _, err := store.Add("alliance", pngBytes(t, 1080, 2400))
+	if err != nil {
+		t.Fatalf("Add good: %v", err)
+	}
+	goodForm := url.Values{
+		"hash": {good.Hash}, "screen": {"alliance"}, "anchor_id": {"alliance_button"},
+		"x1": {"0.10"}, "y1": {"0.20"}, "x2": {"0.30"}, "y2": {"0.28"},
+		"threshold": {"0.85"}, "identifies_screen": {"on"},
+	}
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, authed(t, http.MethodPost, "/crop", goodForm.Encode()))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("seeding crop: status = %d, want 303; body: %s", rec.Code, rec.Body.String())
+	}
+	before, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatalf("reading manifest: %v", err)
+	}
+
+	// A flat frame: any region cropped from it has zero variance, so
+	// WriteAnchor rejects it before ever touching the manifest or template
+	// files that are already on disk for the first anchor.
+	flat, _, err := store.Add("alliance", flatPNGBytes(t, 1080, 2400))
+	if err != nil {
+		t.Fatalf("Add flat: %v", err)
+	}
+	badForm := url.Values{
+		"hash": {flat.Hash}, "screen": {"alliance"}, "anchor_id": {"broken"},
+		"x1": {"0.10"}, "y1": {"0.20"}, "x2": {"0.30"}, "y2": {"0.28"},
+		"threshold": {"0.85"},
+	}
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, authed(t, http.MethodPost, "/crop", badForm.Encode()))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("rejected crop: status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+
+	after, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatalf("reading manifest after rejection: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("manifest changed despite a rejected crop:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(manifest), "alliance", "broken.png")); !os.IsNotExist(err) {
+		t.Fatal("the rejected template PNG was left behind")
+	}
+}
+
 func TestPostCropWritesTheTemplateAndManifest(t *testing.T) {
 	store := corpus.New(t.TempDir())
 	manifest := filepath.Join(t.TempDir(), "manifest.yaml")
@@ -330,6 +426,24 @@ func TestPostCropRejectsAnUnsafeScreenName(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
+}
+
+// flatPNGBytes builds a valid PNG of the given size with every pixel the
+// same color: any crop of it has zero variance, the way a crop of blank UI
+// does.
+func flatPNGBytes(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: 100, G: 100, B: 100, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encoding flat %dx%d PNG: %v", w, h, err)
+	}
+	return buf.Bytes()
 }
 
 // pngBytes builds a valid PNG of the given size with enough variation that a

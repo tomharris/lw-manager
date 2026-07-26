@@ -141,7 +141,11 @@ func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCropView(w http.ResponseWriter, r *http.Request) {
 	f, err := s.corpus.Find(r.URL.Query().Get("hash"))
-	if errors.Is(err, corpus.ErrNotFound) {
+	// A malformed hash gets the same 404 as an absent one, matching
+	// handleFrame: a caller has no use for knowing whether a request merely
+	// missed or was actually a traversal attempt smuggled through the query
+	// string.
+	if errors.Is(err, corpus.ErrNotFound) || errors.Is(err, corpus.ErrInvalidHash) {
 		http.Error(w, "no such frame", http.StatusNotFound)
 		return
 	}
@@ -188,7 +192,7 @@ func (s *Server) handleCrop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data, err := s.corpus.Read(r.FormValue("hash"))
-	if errors.Is(err, corpus.ErrNotFound) {
+	if errors.Is(err, corpus.ErrNotFound) || errors.Is(err, corpus.ErrInvalidHash) {
 		http.Error(w, "no such frame", http.StatusNotFound)
 		return
 	}
