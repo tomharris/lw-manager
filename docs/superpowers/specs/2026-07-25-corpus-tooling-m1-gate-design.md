@@ -31,12 +31,16 @@ the whole process has to run again.
 
 ### Scope
 
-In: the capture/label/crop/score tooling, the real corpus, the anchor
-templates, and a passing M1 gate.
+In: the capture/label/crop/score tooling — the harness that produces the
+real corpus, the anchor templates, and a passing M1 gate.
 
 Out: real Tier 1 task bodies (gather-gold-only, Quick Execute, Claim All),
 the M2 24h unattended acceptance run, M4 parsing, live threshold sliders,
-studio auth beyond a shared token, multi-device orchestration.
+studio auth beyond a shared token, multi-device orchestration — and, within
+this slice itself, the corpus and the gate result. Both need the physical
+phone attached and driven by hand (recording, labeling, cropping), which is
+the hardware-gated follow-up this harness exists to make possible, not
+something the harness produces on its own.
 
 ### Scope decisions made during design
 
@@ -145,8 +149,13 @@ Burst capture into `_unsorted/`. Started from the terminal, then the operator
 walks away and drives the phone by hand.
 
 ```
-agent record --account <id> --interval 2s --duration 10m
+agent record --serial <device serial> --interval 2s --duration 10m
 ```
+
+`--serial`, not `--account`: the corpus is a filesystem tree keyed by label
+and content hash, not by which registered account the phone happens to be
+logged into. `--serial` is optional when exactly one device is attached, the
+same resolution rule every other `agent` device command uses.
 
 Screenshots go through `transport.Transport.Screenshot`, so `adb exec-out`
 handling is already correct. Sleeps go through the jittered context helper
@@ -165,8 +174,10 @@ agent studio --addr 0.0.0.0:8088 --token <secret>
 ```
 
 The server **refuses to bind a non-loopback address without a token**. When
-`--token` is absent it generates one and prints it to stderr. A token supplied
-as `?t=` is set as a cookie so subsequent requests carry it.
+`--token` is absent it generates one and prints the full URL, token included,
+to **stdout** — CLI results go to stdout so they stay pipeable (see
+CLAUDE.md); everything else the command logs goes to stderr via `log/slog`.
+A token supplied as `?t=` is set as a cookie so subsequent requests carry it.
 
 ### Views
 
