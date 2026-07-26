@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"image/png"
 	"os"
 	"strconv"
 	"strings"
@@ -32,7 +30,7 @@ func runScore(ctx context.Context, cfg config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	frames, err := loadCorpusFrames(corpus.New(*root))
+	frames, err := vision.LoadCorpusFrames(corpus.New(*root))
 	if err != nil {
 		return err
 	}
@@ -121,31 +119,6 @@ func runScore(ctx context.Context, cfg config.Config, args []string) error {
 		return fmt.Errorf("accuracy %.4f is below the gate of %.4f", report.Accuracy(), *gate)
 	}
 	return nil
-}
-
-// loadCorpusFrames decodes every labeled frame. Unsorted frames are skipped:
-// they carry no ground truth, so scoring them would be meaningless.
-func loadCorpusFrames(store *corpus.Store) ([]vision.Frame, error) {
-	all, err := store.All()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]vision.Frame, 0, len(all))
-	for _, f := range all {
-		if f.Label == corpus.Unsorted {
-			continue
-		}
-		data, err := store.Read(f.Hash)
-		if err != nil {
-			return nil, err
-		}
-		img, err := png.Decode(bytes.NewReader(data))
-		if err != nil {
-			return nil, fmt.Errorf("decoding corpus frame %s (label %q): %w", f.Hash, f.Label, err)
-		}
-		out = append(out, vision.Frame{Hash: f.Hash, Label: f.Label, Image: img})
-	}
-	return out, nil
 }
 
 func parseFactors(s string) []float64 {

@@ -8,8 +8,6 @@
 package vision_test
 
 import (
-	"bytes"
-	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,20 +40,9 @@ func TestM1RecognizerGate(t *testing.T) {
 		t.Fatalf("loading registry: %v", err)
 	}
 
-	var frames []vision.Frame
-	for _, f := range files {
-		if f.Label == corpus.Unsorted {
-			continue // no ground truth, nothing to score against
-		}
-		data, err := store.Read(f.Hash)
-		if err != nil {
-			t.Fatalf("reading %s: %v", f.Hash, err)
-		}
-		img, err := png.Decode(bytes.NewReader(data))
-		if err != nil {
-			t.Fatalf("decoding %s (label %q): %v", f.Hash, f.Label, err)
-		}
-		frames = append(frames, vision.Frame{Hash: f.Hash, Label: f.Label, Image: img})
+	frames, err := vision.LoadCorpusFrames(store)
+	if err != nil {
+		t.Fatalf("loading corpus frames: %v", err)
 	}
 	if len(frames) == 0 {
 		t.Skip("corpus has no labeled frames yet; label them in `agent studio`")
