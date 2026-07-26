@@ -231,6 +231,45 @@ func TestPostCropWritesTheTemplateAndManifest(t *testing.T) {
 	}
 }
 
+// The stored search region must be roomier than the crop it came from, or
+// Match has zero slack to work with at any scale but the one the crop was
+// made at (see padSearchRegion).
+func TestPostCropStoresASearchRegionWithSlackAroundTheCrop(t *testing.T) {
+	store := corpus.New(t.TempDir())
+	manifest := filepath.Join(t.TempDir(), "manifest.yaml")
+	srv, err := studio.New(studio.Options{
+		Corpus: store, ManifestPath: manifest, RefHeight: 2400, Token: "s3cret",
+	})
+	if err != nil {
+		t.Fatalf("studio.New: %v", err)
+	}
+	f, _, err := store.Add("alliance", pngBytes(t, 1080, 2400))
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	form := url.Values{
+		"hash": {f.Hash}, "screen": {"alliance"}, "anchor_id": {"alliance_button"},
+		"x1": {"0.30"}, "y1": {"0.30"}, "x2": {"0.50"}, "y2": {"0.45"},
+		"threshold": {"0.85"}, "identifies_screen": {"on"},
+	}
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, authed(t, http.MethodPost, "/crop", form.Encode()))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303; body: %s", rec.Code, rec.Body.String())
+	}
+
+	reg, err := vision.LoadRegistry(manifest)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	s, _ := reg.Screen("alliance")
+	a := s.Anchors[0]
+	if a.Region.X1 >= 0.30 || a.Region.Y1 >= 0.30 || a.Region.X2 <= 0.50 || a.Region.Y2 <= 0.45 {
+		t.Fatalf("stored search region %+v has no slack around the crop [0.30,0.30,0.50,0.45]", a.Region)
+	}
+}
+
 func TestPostCropRejectsAnInvertedRegion(t *testing.T) {
 	srv, store := newTestServer(t, "s3cret")
 	f, _, err := store.Add("alliance", pngBytes(t, 1080, 2400))

@@ -81,11 +81,28 @@ func Match(img image.Image, tmpl image.Image, region transport.Rect, refHeight i
 		return MatchResult{}, fmt.Errorf("vision: template has zero variance (uniform), NCC undefined")
 	}
 
-	// Search bounds: the region in frame pixels, clamped so the template fits.
-	x1 := fb.Min.X + int(region.X1*float64(fb.Dx()))
-	y1 := fb.Min.Y + int(region.Y1*float64(fb.Dy()))
-	x2 := fb.Min.X + int(region.X2*float64(fb.Dx()))
-	y2 := fb.Min.Y + int(region.Y2*float64(fb.Dy()))
+	// Search bounds: the region in frame pixels. Rounded with math.Round, the
+	// same rule the template's own scaling uses above — mixing round() here
+	// with truncation there is what made a region exactly the size of its
+	// template shrink by a pixel relative to the scaled template and admit no
+	// placement at all instead of one, at almost any scale factor.
+	x1 := fb.Min.X + int(math.Round(region.X1*float64(fb.Dx())))
+	y1 := fb.Min.Y + int(math.Round(region.Y1*float64(fb.Dy())))
+	x2 := fb.Min.X + int(math.Round(region.X2*float64(fb.Dx())))
+	y2 := fb.Min.Y + int(math.Round(region.Y2*float64(fb.Dy())))
+
+	// The box's four corners are each rounded independently, so a region
+	// defined to exactly match its own template's footprint can still land a
+	// pixel short in either dimension purely from rounding, even with the
+	// same rounding rule on both sides. Expand rather than trust the
+	// arithmetic to land exactly: a search region is "where to look", which
+	// by definition must never end up smaller than what it is looking for.
+	if x2-x1 < tw {
+		x2 = x1 + tw
+	}
+	if y2-y1 < th {
+		y2 = y1 + th
+	}
 
 	best := MatchResult{Score: -2} // below any real NCC, which lives in [-1,1]
 	found := false

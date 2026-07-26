@@ -1,6 +1,7 @@
 package vision
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -125,6 +126,49 @@ func TestMatchOnCroppedSubImageReturnsValidNorm(t *testing.T) {
 	// at (44-32)/32 = 0.375.
 	if math.Abs(m.Center.X-0.375) > 0.03 {
 		t.Errorf("center X within crop: got %.4f, want ~0.375", m.Center.X)
+	}
+}
+
+// TestMatchExactFitSearchRegionAdmitsPlacementAcrossScales reproduces the
+// studio's crop bug directly at the matcher level: a search region that is
+// exactly the size of the template it bounds, at the reference resolution
+// (the shape the studio wrote before it started padding the stored region —
+// see handleCrop). Before this test's fix, the template was scaled with
+// math.Round while the search box was scaled with int() truncation, and even
+// after unifying the rounding, each of the box's four corners still rounds
+// independently of the template's one whole-dimension scale — either way, a
+// one-pixel disagreement made the placement loop admit no candidate at all,
+// and Match returned "search region admits no placement" instead of a score.
+// That is exactly what broke `agent score --rescale 0.75,1.25`, the design
+// doc's own resolution-independence check.
+func TestMatchExactFitSearchRegionAdmitsPlacementAcrossScales(t *testing.T) {
+	const refHeight = 240
+	const tw, th = 80, 60
+	const ox, oy = 60, 90 // template's top-left within a refHeight x refHeight reference frame
+	tmpl := distinctTemplate(tw, th)
+	region := transport.Rect{
+		X1: float64(ox) / refHeight, Y1: float64(oy) / refHeight,
+		X2: float64(ox+tw) / refHeight, Y2: float64(oy+th) / refHeight,
+	}
+
+	for _, scale := range []float64{0.75, 0.9, 1.0, 1.25} {
+		t.Run(fmt.Sprintf("scale=%.2f", scale), func(t *testing.T) {
+			frameH := int(math.Round(refHeight * scale))
+			nw := int(math.Round(tw * scale))
+			nh := int(math.Round(th * scale))
+			scaledTmpl := resizeGray(Grayscale(tmpl), nw, nh)
+			px := int(math.Round(float64(ox) * scale))
+			py := int(math.Round(float64(oy) * scale))
+			frame := paste(frameH, frameH, 100, scaledTmpl, px, py)
+
+			m, err := Match(frame, tmpl, region, refHeight)
+			if err != nil {
+				t.Fatalf("Match at scale %.2f: %v (an exactly-fitting region must still admit one placement)", scale, err)
+			}
+			if m.Score < 0.99 {
+				t.Errorf("score at scale %.2f: got %.4f, want >=0.99", scale, m.Score)
+			}
+		})
 	}
 }
 

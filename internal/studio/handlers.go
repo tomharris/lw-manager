@@ -220,7 +220,7 @@ func (s *Server) handleCrop(w http.ResponseWriter, r *http.Request) {
 	if err := vision.WriteAnchor(s.manifest, s.refHeight, vision.AnchorSpec{
 		Screen:           screen,
 		ID:               anchorID,
-		Region:           region,
+		Region:           padSearchRegion(region),
 		Threshold:        threshold,
 		IdentifiesScreen: r.FormValue("identifies_screen") != "",
 	}, buf.Bytes()); err != nil {
@@ -230,6 +230,43 @@ func (s *Server) handleCrop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/crop?hash="+r.FormValue("hash"), http.StatusSeeOther)
+}
+
+// searchSlack pads a crop into a search region by this fraction of the
+// frame's own dimension, on every side.
+//
+// The crop rectangle the operator drags is exactly the template's own
+// bounds; storing that same rectangle as the anchor's search region as well
+// makes "where to look" precisely the size of "what to look for", with zero
+// room for anything else. At any scale other than the exact one the crop
+// was made at, or with the smallest amount of real layout drift, that
+// region can fail to admit the template at all rather than merely score it
+// low — a search region is supposed to be roomier than its target by
+// definition.
+const searchSlack = 0.03
+
+// padSearchRegion widens r by searchSlack on every side, clamped to the unit
+// square, so the stored search region is never exactly template-sized.
+func padSearchRegion(r transport.Rect) transport.Rect {
+	padded := transport.Rect{
+		X1: r.X1 - searchSlack,
+		Y1: r.Y1 - searchSlack,
+		X2: r.X2 + searchSlack,
+		Y2: r.Y2 + searchSlack,
+	}
+	if padded.X1 < 0 {
+		padded.X1 = 0
+	}
+	if padded.Y1 < 0 {
+		padded.Y1 = 0
+	}
+	if padded.X2 > 1 {
+		padded.X2 = 1
+	}
+	if padded.Y2 > 1 {
+		padded.Y2 = 1
+	}
+	return padded
 }
 
 // rectFromForm reads the four normalized bounds the browser posted.
