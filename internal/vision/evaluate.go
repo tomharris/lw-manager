@@ -21,13 +21,18 @@ type Frame struct {
 // recognizer is right; observations say which anchor to fix when it is not.
 // Both are plain tuples, so the interpretation in Score and Separations stays
 // pure and this function stays the only slow, image-shaped part.
+//
+// Both come out of a single pass of the matcher. Scoring the anchors a second
+// time to build the observations would double the only expensive work here —
+// at corpus scale that is thousands of redundant NCC sweeps — and would risk
+// the report describing anchors the prediction never actually consulted.
 func Evaluate(reg *Registry, frames []Frame) ([]Prediction, []AnchorObservation, error) {
 	rec := NewRecognizer(reg)
 	preds := make([]Prediction, 0, len(frames))
 	var obs []AnchorObservation
 
 	for _, f := range frames {
-		screen, _, err := rec.Recognize(f.Image)
+		screen, _, scored, err := rec.recognize(f.Image)
 		switch {
 		case errors.Is(err, ErrNoScreenRecognized):
 			screen = ""
@@ -36,23 +41,13 @@ func Evaluate(reg *Registry, frames []Frame) ([]Prediction, []AnchorObservation,
 		}
 		preds = append(preds, Prediction{Hash: f.Hash, Label: f.Label, Predicted: screen})
 
-		for _, s := range reg.Screens {
-			for _, a := range s.Anchors {
-				if !a.IdentifiesScreen {
-					continue
-				}
-				m, err := Match(f.Image, a.Template, a.Region, reg.ReferenceHeight)
-				if err != nil {
-					return nil, nil, fmt.Errorf("vision: matching %s/%s against frame %s: %w",
-						s.Name, a.ID, f.Hash, err)
-				}
-				obs = append(obs, AnchorObservation{
-					AnchorID:   a.ID,
-					Screen:     s.Name,
-					FrameLabel: f.Label,
-					Score:      m.Score,
-				})
-			}
+		for _, sa := range scored {
+			obs = append(obs, AnchorObservation{
+				AnchorID:   sa.AnchorID,
+				Screen:     sa.Screen,
+				FrameLabel: f.Label,
+				Score:      sa.Score,
+			})
 		}
 	}
 	return preds, obs, nil

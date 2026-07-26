@@ -30,13 +30,38 @@ type anchorScore struct {
 	Threshold float64
 }
 
+// scoredAnchor is an anchorScore tagged with where it came from. Recognition
+// itself only needs the score and the threshold; Evaluate additionally needs
+// to attribute each score to an anchor on a screen so the separation report
+// can say which one to recrop.
+type scoredAnchor struct {
+	Screen   string
+	AnchorID string
+	Score    float64
+}
+
 // Recognize returns the screen the frame most likely shows, with a confidence,
-// or ErrNoScreenRecognized. It runs every identifying anchor of every screen
-// through the matcher, then defers the actual decision — does a screen qualify,
-// and how confident are we — to scoreScreen.
+// or ErrNoScreenRecognized.
 func (r *Recognizer) Recognize(img image.Image) (string, float64, error) {
+	screen, conf, _, err := r.recognize(img)
+	return screen, conf, err
+}
+
+// recognize is Recognize plus every identifying anchor's score, so a caller
+// that wants both the decision and the raw scores pays for the matching once.
+//
+// It runs every identifying anchor of every screen through the matcher, then
+// defers the actual decision — does a screen qualify, and how confident are we
+// — to scoreScreen.
+//
+// The scores are returned even alongside ErrNoScreenRecognized: an
+// unrecognized frame is precisely the case the separation report exists to
+// diagnose, so dropping its scores would blind the report to every failure it
+// is meant to explain.
+func (r *Recognizer) recognize(img image.Image) (string, float64, []scoredAnchor, error) {
 	bestScreen := ""
 	bestConf := -1.0
+	var all []scoredAnchor
 
 	for _, s := range r.reg.Screens {
 		var scores []anchorScore
@@ -46,9 +71,10 @@ func (r *Recognizer) Recognize(img image.Image) (string, float64, error) {
 			}
 			m, err := Match(img, a.Template, a.Region, r.reg.ReferenceHeight)
 			if err != nil {
-				return "", 0, fmt.Errorf("vision: matching screen %q anchor %q: %w", s.Name, a.ID, err)
+				return "", 0, nil, fmt.Errorf("vision: matching screen %q anchor %q: %w", s.Name, a.ID, err)
 			}
 			scores = append(scores, anchorScore{Score: m.Score, Threshold: a.Threshold})
+			all = append(all, scoredAnchor{Screen: s.Name, AnchorID: a.ID, Score: m.Score})
 		}
 
 		recognized, conf := scoreScreen(scores)
@@ -59,9 +85,9 @@ func (r *Recognizer) Recognize(img image.Image) (string, float64, error) {
 	}
 
 	if bestScreen == "" {
-		return "", 0, ErrNoScreenRecognized
+		return "", 0, all, ErrNoScreenRecognized
 	}
-	return bestScreen, bestConf, nil
+	return bestScreen, bestConf, all, nil
 }
 
 // scoreScreen decides whether a screen is recognized from its identifying
