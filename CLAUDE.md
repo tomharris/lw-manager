@@ -223,6 +223,36 @@ separation row for *why*, then decide — and prefer a recrop anyway when the
 score was depressed by a transient (a focus glow, a slide-in), since a
 threshold fitted to one observed animation frame is fitted to a sample of one.
 
+### Anchors detect presence, never absence — and flat crops are near-degenerate
+
+NCC divides out the template's variance, so a nearly-flat template correlates
+~1.0 with *any* similarly flat region: it ends up asking "is this area smooth
+and dark", which describes a great deal of this UI. `matcher.go` rejects
+zero-variance templates outright (the `tVar` check), but there is no cliff —
+a crop just above that line is nearly as useless and reports no error.
+
+Measure before trusting a small crop. Standard deviation across three real
+templates, all the same physical size band:
+
+| template | content | stddev |
+|---|---|---|
+| `vs_ranking_weekly/vs_ranking_alliance_button` | empty checkbox | 2,346 |
+| `vs_ranking_alliance/vs_ranking_weekly_button` | checkbox + green check | 10,324 |
+| `alliance/alliance` | wordmark | 25,927 |
+
+The empty checkbox is ~11x flatter than a text anchor and reports
+`worst-in 1.000 / best-out 1.000` — it matches everywhere. `vs_ranking_weekly`
+still scores 10/10, but **its header and `weekly_tab` are carrying it, not the
+anchor the manifest credits**, and both of those are shared with
+`vs_ranking_alliance`.
+
+That is the general trap: a checkbox-is-unchecked anchor asks a correlation
+score to confirm that nothing is there, which it has no way to express. Where
+two screens differ only by the presence of something, anchor the screen that
+*has* it and find another discriminator for the one that does not — do not
+crop the empty state and call it an identifying anchor. A screen whose pass
+comes entirely from shared anchors will accept its sibling just as readily.
+
 The recognizer needs an identifying anchor for **every** labeled screen, not
 just the six `DefaultGraph()` navigates. `alliance_members` and `vs_ranking`
 are in the corpus for M4; without anchors they would be wrong on every
