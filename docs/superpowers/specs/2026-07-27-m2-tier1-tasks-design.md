@@ -31,8 +31,8 @@ This milestone cuts the real anchors, writes the real bodies, and runs one
 account unattended for 24 hours.
 
 **In scope:** action anchors, two new screens, the graph edges to reach them,
-five task bodies, a migration reshaping the tasks table, and a two-phase
-acceptance gate.
+a modal-precedence rule in the recognizer, five task bodies, a migration
+reshaping the tasks table, and a two-phase acceptance gate.
 
 **Out of scope:** the loot truck (its own follow-up task), M3 fleet work, and
 all M4 analytics collection. `alliance_members` and the `vs` tree stay
@@ -97,6 +97,37 @@ Two tasks hit D5 and each resolves differently:
   no-op. The task therefore cannot detect "nothing to claim" and must not try;
   what it must handle is that **the rewards popup is optional.**
 
+### The scrim is exactly invisible to NCC
+
+The rewards overlay is a centred panel, not a full-screen takeover: **the origin
+screen's header stays visible behind it, only dimmed.** That single layout fact
+has consequences the rest of this design is shaped around.
+
+`recognizer.go:80` scores every screen and keeps the highest-confidence one
+that qualifies, and `scoreScreen` qualifies a screen when every identifying
+anchor clears its own threshold. With the origin's header still visible, an
+overlay frame qualifies as **both** the origin and the popup, and the winner is
+decided by whichever has the higher `min` score — an implementation accident
+that an unrelated recrop could flip.
+
+The dimming does not help, and not approximately. `matcher.go:180–193` is full
+zero-mean, unit-variance NCC. A scrim blending the background toward a constant
+maps each pixel `p → αp + (1−α)c`, so every deviation from the patch mean
+becomes `α(p − mean)`: the numerator scales by `α`, the denominator by `α`, and
+**the score is mathematically unchanged.** The one cue a human uses to see that
+a modal is up is precisely the cue this matcher is designed to discard.
+
+That is the same theme a third time. Variance-normalization made the empty
+checkbox useless (`CLAUDE.md`); mean-normalization makes the scrim invisible.
+**Every robustness in a matcher is a blindness, and the blindnesses are where
+tasks report success for doing nothing.**
+
+It also creates a failure mode worth naming on its own: **matchable ≠
+tappable.** An anchor behind the scrim matches at full score while the scrim
+intercepts the touch. `Tap` succeeds, the transport reports a tap, `Run()`
+records `succeeded`, nothing happened. §5 makes this structurally impossible
+rather than merely discouraged.
+
 ### The radar contradiction
 
 Two facts learned in the audit are jointly decisive:
@@ -124,10 +155,12 @@ item (§8).
 
 `internal/vision/screens.go` gains:
 
-- **`rewards_popup`** — the overlay raised by Claim All. One name, not two:
-  the mail and radar overlays are visually identical, so two labels would put
-  contradictory labels on the same pixels and the recognizer would be scored
-  wrong on half of them regardless of the crop.
+- **`rewards_popup`** — the overlay raised by Claim All, declared **modal**
+  (§5). One name, not one per origin: the mail and radar overlays are the same
+  UI, so per-origin labels would put contradictory labels on the same pixels
+  and the recognizer would be scored wrong on half of them regardless of the
+  crop. Dismissing it returns to whichever screen raised it, which is graph
+  topology (§5), not visual identity.
 - **`alliance_tech_donate`** — the donate dialog reached from the recommended
   tech.
 
@@ -210,6 +243,42 @@ rewards_popup               → radar | mail_alliance | mail_event | mail_system
                                                       (tap close_button)
 ```
 
+### Modal precedence: a new field, and a small recognizer change
+
+Because the origin's header stays visible behind the scrim (§2), both the
+origin and `rewards_popup` qualify, and confidence cannot honestly break the
+tie. A screen therefore gains one declarative property in the manifest:
+
+> **`modal: true`** — this screen renders *on top of* another. When a modal
+> screen qualifies, it outranks any non-modal screen that also qualifies,
+> regardless of confidence.
+
+`recognize` (`recognizer.go:60`) applies precedence before confidence:
+among qualifying screens, prefer modal ones, then take the highest confidence
+within that group. Confidence still breaks ties inside each group, so nothing
+about existing behaviour changes — **no screen is modal today, so this is a
+no-op on the M1 corpus**, which is what makes it safe to land in code the
+recognizer gate was tuned against.
+
+Two rejected alternatives, recorded so they are not re-proposed:
+
+- **Prefer whichever screen matched more identifying anchors.** Makes anchor
+  count a proxy for specificity, so any two-anchor screen permanently outranks
+  any one-anchor screen. Arbitrary, and it silently re-ranks screens whenever
+  someone adds an anchor for an unrelated reason.
+- **Drop `rewards_popup` and declare `rewards_close_button` as a non-identifying
+  anchor on each of the four origins.** Genuinely cheapest — no new screen, no
+  corpus frames, no recognizer change. Rejected because it leaves *matchable ≠
+  tappable* (§2) as a rule every future task author must remember, and this
+  milestone has already found three distinct ways for a task to report success
+  while doing nothing. `modal` converts that into `Tap(radar,
+  quick_execute_button)` failing with `ErrWrongScreen` while the overlay is up.
+
+This is the same move as `Tap` refusing to accept coordinates: the invariant is
+enforced by what can be expressed, not by what is remembered. The concept also
+pays forward — confirm dialogs, level-up interstitials, and event popups are
+all this shape, so M4 would otherwise re-litigate it.
+
 ### Popups are graph sinks: out-edges only, never in-edges
 
 BFS cannot route *through* a node it cannot enter. Without this rule a shared
@@ -255,6 +324,13 @@ short bounded poll of `CurrentScreen` over ~2s, treating "still on the origin
 screen" as *no popup* rather than as a failure. The bound must exist because
 the popup animates in, so a single immediate check races it.
 
+Modal precedence (§5) is what makes this readable at all: with the overlay up
+`CurrentScreen` returns `rewards_popup`, and without it the origin — a clean
+two-valued answer instead of a contest between two qualifying screens. It is
+also what makes the *absence* case trustworthy, since "still on the mailbox"
+now genuinely means no modal is up rather than "the mailbox happened to score
+higher this time".
+
 **`tapUntilGone`** — `Tap` in a loop, terminating on `ErrAnchorNotFound`, with
 a hard iteration cap passed by the caller.
 
@@ -293,6 +369,21 @@ device-free tests quietly stop covering the new code.** Moving `help_all` from
 `TestAllTierOneTasksRegistered` (`tasks_test.go:15`) must drop `radar_claim`
 and `radar_quick` and gain `radar`.
 
+`runtimetest` also needs a synthetic modal screen, so `tapAndDismiss` is
+exercised device-free in both branches: overlay present and overlay absent.
+
+The modal precedence rule needs its own tests in `internal/vision`, and the
+cases that matter are the ones that would otherwise pass by accident:
+
+- a modal and a non-modal screen both qualifying, **modal wins even when its
+  confidence is lower** — this is the whole point of the rule, and a test that
+  gives the modal the higher score proves nothing;
+- two modals both qualifying — confidence still decides;
+- no modal qualifying — behaviour identical to today;
+- a manifest with no modal screens at all — byte-identical decisions to the
+  current recognizer, which is the claim that makes this safe to land against
+  M1-tuned thresholds.
+
 Per invariant #6, `make test` continues to pass with no emulator, no adb, and
 no Docker.
 
@@ -320,6 +411,12 @@ Open questions the session resolves:
 5. Measured separation between `base`'s two broad-region anchors.
 6. Standard deviation of the badge crop against the reference band.
 7. D7: does any action animate past the 20s `WaitFor` default?
+8. **Does each origin's identifying anchor still clear its threshold with the
+   overlay up?** §2 argues from the NCC algebra that it must, since the scrim
+   cancels exactly. Measure it rather than trust the derivation — if the origin
+   is in fact disqualified, `modal` is unnecessary and §5 collapses back to a
+   plain popup screen. Capture one overlay frame per origin and score the
+   origin's anchors against it directly.
 
 ---
 
@@ -368,3 +465,6 @@ instrumentation.
 | Radar targets cap out, invalidating the VS-day schedule | Audit item §8.1, resolved before the migration is written |
 | Two new screens push the recognizer below 98% | `make gate` is a gate, not a report; `agent score --json` localizes per frame |
 | Popup left open by a crash strands the next task | `rewards_popup` has escape edges to all four origins, so `NavigateTo` recovers without the panic route |
+| A task taps an anchor behind the scrim and reports success (*matchable ≠ tappable*, §2) | Modal precedence makes the overlaid origin unrecognizable as itself, so the tap fails with `ErrWrongScreen` rather than landing on glass |
+| Modal precedence changes code the M1 gate was tuned against | No screen is modal today, so the change is a provable no-op on the current corpus — asserted by a test (§7) — and `make gate` re-runs regardless |
+| The scrim turns out to disqualify the origin after all, making `modal` dead weight | Audit item §8.8 measures it before the recognizer is touched; if so, §5 reverts to a plain popup screen and the rest of the design is unaffected |
