@@ -14,7 +14,9 @@ The two reference systems solve halves of the same problem:
 | GNBots cloud bot | Multi-account task automation, scheduling, per-account dashboard | No alliance analytics; closed source; no data you own |
 | `vervelak/lastwar-alliance-manager` | Member roster, rankings, train/VS tracking, Tesseract OCR ingest of screenshots | Screenshots are uploaded *by hand*; no automation |
 
-The architectural thesis of this build: **the bot is the collection tier for the analytics tier.** A bot that can already navigate to the Alliance → Members → VS Ranking screens can screenshot them on a schedule and feed the parser directly. That closes the manual-upload loop that limits the alliance manager, and it's the reason to build one system rather than glue two together.
+The architectural thesis of this build: **the bot is the collection tier for the analytics tier.** A bot that can already navigate to the alliance roster and the VS ranking can screenshot them on a schedule and feed the parser directly. That closes the manual-upload loop that limits the alliance manager, and it's the reason to build one system rather than glue two together.
+
+Those are two separate routes, not one chain. The roster is Alliance → Members. The VS ranking is **not reachable from Alliance**: it is base → VS → Ranking → "weekly ranking" tab → select your alliance. This document originally described the collection target as "Alliance → Members → VS Ranking", which is a route that does not exist; corrected 2026-07-26 after walking it on hardware.
 
 ### Constraints worth stating up front
 - Automation of this kind is against Last War's ToS. Accounts can be banned. Design accordingly: run alts, not your main, on aggressive schedules; humanize timing; keep a kill switch. This document assumes you've accepted that trade.

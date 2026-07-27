@@ -284,8 +284,11 @@ Reproduce the evidence with `adb shell getprop <key>` and
 
 **What still works:** the M0 capture path (screenshot → blob → row) against
 pre-login / splash / tutorial screens — it never authenticates. The wall is
-specifically **authenticated login**, which the M1 alliance fixtures
-(Alliance → Members → VS Ranking) depend on.
+specifically **authenticated login**, which every fixture behind it depends
+on: the alliance roster (Alliance → Members) and the VS ranking (base → VS →
+Ranking → "weekly ranking" tab → select your alliance). Those are two separate
+routes; earlier drafts chained them as "Alliance → Members → VS Ranking",
+which is not a path the game offers.
 
 **Decision:** use a **physical Android phone** for anything past login rather
 than fight the fingerprint arms race. A rootable image plus Magisk/props
