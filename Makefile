@@ -31,9 +31,17 @@ test-device:
 # The M1 phase gate: recognizer accuracy against the real corpus. Device-free
 # but slow, so it is tagged out of `make test`. Skips when the corpus has not
 # been pulled.
+#
+# -timeout is explicit because the default is 10m and this target is designed
+# to get slower: cost is frames x anchors, both of which grow every time the
+# corpus or the manifest is extended, and the matcher is a hand-rolled NCC
+# under CGO_ENABLED=0. 356 frames against 41 anchors already takes ~14m. The
+# failure mode is worth recognizing on sight — a panic with a goroutine dump
+# at exactly 600s is the timeout, not the gate, and says nothing about
+# accuracy. Raise this rather than trimming the corpus to fit it.
 .PHONY: gate
 gate:
-	$(GO) test -tags=corpus -count=1 -v ./internal/vision/...
+	$(GO) test -tags=corpus -count=1 -v -timeout 60m ./internal/vision/...
 
 .PHONY: lint
 lint:

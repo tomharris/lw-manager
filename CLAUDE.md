@@ -93,7 +93,10 @@ instead of creating a duplicate account.
   This is the only place `ADBTransport` is exercised for real.
 - `make gate` — the M1 phase gate: recognizer accuracy against the real
   corpus. Tagged `//go:build corpus`, device-free but slow, so it stays out
-  of `make test`. Skips when the corpus has not been pulled.
+  of `make test`. Skips when the corpus has not been pulled. Carries an
+  explicit `-timeout` because it costs frames × anchors and both keep
+  growing; a panic with a goroutine dump at exactly 600s is Go's default
+  timeout, not a gate failure.
 - New packages get a fake or a replay path before they get a real
   implementation. `ReplayTransport` was written before `ADBTransport` was
   trusted, and that ordering is the pattern to follow.
