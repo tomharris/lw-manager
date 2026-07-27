@@ -1,5 +1,28 @@
 package vision
 
+// Screen names, as constants rather than bare strings. The screen graph,
+// every task body, and the synthetic test registry all name these; a typo
+// in a string literal compiles and fails at runtime, where it presents as a
+// mysterious "unknown screen" mid-task.
+const (
+	ScreenBase               = "base"
+	ScreenWorldMap           = "world_map"
+	ScreenAlliance           = "alliance"
+	ScreenAllianceTech       = "alliance_tech"
+	ScreenAllianceTechDonate = "alliance_tech_donate"
+	ScreenAllianceMembers    = "alliance_members"
+	ScreenVS                 = "vs"
+	ScreenVSRanking          = "vs_ranking"
+	ScreenVSRankingWeekly    = "vs_ranking_weekly"
+	ScreenVSRankingAlliance  = "vs_ranking_alliance"
+	ScreenMail               = "mail"
+	ScreenMailAlliance       = "mail_alliance"
+	ScreenMailEvent          = "mail_event"
+	ScreenMailSystem         = "mail_system"
+	ScreenRadar              = "radar"
+	ScreenRewardsPopup       = "rewards_popup"
+)
+
 // ScreenNames is the recognizable game screen set: every screen a corpus frame
 // may be labeled with, and therefore every screen the recognizer must be able
 // to name.
@@ -37,19 +60,27 @@ package vision
 // "Alliance -> Members -> VS Ranking" are wrong. vs_ranking_alliance is the
 // screen M4 parses; the three above it exist because the task has to tap its
 // way down and confirm each landing.
+//
+// alliance_tech_donate is the dialog reached from the recommended tech, and
+// rewards_popup is the overlay Claim All raises. Both are states a task acts
+// from, so both must be nameable — and rewards_popup is declared modal in the
+// manifest, because the origin screen stays visible behind its scrim and would
+// otherwise compete with it for recognition.
 var ScreenNames = []string{
-	"base",
-	"world_map",
-	"alliance",
-	"alliance_tech",
-	"alliance_members",
-	"vs",
-	"vs_ranking",
-	"vs_ranking_weekly",
-	"vs_ranking_alliance",
-	"mail",
-	"mail_alliance",
-	"mail_event",
-	"mail_system",
-	"radar",
+	ScreenBase,
+	ScreenWorldMap,
+	ScreenAlliance,
+	ScreenAllianceTech,
+	ScreenAllianceTechDonate,
+	ScreenAllianceMembers,
+	ScreenVS,
+	ScreenVSRanking,
+	ScreenVSRankingWeekly,
+	ScreenVSRankingAlliance,
+	ScreenMail,
+	ScreenMailAlliance,
+	ScreenMailEvent,
+	ScreenMailSystem,
+	ScreenRadar,
+	ScreenRewardsPopup,
 }
