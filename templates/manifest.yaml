@@ -56,18 +56,18 @@ screens:
             - id: alliance_button
               template: base/alliance_button.png
               region:
-                - 0.82714
-                - 0.71367
-                - 1
-                - 0.81331
+                - 0.8319
+                - 0.7147399999999999
+                - 0.97762
+                - 0.81438
               threshold: 0.85
               identifies_screen: false
             - id: base
               template: base/base.png
               region:
-                - 0.7581
-                - 0.90117
-                - 1
+                - 0
+                - 0.90545
+                - 0.2419
                 - 1
               threshold: 0.85
               identifies_screen: true
@@ -89,6 +89,15 @@ screens:
                 - 0.8111700000000001
               threshold: 0.85
               identifies_screen: true
+            - id: vs_button
+              template: base/vs_button.png
+              region:
+                - 0.84619
+                - 0.21545
+                - 0.98714
+                - 0.30008999999999997
+              threshold: 0.85
+              identifies_screen: false
             - id: world_map_button
               template: base/world_map_button.png
               region:
@@ -147,6 +156,15 @@ screens:
               identifies_screen: false
     mail_alliance:
         anchors:
+            - id: claim_all_button
+              template: mail_alliance/claim_all_button.png
+              region:
+                - 0.63429
+                - 0.90867
+                - 0.95857
+                - 1
+              threshold: 0.85
+              identifies_screen: true
             - id: mail
               template: mail_alliance/mail.png
               region:
@@ -159,10 +177,10 @@ screens:
             - id: mail_alliance
               template: mail_alliance/mail_alliance.png
               region:
-                - 0
-                - 0.009739999999999999
-                - 1
-                - 0.17795
+                - 0.0009499999999999995
+                - 0.02366
+                - 0.33714
+                - 0.11044999999999999
               threshold: 0.85
               identifies_screen: true
             - id: mail_button
@@ -189,10 +207,10 @@ screens:
               template: mail_event/mail_event.png
               region:
                 - 0
-                - 0.02581
-                - 1
-                - 0.17581
-              threshold: 0.85
+                - 0.029020000000000004
+                - 0.26095
+                - 0.10724
+              threshold: 0.7
               identifies_screen: true
     mail_system:
         anchors:
@@ -223,6 +241,149 @@ screens:
                 - 0.91081
                 - 0.9657100000000001
                 - 1
+              threshold: 0.85
+              identifies_screen: true
+    vs:
+        anchors:
+            - id: base_button
+              template: vs/base_button.png
+              region:
+                - 0
+                - 0.90545
+                - 0.1419
+                - 1
+              threshold: 0.85
+              identifies_screen: false
+            - id: theme_tab
+              template: vs/theme_tab.png
+              region:
+                - 0.00571
+                - 0.08795
+                - 0.34429
+                - 0.17366
+              threshold: 0.85
+              identifies_screen: true
+            - id: vs
+              template: vs/vs.png
+              region:
+                - 0
+                - 0.03116
+                - 0.36571
+                - 0.10938
+              threshold: 0.85
+              identifies_screen: true
+            - id: vs_ranking_button
+              template: vs/vs_ranking_button.png
+              region:
+                - 0.62952
+                - 0.91403
+                - 0.78476
+                - 1
+              threshold: 0.85
+              identifies_screen: false
+    vs_ranking:
+        anchors:
+            - id: daily_tab
+              template: vs_ranking/daily_tab.png
+              region:
+                - 0.036669999999999994
+                - 0.08902
+                - 0.30857
+                - 0.17259
+              threshold: 0.85
+              identifies_screen: true
+            - id: vs_button
+              template: vs_ranking/vs_button.png
+              region:
+                - 0
+                - 0.89045
+                - 0.15619
+                - 0.9826
+              threshold: 0.85
+              identifies_screen: false
+            - id: vs_ranking
+              template: vs_ranking/vs_ranking.png
+              region:
+                - 0
+                - 0.03009
+                - 0.25856999999999997
+                - 0.10938
+              threshold: 0.85
+              identifies_screen: true
+    vs_ranking_alliance:
+        anchors:
+            - id: vs_button
+              template: vs_ranking_alliance/vs_button.png
+              region:
+                - 0.0009499999999999995
+                - 0.8883099999999999
+                - 0.15619
+                - 0.9826
+              threshold: 0.85
+              identifies_screen: false
+            - id: vs_ranking_alliance
+              template: vs_ranking_alliance/vs_ranking_alliance.png
+              region:
+                - 0
+                - 0.027950000000000003
+                - 0.25143
+                - 0.11044999999999999
+              threshold: 0.85
+              identifies_screen: true
+            - id: vs_ranking_weekly_button
+              template: vs_ranking_alliance/vs_ranking_weekly_button.png
+              region:
+                - 0.86286
+                - 0.89367
+                - 0.9895200000000001
+                - 0.9847400000000001
+              threshold: 0.85
+              identifies_screen: true
+            - id: weekly_tab
+              template: vs_ranking_alliance/weekly_tab.png
+              region:
+                - 0.33904999999999996
+                - 0.09116
+                - 0.63476
+                - 0.17259
+              threshold: 0.85
+              identifies_screen: true
+    vs_ranking_weekly:
+        anchors:
+            - id: vs_button
+              template: vs_ranking_weekly/vs_button.png
+              region:
+                - 0
+                - 0.89045
+                - 0.15619
+                - 0.9847400000000001
+              threshold: 0.85
+              identifies_screen: false
+            - id: vs_ranking_alliance_button
+              template: vs_ranking_weekly/vs_ranking_alliance_button.png
+              region:
+                - 0.86286
+                - 0.89474
+                - 0.9919
+                - 0.9858100000000001
+              threshold: 0.85
+              identifies_screen: true
+            - id: vs_ranking_weekly
+              template: vs_ranking_weekly/vs_ranking_weekly.png
+              region:
+                - 0
+                - 0.03116
+                - 0.25143
+                - 0.10938
+              threshold: 0.85
+              identifies_screen: true
+            - id: weekly_tab
+              template: vs_ranking_weekly/weekly_tab.png
+              region:
+                - 0.33904999999999996
+                - 0.09009
+                - 0.63952
+                - 0.17366
               threshold: 0.85
               identifies_screen: true
     world_map:

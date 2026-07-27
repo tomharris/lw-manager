@@ -1,0 +1,2493 @@
+frames:
+    - hash: 013f88a0dd0c3b24482847a51d326dafba72c45568a6eaaf7429d1eeca610354
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 029bda296b77686180f076698ba2ff3ed298b659154ba0dd2d45f01de3562a38
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 03a5c766ec5885ba82d5ed1a0d8e2c14e22be171b1d22b8e3db4242438d6b28c
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 054b31bad99de49a55e145ad87d31d0140807ec692d04f61f359be7c3800c60a
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 060b2cdaf73bd229bb458e27bffd9535a22c9bf0e1043fffb5a5fe299cf800b3
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0628b13501dd35f399358e5d94f40476661c7a30dbf777631d7b408d08c4832c
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 06fa9408bea89f4bb679784e80e5ead1b89368082b00f18e95fefdf2433a2060
+      label: mail_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 074c0fff86952eb3e73832c0c820c02b42cf3915d6fc70f1155008986ffc1996
+      label: radar
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0798c909018e064ae829437fb595ff73b3cf88579ddc5d217777afaf48c144fa
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 07b5d8fef25d2cb04c600e1c566232be85bf54c78cb9d07bb56dc40ae87d2c68
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 07c652864c8bf65034ea1edaaa1449aef095e71682cb61b284422777b84ab13a
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 086d14cca6f51d1d525429db76037c52dc2ef82a4468e3bf1a59645dcc300d8a
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 093da365336897ebc88acd6a7498ef0cd1fe99d8e42ca22536cb0e3fef7064e1
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 09a6b0d3dfa5a86dc1d9df4b9f670cd87ca771b00de677fb2d0276caccdfb700
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0a023203108393f9c944c6da03c2ca6875629c2b63ecc75a5be3e08843d19c13
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:09:45.598789202Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0a56f8edbdb5914d9e9925baeb76984d1a8c141d37973af5b9832a66a068caa6
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0b710580103e31504b6ff7fb938dd3928a0b80f06441f6b7fa542d5d12faa8f3
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0b8c82087f86e7949b018499b7a66adda3b4d3de65f6ab270937f67ba002e94e
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0bd17e0d213e28250ba85872a9cde318abd402f702480697bd24dba5b3b9d37d
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0d1ab555719f997dbb633eadd6b05dce0653ecf270188cb3db5c1d29d95a4613
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0d434c1191f52d756dff4822aae6c1a2f83325fe55fb3da051ad0fdf2b2a517d
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0d79b3a8675546172678d1d51b7e6a87b71cf8011246c40301d07ff3e5ad2592
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0e3d4dcd5370857f70b678eb0962863540bb5c82b423129ab692951a76004f68
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:13:51.397256355Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0ec12b5242961fbb98c28b43132b9407302ce6b0f9362f5d25c39833b825fecb
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0ecb7a871cdbc5d16afe6a2e3bc2dfd0db789b0977b63489525c5da2a9f41661
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0ef6df9e923140cc7918e9e6f488adf872bbdc3beb5f132ec910816d2a5879ee
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 0f479a011980a68305a44fad6a86364cc183394ccfcd60e9da421fd6954a6bc0
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:25:04.090746976Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 1042edaf4dd5ac63dda5b467cacdaabe9e7f192059a21d96dc7f2211b9e91813
+      label: mail_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:14:57.666449932Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 119239120e3c2b4e90d4cb46cccaeee0b790dcc10d35b270115773c3dd0bce5d
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 11a1f3d2e89559c6273c0078c46142672b3b756fbfa89ad2f30e461c12772d9f
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 1414b05c2cc66a3ffb222a23671739c5df8e68d7f8f71f84d28443671bd1d21f
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 14a8e9b96285d17e614e955e07f3b5f37880887bca53f9b438db33a38057b474
+      label: mail
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 15104fab918c44d3e598a03fa412f7577821e184a4b59f474bde115b7f8c3d56
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 156156d02fba1dccc843c888188290dd6c354ba6c9b72865de7ffd0713b9dc0d
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:24:20.186405529Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 16b4aaf145734310e3853353efea0e0f8709489caefbf401a9255d7c320340a6
+      label: mail_system
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:17:49.34617961Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 1867c23a108d8c756ffd1c56a5ae1623c6672afa1002e8a0a496dae1ae4c3ace
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 18f3a7dbc606a2f7f1511341cb7f6407faa9cd9216a598ade09ba2bfd92f62df
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 190fc38b1efcf33b4be4b7d57e41e4982c6b3e5717fdcaa2a1348d3f4aaf14e3
+      label: mail_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:14:59.862779327Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 1b61c1991ed31bf96b2af0cf4b4047b2a40b2a40bb89a1e3bd55476d96d655f8
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 1d3f4b4380410250f22fa25ffe8898383530d6b748648d9a3470c68b25dadef5
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 1d612b59385b4cb5a6acd3435befee91c44c5ceaa2e334fafc9f6c5c066b6b2e
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 1e06ce676e383a5c606f148e48cfabf5de1e3f064a7dd8dfcd93cb8e72f15090
+      label: mail
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 1e223f4e6627bcef5f3f24db46eea82f924903d638639ad70fd9de2fc2fdbb4f
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 1eece0b366f35928b3263ba1b4f5e8ad4b57688a856f8e5dffeb94ff277334a5
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 1f66c2b35bc3b86bf5709ca1f852647aaa8bf10bbbe07f887191b848e53d7931
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 1fb572cab1259a48c66f9491333dfeec407d49c91306eb7751650e1d1aa5e396
+      label: radar
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 1fcc592877e5e091c6436736c3b059641a6a4dec9ac17d6b0c8b0c040135babc
+      label: vs_ranking_weekly
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:14:07.497715443Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 203382fbb744b7e81e1010dfcf9b9282c809ed13bb1a8ee664ebd1860ff0a9de
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:13:35.789029919Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 203cfdb53f8639ba6f77797099964ebe5ce33e8cf629c080c577e5fe54abdde1
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 206ff8ec1b2e8353e9673ac477999b661ac604219567c112e6de8f409eaa463e
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 20d051483ea2207883ad32852527e60e8171f2e61f5645e78a17121cc7999094
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 20e9e2ba92ec0333fd6306f093ed7499d8f02e1fe674099559071ed211b7c4fb
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 21b18b28fa2cfbdb0fadf0986a428a22f3fe064dc6e01b4ae1041abe551027e5
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 2203b2ccfa6bd0e4cc8cb0fa126e1f07fd9eb24d2e23dfabc45ecded9013371a
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 23a4a075cffcf4db7da5a2c1df07929b128b788a6fcd4c5dbf1a98573ffa049f
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 24914d530ecd709b639313084e5f7ec38c3df4c9b93fcc38213749dff450a762
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 258ef3dbc87d000165e19adb4139cb46a35bdb219f3ab7c3ea2fdd1ea13ffcba
+      label: mail_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:14:52.192743043Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 26e75c7d594c8579bf054830567510c99dc5d7d3677a13085fcb71e11a7a4c71
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 273391a59eb988a5d02dc2d6782f76db8ab0910d3e5ac54145db9ac760924826
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 27d1ae493edd174ec6dd4333cfbf7cb135f8049541d5e2fa30d37e29f7cb9b81
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 27e17a1eca02cf4b0aa0a569450c28e253f174e712341e807f7f3262f2b62031
+      label: mail_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 285e512707fc270e2a2f395e0b70d065979ee47680038161b4cd31e14e3b0849
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 28a488cdafdeae94590c31eaf21fac33259cac19f54a3aa4dae3a9cb690a3eb5
+      label: vs_ranking_weekly
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:14:13.281142085Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 28c8e3862ad73b8c8c6f7ea9a2ca96024bd444a4ae2319c27b72b1ef27eec0d5
+      label: vs_ranking_weekly
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:44:13.086771903Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 2a80ecb9019dd9d2d7b7b36eba59cfc63cc4babbc00e813847a16e0520528d19
+      label: mail_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 2aed5e2583b22642538b911bd965072d512c4a29ae8fe1d3bafd20a7c015102d
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 2b92d867701bc489812cdb45d0e43ee1cac1fcb5a00029075fecbdc06dd156a6
+      label: vs_ranking_weekly
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 2c1924ca78abbe94c04bf8e4ed4d2e7d15a8b4d5b68cbcef69037ffb2443bc2f
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 2cb01caebbe1b7b17d0ef05b44c446f8c0b0774ce4c53dc8c499ad1e5017afd8
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 2d03d3d52f64939deca5badb604c6c5f8bb0d232f105ccaccae03aa6e5a9c952
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 2e2e49e11f592404a912098a7800d2afc957a887b9cc05d7eb1d335bbaecd2e7
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 2e95f93da6fbbf767bdb93b7c26fe7241e97450ad8b002cc809b597b71abf7d0
+      label: world_map
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 2f38a50f2888bc3504d78004ba9b7c019a5710131b5abe25c9942b45a00f065d
+      label: mail_event
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 3039f6b2bd183f668ff7805d7e8319de9cf825b921e900f631532c5f5b342b43
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 30d951895fc29d14bb192ceec540e94d012804a10fc80c8c8b47945c66f3e9ea
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 31cc777fe20ab9784f82531fa3978462a3498244597f3ae320258f3e06fc6d37
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 33603c590104ab8a0bdf04b768bdf96c7ee83118dbbb9ebcbc4bb09b9df106f3
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 346f2cbda207bb048427dcd880f7174907fa93f7ab1ab7c2c9f490cd64243636
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 35af02bb86f5c08dab39823b6aceb686b33786c7937eef73547d3e4bfa1a67ae
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 364e32c77a4e716d7f4812ea14a264aa756b5d9f180f4cb5c55da5cc403653c6
+      label: vs_ranking_weekly
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:44:10.594165254Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 36c1fd51847c76aad87ca0afed5e7441223cd5fb0ade7aabd3faecbdfacdd58c
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 38d794b87394ec9dadb55c25447f668f94b4ac2d96e53ce289a826312e393ce0
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 39469099c57317ede1991ff396201b796537b193713311eca775d23ce611054c
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 39f942855f528cc4e46a775bfa1874a87e4c238dc02934ff62fea8b5804ebf17
+      label: mail_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:25:53.591010169Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 3a24b27669f8f05933df687800bdd83ce241ca5ae820b24e93e640cdd8088302
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 3a254a3e704dfaf2838be313d85eeffd28b169361e85d69529f7175943b32ab2
+      label: mail
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:19:02.560016206Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 3a90d2f8e15d47333891421a18abb422c706cbb41f40dacec51fc7a5c810bbb7
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 3afb1bdaefd1e054565ad02794ce6b4411b8a261e90abdb03c7ae80d00cbb725
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 3d06f75d7da68f03a871e5e7f36e5ae648517ff5e3c2ccc76e20062fd184f305
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 3de2c2207ccd83d568a5b1619bcb09c8c591659443c018b22568cac09e636af9
+      label: radar
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 3fd7e583b8ab89f31fcfa0a5654895b93791cae3878ca68827aa0383eb7374b2
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 3fe662914df4828d36b112912c7cfe0b095fbf3d405f82613df5913e033c00fa
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 40348565004629de0034dacdd43b8ec5b0ffa1607a62cfb66ec8f81862048d09
+      label: world_map
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 40d218c789bd4c8ea5d62ee9f52cd7e88f77359b827272bccb5b170ee28e23db
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 41867d8d0b146dd807a3dd8b7649d34f04c224c70d328ff286f95b525e2d8173
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 42f0949661caf1a7014f84beb71ddb7bfea3aec8f3631123df3c24bbd554d254
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 42fcdde081611cc679360d98174455b49d1434d7240ae46743e7662d8e3e29f7
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4470dae6aa074680630583e25ba50d9572c37e6326178d55139115cae0b922ab
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 45adcc9556bffa48ffe04c0e8cca22c3dced0ad4940dc9dd21ef3c0eeb1272ed
+      label: mail
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 46dd6fe07058a029a2b0ff22ac9ea8e3162e7b6ad673973feb4e53ab3e9d74b3
+      label: mail_system
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:17:34.620947051Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 488160362814b79f6dd021f2125674dcff8ef702d21353bb3400e91454e4be3b
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4938bc176110608102de500952bcec9531e34f72329edeb1d7ac1618f7502fb2
+      label: mail_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:15:05.372947031Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4a2b954223a14bdb33590f35ea3e5a751e33406521730cffe7f28fef9ed186ea
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4a2d1ce23b71d050f730731b4755c74aeaef917a86f6ff280d844a1249909923
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4a687287c807723226b603f2a9ea1dbfd84ec506dc2769ccf45b320a3d556d89
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4aa10b9d049d08844f6118db603b5bc2e139970c48b3607841d3d6f1f3565ac1
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4adafb4e671d70eba2da9a4341948abeb468a29e5c006aea15b5971895b771d8
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4adb038443562b2cd8ebd2c5737eab6f3207fc24341b9c122d5a535e902b8dc4
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4af31257042c0135ed9b215444e9472777d6334c134d20f7c283dddfe76f9ce5
+      label: mail_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4b42f1ae63be7b570274809513f432569338e3e8146474578d0b0062a9aee610
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:13:57.319642681Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4bf50236016337ccff4539cc97724105b422c3c454503e5708e19bc3ceca45d2
+      label: mail
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:18:57.934773695Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4cc131dd2bc6ca464d9d37ee6bbcbc6f815396a5b1008f9d4612b9d0e23e3929
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4d65ee48c8d031b190b42d8ee042c3cd5510015b719948861504901cfba6d752
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4ed172f9de2a5314ab53b37d5ed7e576db46b44f4328dc4e2acd658c0602433d
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 4ee5c9d090a4d81f6605b8568bd907e42ab7f47392c2021d55cb474f08ddb3fc
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 506e2b852410afcbdfea6e069bc8b5f4e0d2fe8836d0936ac2471b0db8ef2818
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 523e2bf5edf66f280503d520447797982c017e78c0304fee15280b7934963511
+      label: world_map
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5247349ffc92e2440187360f6a8f54e1219602e96c0501feab6d70b1d3ad604d
+      label: mail_event
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:16:31.449996372Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 52bab87acc26b1be206ddf8f6815b7eeb719d1f8efdf9e6cb7a8360782eb31e8
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:24:17.904572721Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 52cb54ec8c6e5cde84927444897aba1b62b52b5797fbb84763c0807ece883dbc
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 52fcae6c34ab217a20b6784f55facdb3fdea1b250a5a7abf4973951cc7955965
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5313f416599209479c40aa8118153c932076b1735713975d3ffa70637aed39ca
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 534957de735bfb463c4bae9c595a5818c77315bf730947a008795ae71ef816c4
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 53a85cfd6e4c6a78ed98ccae079446ea392329153c7c17a0970c20cf294046c0
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 54078a50bd7139e7f2c34267dc1d1f9b569f00f3fb571dc97d03ee818296e82c
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5474398f8a2318ecc69fff21f115d7862af5cc2c5346e4d9ad24fdc3b9337be0
+      label: world_map
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5574d8bfad23d411db9db6ab786764067ecf3ec2c66d701ed16ab45bdaa76192
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:43:37.880673534Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5624904e7033a265d034d17762efa09ee8bc7ace85f1eae307a5b8e3cf2014b9
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 572df11bf6195de958ae282e77408cab0e344492708cbabf7f0549ee533a97b2
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 578b93613c0b2123fa3b10937d761680fde5b84f11823243fe8ac31fd7b66e89
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5894682ab408290108f214c3265a4724333c965ed1ea299127a16c619f47f97d
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 58a73648fe2413cdadc6374cd60d3650a78514ef7767c8fd7eae24dda8336370
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5940045b72a40c438523989df6ec3ad38b1d89d58ab080568ca7012d714a18c3
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5a29b0c04d33df70b592edf2da607f194921bf6a7914fd7d89721eb70e6f26f9
+      label: mail_event
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:26:01.584054065Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5aa5bcf170b8543306a7f3ae0527bba0fff4d3e75dcdfed1879d7a8809a436f5
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5ac856e823a3244aa04e87fbc0f4d4a0917251816cddfc15e75be5ab43ab90a4
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5b0f06a69291135a7b290bbcd8bb2d0fe684432a9f9218f17e05e091984ba25b
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5b48da2a4e9c89e568202425a47cc233e55f363e7902fdeb4b053fa7127dc868
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5e6f6f9a7254ac0417a602d3004e2bdf6511a4515866969562bbc4c9cb7dc7ce
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5e86a7bb481fd207003798af99a57488a38df0eac58ff81a91ade14aa7ff53c3
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5f00aca688abaed795f0638aa47950d3541eab57f6d076e652105a8d94b5384d
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 5f0113614a6a0dc7771def5af5a68addc1828b076ea372c2c005c8eda2e61290
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 60e48a4352bb98dff6e2c717eccaffc39325edf08bc281e4024a3cb08ad78d16
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 612ded53946410279463541b6a4b7fd764ef802969219f9b560b31d0f9fffbe0
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 62f9a2d9f6cbdfd8097e2791e6eb1c2e0fafb6ce81598e5a5dd0bfac48290794
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 63a18c23eb4042a51efcea445aa0da5526c6c31ef6a15f8956949df3de6d14f3
+      label: mail_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:14:55.402383707Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 63b39d359857db7b6550990f8f03c9335558957af8bb844ea5b7aa467bb20151
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 63cd2311a644acad887ef515923c50ea780d47c3bf4ce2aa8ccc3a7b8b79a0e4
+      label: mail
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 660a23600eae9f3a40159b37daef83b96ef35f749745e70bd77b55a39b4dcfc0
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 66dc0b19f8d8b07662df2c45efae33505b9739799efa81dd5d09e312c7531935
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 6751d9565842f53ebf78a55f5762c4ed071d41f1d6707fc1afd47b2cd6b5a783
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 683fbb7fa0f5d0cd1ab098cf459ac25447c4d017e0540c7d80d2934b3f8d3a90
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 69df0c196b21fa796306e133fefacfa5ba30328ce2ad246967d3c6240d6b8dfb
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 6a3b6ca80ed53d783617d5da52b8a439a6f2811254c56b904c300a00aa2693a6
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 6b02c23b2a36ed6bf9191571fcddf202922d2bbfa352f21fe43d85f1fa7a56d1
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 6b2c71080f03747c721f7f484f704624ffacceb285f8bd3d7a91b2db081ef79e
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 6d0161f5264f7d2e4c5eeafb610453d8de6dd7cd5dbc8f031e9a5d0f3c3d4c95
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 6d2dc3ce2c83ffc0d9871de9f6dc926c9532457888604d2d1ca3f56c035e5773
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 6da2479e9ed2f705f3f620ade81de33c182dbc53f00974c3eaa38d0298a89afe
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 6ddae814389f252cae655dee81715419c840accfb9ef12379bc6b937cb9db0da
+      label: vs_ranking_weekly
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:44:18.835264832Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 6e6a97e9aec8f40fe93fead079d2ab4e1f73b446ceab206d5a2be8c0fa09c369
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 6ebd558e64946b860a4d4d1b9df3ddc32ce98949898bb382344253681f49aa2e
+      label: mail_system
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:11:46.843302157Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 6f97fe36d1e43b2f9739de9bbeadcea75b8337d801c89a5a19dcce638e198fdf
+      label: mail_system
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:17:18.97439665Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 6ff7f6c697dfb6f6309ca6f06b514d96db185d0d33101cb37cfe0f91da309115
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:09:12.794213119Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 708acf24ab53e493b2ee65c427e0bf434773c323fce1d66e5a6b9cff82d631d5
+      label: mail_event
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 70b36c7e2bb42839790ee9e4b4fe71c0794fc4cfed5c96c3774ba6e22cd2de71
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 7203edcb25f1854ed4358822cc89ccb9dfb6fe7a31ac9274795d9e14f41e783a
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 720cc7bbb3571cb12ec9e9895b9a8a7fd48285009ae9cbcc36411e15373781c6
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:25:12.740838497Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 72ef8127b102ae5ba692aaa8cbd7838c63163a354485d0846f4ff1f566ab86ba
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 741cfe36c37bcf012a5c9d595b5a86633620efd202c7818f8217930dddc04027
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 742a8c3954176985ffff4ad35566b56abff4f14f6d2a9f0a6dc29761a46aaa26
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 748c951da7881de8fe8e7b1834bce51b066d26e617546c66e61c9f6027c4ed2e
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 753d479bc174d643667019017a79be83fb36543da24b74f197bb3ee3141f7e2d
+      label: radar
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 7545c18d64c349e321dde7116a9215f65edb0feec74e976cfe368caa0523eb06
+      label: world_map
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 76ebc65df76bd6fc5a800360f213e19f52b9e61ca468f1ae9a793705aeb69a07
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 77dbdc88d884a02678d82705ba383ad4c51a5d6ec08a8a83d6801a39e2bf9309
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 78a6e100ee4f2f992fe1178da573c5c50871dbf18d2e219b1c14bc84eba593be
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 79248eee488067fa2d2969901b6510f598e96fd836f1086edbe6d8f41bbe0dc2
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:24:45.366342773Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 7985ad214c62ed19a30982c6d1ceaf74ad5d0efc6e9dacea156fb9f07e6d05b6
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 7998594087fc80fa438cf76e13d50ec25390ede8ff4b96115b84f02a446ecaa2
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 7a8cf6019ce3398f67d6f7250e78eeb1eab7918ae1999adb06493aa1a35f82ea
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 7ac77afd5c9ab8a4ee248e5d7c9dda8cc88ad2ed8a265331cd4054e6af77bcd5
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 7b11727e8de0b3327a7b03997e57c2fbcc91d3724bd4fc0920630c27391e5793
+      label: mail
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:19:04.086338745Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 7c0719129f398597533aee7312d3bd86197d9ab38bcc31609564720667cbf7d0
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 7d0415914fd7fb5c5878ef0bdff880a142437ca888c39d54dc1f028316550fd7
+      label: mail_event
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:12:20.36782098Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 7f105d1f5b60e4d944c7a130297e86a8c39f76d658ec546dab2443dd0efac3c9
+      label: mail_system
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:17:44.622902046Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 7ff31e4a21dcc4fe9877c0147d26cf06485c6c04639b65915eb7f3861162fde8
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 8005813407349d28be98c87a6871517f4961449ef365380b203e754db3091fab
+      label: mail
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 8042c7d84d7beed46dc825ceaa9d979a1be338b9bf850b15ec2f55e2a0adbc7d
+      label: world_map
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 8047ba29273b30ecfd4452ea61ff8e2cfc52edc4ca8dbb02895433f56a8c79c8
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 80cd139710b75d46f28bf25f3aca1470d8fee8b3b82db385277de20bd5e1f235
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 80f418cfa4617c1aec2c56c3b446e8be54bd03bdff1722b52c11ba6cb54c4efd
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 81ddfdd7859bddd290182b582fc7471bd2386d4e8f138892314057e7a67f52e9
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 81ebac27c60caf14849ad31f881ee507ff8392c4446847d2f2702a86d91884f6
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:24:35.479521758Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 82595ea86a40154ce70f8d488419802a5d16d93469063bc30613874305ad9bf9
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:14:24.905905196Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 82bd196b8ed1e38a52066a66810562e81e725948515ab4ffc51b2fadad5eb673
+      label: mail
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 84ad92829bd9cf72feb764e8efa57b4dba07bfc0506057193d77f0e99a7e7f81
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 85197cdba49acc4024ac388515a27e77744fddd5af1ed7a7fc2c1c7b141e4b85
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 8597bc0b9f0f82cff23861320a62e76d0b3cb9371a05393b668103f85fe45225
+      label: radar
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 86b4032fb44b425f5dc6e78b60b8d0cde1d7acc0bd6ed20ef0d4f244d02440e4
+      label: world_map
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 86c43292025f60d4218f06a04244bf38c0615ee63134685c18debcbacb3d4665
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 8c3aaef3ea14d1a4b9b6622a69c7e396aa55f661633a32523facb603530afa19
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 8c4f024b8978ba78890e42466dedc08d4b9588e84634365cf33cab195accbddb
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 8ec51c4f2311422d3b1adb430eb1825c21fd2d167fda7e337f01e19203c739cc
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 8ed54a22c70066c89222be0dfc9ea8cf5ed88dc2524df8569bcdf2c8dee32cd2
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 8f68d2cf4101cfd5e73ef2823f73bd7b35a945b07c227ad50e7588dfe2064fd7
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:43:23.242378347Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 8f8640d2148e988934a8541d63e64ced78ae075cadef911a5fc445d96f416566
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 90742db359e6077bda727040fcc8868ec73b213521bddaa3919c08c82bff9d32
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 928e57c344583097575c49c0c468b2721e0e239fca2d97f77f9ff8cbd9195e25
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 92f97a7e5fa2903416216ead3e73d915baf6e31ac01e394853815d46dbcbc687
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 93218eefaea8bc202f386c17aa7e0f2da64cdb877560772c09c599c6854a8a0e
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 93e999dcbf4ac596442d1e6e36df5f3b5abbcd39cfe83e64848ff193039db8d6
+      label: mail_event
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 951d0152075598a17cc7644785a3172044e1a8bc0fba374fda4ed52238b975d5
+      label: vs_ranking_weekly
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:44:04.326043315Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 9590ab9a533a3678b6fd77117f8c60e4f6c965084efb49efbe32803a07e20bf1
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:24:25.533109256Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 95950bcc7b6261f0a0a2ab470efaf6900255f68c57b89a9e422164b81ff465f9
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 969560a4e58d781e9f3a6ff602d4298d5f4c69fd1d0b53742bc1c0cb30e461a4
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 96b97aa305349cb86a5f7cc4247f96d22ff2fa9ae2a92503ac0f68ef0b421461
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 96c68f7ab550b7b59942230218c10a64653960a44ed2c344aff9f08873a5d0f8
+      label: world_map
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 9763201163bd26aee25cbe23c3c04adf66c743e4518265141668100fb173ee0c
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 97798169a60eaef220b46a31bd4457c00c0e4bb92d3345de8ab095ebacc0d5b2
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 97b06fa477b52b19c8879e35446b8c12300ae69f62a298be2473bffd2db28e48
+      label: radar
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 9837e93dc4babe1823bb18d0766f90f1ba2e7c1ede980487fd88e24bf51b9f6b
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 987fb3bf87ca0e8ea5dad121a2e34e908f74b22d4bb71481ee3ceb96b1bc4247
+      label: mail
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:19:06.018272507Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 9915f97b6cd72fb65490bb127ea5e0190f49618ce812abfd7242d13bf39703d7
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 994f7a336647aab9912dfb39bd8d70edfc8aa19bfb811112e3a24cbb80b0d426
+      label: mail_system
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:09:04.922885001Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 99bb92a98a697331b824d807eff6da0224e6acf475d0ce9e089ce3d76d17fae7
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 99e635e2bad7406d3a17546909b7ada005c49ef2b7ea9666f091751ecc71cc9a
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 9a13fef1b702db247f56e0516cd47e5f9c10f7a67d7d7315c03d17bb476c796a
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 9aa839e5278936ac0a79f9355ee9d368a3faeb57dc8dc2d2b1d25944a0c8fab8
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 9bf32e2de229c54cba474a6e602c4ea1e0f5b507c29f7fbd652cd89905ce5276
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 9c3429e623a9cb3d98a3aec6527250211dc35110ae0d96845ef3b35d642e16f3
+      label: mail_event
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:12:28.981682647Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 9c639cd059f242774afebbf825098363f587f1885bb7296164abe01070f168f5
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 9dcb46787f67b4b0c589c3556473c1d698646a16e6bcfb551e70f945c26ea27c
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 9e47b3448114e708ad64d1d5179fbe559e3449a1b9120946ad20acd745a2d3b1
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:24:28.684779299Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: 9f620567102560d5f946f72371715b0a8fd561f572288a1885e5978a42d1fb8b
+      label: mail_system
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:10:32.404119738Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: a08bc30726e5aa1d16a6670d6f076661aa37880ca21f64f6f9e412f48f037761
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: a0d3ec61686d8216a043f53800c960c8c35020fabd97ab165c850ae5a0d9abd4
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: a0e196cd230a34d43c0c6e1dc32ef13dd993ceaaee51a9a49e4ea15ab32b4bd3
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: a21ff84276f604963abaed259adce8838162fa7e01d58f561430f5f42db72a2c
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: a24075a433e25d94f3eea273ddeaadbc3ecdb1daa47ee0b0489ea91ee4e7de17
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: a2655201477a1b91b8251cbd683d5afb4e3cffbe6a2a4f4108a77834fd36d14f
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: a319ac58fc264193dce87513df384c2cbff9181d742590de4eb2332ea5f1e052
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: a325195b30b7a38b10508f635d858a1f577dffcc6b86c4c81ea1fbfa7b546207
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: a5139d0cc1b247374146b3e9e9b66f33d2276c31aaf740870f56a7ef9c0588c3
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: a766e122bbb5484769161a3975f9d5f98e086c49246cc0cb9d24c50c6eab321b
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: a82704aad5f4171f649b94b17f986cfa91be2a6f5625aee3c252d5034087aaed
+      label: mail_event
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:15:54.326755133Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: a93bc6920268410630b4892c581964ca5dbbdf5ace590d3fb8d7e4b36e446dee
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:13:54.755646633Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: a94ee6f1305c9b9a32a217b4dd1aa7b0d67ae9f1ad3d64309b9bdfd107c2fc6c
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: aa02abdb446b7029e54e1a1ad012a7f97796d286bab3374d408fd5ca47f87697
+      label: vs_ranking_weekly
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:44:16.109102197Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: aa7a68e4c029139532f8f6ab6a1b90a3e9137195698baf6f2bfcdd529a03a774
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: ab26a104a53fe53c4d2cb94cea9f5544a05a4384f712c6b3eb9215037ceaedeb
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: abcde02092b3bc2b2c6d6a5e5635d2ae21c55953f02aa6f9507ac9301d7abf72
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: aec65874f1319dade2eef34ead319cfd7baf3f5ba27bccf9ad740faf7712c48f
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: afbe6e5d8701034078220f425d282a4b3fba94e25e92627882d1bcff6fc15cf1
+      label: mail_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b1c48259b7f65eeff3af02a5b5c2b26f659b5d3aa2d56944bd5bb5cbfa5f80de
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b2680c05385ffe4bd053762397a8ae4e5e68c4ddaf9dbb17b3041adeb9a8c2d8
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b2721df5bbda2f80cf190dd758b015375e3e490d3c6a96edeb0a51599d8b281e
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b29c9e631967b3ac3f2b67a2caa23a69e7d4ccfdbfecd7d26a3ef999c0bbcd73
+      label: mail
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:11:27.951655166Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b34512d39fad079b2f93f646ae98a8ce9c10e3428f25433b656359c4893c34bb
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b37b751198046fa139b28a7c45468b33f2628641bcf0bd98ccd29d40f211c054
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b4d1f87c3ea4570ef66caf7c719bbfdc83a7d0477b91af0ac11b553964da1674
+      label: vs_ranking_weekly
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:14:10.771442789Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b563a575049a779727458919da8eae2b8d24fc98986a1010a552db0e7d718571
+      label: mail_event
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:15:51.03158207Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b5bdbd51a0ad4a6849e2ef3e49bc953a5792fb47ab0497d3e30c312003a2840b
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b61f0e3c756d4dabcefa2971ef383761025edb0298d5a3193b720d7c8e287939
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b698319390b14173cba4c70ecaf7fc0bf36b47fb12e6d49a174ca97e20ae6d4a
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:13:45.824474609Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b69caa0825410e3b5f8fecaa42a18273c12ef5885863db2827655f00e9531bb3
+      label: radar
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b92ea433e71da82b272b85b51a3061829d6b077c9fa0910ba4f3f1640ed59003
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b972c64e6628869a6c9e25a47f2779aab998b2c9f219542e95dc2302cc9c483d
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b9af69a0a39c5f2006a6b155ccb815a81f18079057b26df81faea809ba57d3df
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b9d30e84ab8c1b33bab6734264af78f5e68b492ad6af0d8e4b97c93ee1a26de2
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:14:30.141012169Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: b9f9876aebf740e2bfe97ddc1a3dc8f937db3e050c99dbca336d6b7ff8bf691b
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: baf225e9ba51fde19f91e7d07a65c064dbf98dc0745c503efa7fe530b6d66e20
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: bb135010577f47a15ed307a2b228f6d6710df5cc6008dae8f40440efbb89b23e
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: bb581f26b0a5afdd42a5f9b73a573ebf3d1e17909dac720b8b966470e5f1ddfc
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: bbe14e73d607db7fb3e9664c4bd4eb50d43d5aaa797b83d073deb08e0030edb1
+      label: world_map
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: bcada619a7fa9b6803f5fd15922a51ef83d4fc03b5c8ad5e0191b583ccc03060
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: bd65b8db04c2d7e9bc197a1a1d213f543bb024a8502c3519178460bb52cc37b0
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: bdca173da6fc5b34ace78b040ab42f2a29c6e0f604fd348064925f49fa79a4a9
+      label: world_map
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: be2b66355609e426bd631af32a3dc0238985f7d0f0820e917422871bb89a7860
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: bf003a62f311e3f698c6282f8ab70c06cd5a66d281f2e8f4f59e7f00214b5ca7
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: bf274d271402a69ad19da60f1d7621e6a5ce8bf06acbc4b146ee46374f64afbb
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: c09bb12fe266459000518ea6022cc2aab17484490a15c8e9d33d6e616625c5dc
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: c1f61ae031ab8504bd272c15f00294d823ce31b9be9b5b0bcc84c2c72efd4310
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: c27bcba889a3b40b77e595eb464850f4b85dba0337d22a372b88b1786a3bd74f
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: c40aad7a5270f92fb51631a70c6c79d1ae32f1cbe0a750b072aed2b2c816ec8c
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: c45e631ec5e2b70f810fcad05b5f2f90a9d45fa09f0af5edd4e10ac092eae152
+      label: world_map
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: c5dba5cb1c72b5dd7ea5aa87c8b819d3699b62bb32ed0a06e29e234c30c47662
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:24:31.4960656Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: c62dfdfca4c0e5e6ed401c42d1ba483170595783a5bbe094bbb1c237ec0c3dc5
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: c6c4ecb6c50430748a65dbc5809b21dd982c75a893177c07a4c43fa43aaf2f42
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: c7a2b5ac9293c53afb991742f92d85faaa0265d90e106a8f6e189cc831877115
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: c864b1da8e78d6b31731173415a2937299bd6398b1453e6e4fca514e574bf8c8
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: c87b11fdb5cfbf9a174499d4e72bf4738eaaccb487b84e2badc3a5adbf5e10d0
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: c979cf1affe6e387e044df00d9447529c5f62a3b8d89b98729d55e68a7717b45
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: ca8a37ca107023c99e21975d1cb5ab6accbde70b32327a98f02bdee21b5ae9ba
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: cab81d19708177e50323e71e4de1f01e58cb7b6500c123bec6d014846dd51ce5
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: caec23a774f5736884feeccf95c9bc9100328e2873cf5382906cc18fcd41222e
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: cb0d30de324cceab5f2147cfc00d3c40e332f05638aabce263b10374a2646daa
+      label: mail_system
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:08:57.023329706Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: cb354fbcbd5626d2ffbada1a0262d037870e91d6d24b8909f5e39917c2e39a48
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: cb50f0553ed506e7f384e7cf2c18232cd4d6c01e579b1ab012d1ba2154e33ba0
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: cd85be07b2c2cee7024d092150bd6c86b70e7d0274f88a0f291b9a62af4d02b0
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: cde145a727d1aa73201666ca1990aec0a3848e1e66875c77029412e7a5b66a46
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: ce61370411c3413286b4ad0151136e86e3391a9bad66e4959de5aa09d82ab58a
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: d009c3bc81ab01e709272c9de628c415969a8b71beb0a5bedd2152816d5745d4
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: d133ae9b6214bc9e14e98e72cf4cf9408fa3bc3d7739037bad3ab069931ee2a3
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: d2df167d54b70b31a8d3ca4e9ea8f4b40c1154af01e4a1370c9648fadf55b302
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: d38c583ab802dc7cbd35d6df862d8f348ef9d69f6fb59d21e45635403ee61546
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: d3aec5b5cd9ba2a9506db5797c5f35c2cddc2ed74961bcf630d85b73cabc931e
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: d3c5a24f9e7b6eec4715ddeae158048c8f5b9ac28aaa95afd7d9742400647ab7
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: d5064969633c2251d06bf933ff3341e059a7b4ef1c4e832c055d3be17377ed54
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: d5a5bf007320f94527542dabc957a84ac81fd830320fc7b6548845083e4b33c2
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:43:19.126789062Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: d5b5d186e0b5caba524477b379aa2664407c2d16762d87ba5c3ed056df725847
+      label: vs
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:09:37.782911983Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: d5d6a5e4a2ccc6605b2a4a6da63a1188f3987997ef81239c25e72aac2502f5e3
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: d633124792a7dcd38384ce48f878b84d9da9fd1e1aec5d4b0af97834be766402
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: d7396f3762d0f9c1731849fdf4c46834869a800a5a0b28b56f9f29328fa2b966
+      label: radar
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: da22603b877c1ae101a2073827691c741fdaef0f9a25d238a98d432a30a6b898
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: dad7a4a186762df5f73f8c2675c6f3cd2a09298f6900afe0ac49bac8a0805a08
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: dbc27591c2b794a49961ec94f624797cde485f7d5e1f082e74fde72b7242c6ad
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: dd086e2454d04fd9f14092477386398b41afe7c7ccb9554b5005386982d6dae9
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: dd97e846f65db7c6df4dcdf9de60f3c96ab624f70feee18c7132e282013a8636
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: de10808fd7eb43e3189de6df880443fd820244e3a056a2e0f8eb9e388fee6dc1
+      label: mail
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:18:59.324765054Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: de3d2f3269777580444473ea03251906a25ebb5e17e325741f838df02f2d8f51
+      label: mail_system
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:17:46.377915863Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: de402e8ab0feec4c2fcedcf99aebd7fb07a350f1ed896a155813324fce59aa25
+      label: mail
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:19:07.537118584Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: de96774c0939a11e78d6fd32836e5c69421bcc4f40111e83976a1ad54e30f52e
+      label: radar
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: dea89f55cf865dd66952480b13e813f382c0a81f29031a9394f8218d13011dc4
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: df2dd2fdcdf5631a135f3fac81902f6f41aa583da05c4638439317ba95654b95
+      label: mail_event
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:15:39.280376004Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: dfe866fc1d4a8c27eacf8574e91d96d2fb9e039b121f8b5bcbb5d310053f7276
+      label: radar
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: e18832534d216cbc2c3687d59d598c17ad9091a8bdc2aefe24f8924fa517694a
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: e5aebb03f58af7b1250568fe25aaa521910f05816af125c96c52f970aa8a039d
+      label: base
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: e61f95a8e38b320f0a25fbfc43666d24412352bb641ea1e0ebde75eb30d19e09
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: e71be2abac7b937ac2eb7b18e42cba42b4d7a659add77df60c4262aa164b9251
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: e71ca381b2809825bfd11d2d258c01eb944000ea706d549379c087ec3ccf8db9
+      label: radar
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:07:25.715130871Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: e89c907e772a165543f28925119016339c887ff6d7651140aff82f6fb12e828d
+      label: alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: e8b1dc39c79c17164b484db20d1e2b08ccdf7ca0e43e3698e2072b3756858910
+      label: world_map
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: eb46c134f7766dfa18780b6d0a7e4400d23ee2f0e9c10e95305b4d78be988b08
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: ee89d738a4d33250eaeabce1284a957a164efc9cdb2e4335d3044764e72a7fef
+      label: vs_ranking_weekly
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:43:03.884905383Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: ef7c64e93be28594472e8b380ba201760225605870e27e13aeca1a413e1e1b9a
+      label: vs_ranking
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:24:07.916094642Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: f235afbe5fcefd0c57379eef5b758009c536af99d9a295b71a2a4dcba22e1b95
+      label: mail
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:19:00.955793478Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: f2456b5bbcc80e671a02a217cdfd92c6f79b47eee1dd3304e1a9a90024742318
+      label: alliance_members
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: f284db8920cb6fd8c76be508fa91ec3c026a1f8ef80f7c703d43ff3e60e29a11
+      label: mail_system
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:17:31.106348039Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: f295a889d5ca5cf63a93a123be96ca3040a43fa392cae79ea80620b02b000365
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: f2a940539177ab71f64306b4bc0aa9ce442801328d05b95e9c19aff52c80fc4a
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: f2c60fa510df3429cfe6a58b60113b15c4ba477a36a339ff18b2cff80731187a
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: f46719ff0aede8de9401dea3cc8cbbb4c30802f57b0447e38b7e16bf71c9cf6c
+      label: world_map
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: f524bd2610844ba4362200e1297a53071578147052f977455e9409116ee96157
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: f531d9fddabbb4341e6dc16c66c922473c79244e852735755b9a5c10bc0fe63c
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: f71199bf64545f410c888c9f15bac3813ef543eb1fec75373085a0ac6c832f30
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: f7e1ae52ac3cc577bcbf0ce276442bd0e165f609e8766e61aa916836c3b5997a
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: f932cdf2abaa7f095b5e1e27e04543816689b88a5a9fa750a88bf60a97088600
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: f944be4c07d41f83cd8ec31b7616d72c9b235483636303435b7bf898861588d3
+      label: mail_event
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:16:03.131927092Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: fa3462b33d68a6e30fec3528980e36260e1eb211a51bdfe12a49a1c5be7f23c2
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: fa77ac031f3673c943def9a7eb178a5e06b2a55368fca1ae5696b3251936a160
+      label: _none
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:18:48.276513968Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: fad1856053bbb4b01f821e1679cd7094fa473f0839fca9e658bcace6a299f1dc
+      label: mail_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T23:15:03.879945274Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: fb6f48d9ae62493a0581a697bd02047aca97e5f538e56d369b781278612a5546
+      label: radar
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: fb994621e36c0cbe3560a8d52c7f604dc660b5ca2ff5d6fa2ddd292c349638a9
+      label: alliance_tech
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:31:24.604642385Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: fcc4caf91a491594d1cb9a75f5fddaa22bec5a9f214fcab6aee719c1b389f62b
+      label: vs_ranking_alliance
+      width: 720
+      height: 1600
+      captured_at: 2026-07-27T02:27:26.832874711Z
+      device: moto g play - 2024
+      game_version: 1.0.354
+    - hash: fe9cdc1ea541f527556c965aeaa425a38a340421d63f2599d8b8ab95df326b50
+      label: world_map
+      width: 720
+      height: 1600
+      captured_at: 2026-07-26T19:05:23.868982447Z
+      device: moto g play - 2024
+      game_version: 1.0.354
