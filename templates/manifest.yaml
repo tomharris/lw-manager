@@ -1,0 +1,238 @@
+reference_height: 1600
+screens:
+    alliance:
+        anchors:
+            - id: alliance
+              template: alliance/alliance.png
+              region:
+                - 0
+                - 0.02366
+                - 0.25619000000000003
+                - 0.11474
+              threshold: 0.85
+              identifies_screen: true
+            - id: tech_button
+              template: alliance/tech_button.png
+              region:
+                - 0.47951999999999995
+                - 0.52617
+                - 0.97762
+                - 0.63974
+              threshold: 0.85
+              identifies_screen: true
+    alliance_members:
+        anchors:
+            - id: alliance
+              template: alliance_members/alliance.png
+              region:
+                - 0
+                - 0.89581
+                - 0.16333
+                - 1
+              threshold: 0.85
+              identifies_screen: false
+            - id: alliance_members
+              template: alliance_members/alliance_members.png
+              region:
+                - 0
+                - 0.024739999999999998
+                - 0.33238
+                - 0.11366
+              threshold: 0.85
+              identifies_screen: true
+    alliance_tech:
+        anchors:
+            - id: alliance_tech
+              template: alliance_tech/alliance_tech.png
+              region:
+                - 0.29857
+                - 0.14795
+                - 0.6919000000000001
+                - 0.23795
+              threshold: 0.85
+              identifies_screen: true
+    base:
+        anchors:
+            - id: alliance_button
+              template: base/alliance_button.png
+              region:
+                - 0.82714
+                - 0.71367
+                - 1
+                - 0.81331
+              threshold: 0.85
+              identifies_screen: false
+            - id: base
+              template: base/base.png
+              region:
+                - 0.7581
+                - 0.90117
+                - 1
+                - 1
+              threshold: 0.85
+              identifies_screen: true
+            - id: mail_button
+              template: base/mail_button.png
+              region:
+                - 0.8295199999999999
+                - 0.7811699999999999
+                - 1
+                - 0.8776
+              threshold: 0.85
+              identifies_screen: false
+            - id: radar_button
+              template: base/radar_button.png
+              region:
+                - 0
+                - 0.71688
+                - 0.0919
+                - 0.8111700000000001
+              threshold: 0.85
+              identifies_screen: true
+            - id: world_map_button
+              template: base/world_map_button.png
+              region:
+                - 0.75571
+                - 0.89903
+                - 1
+                - 1
+              threshold: 0.85
+              identifies_screen: false
+    mail:
+        anchors:
+            - id: base_button
+              template: mail/base_button.png
+              region:
+                - 0
+                - 0.91081
+                - 0.15143
+                - 1
+              threshold: 0.85
+              identifies_screen: false
+            - id: mail
+              template: mail/mail.png
+              region:
+                - 0
+                - 0.02688
+                - 0.15143
+                - 0.11366
+              threshold: 0.85
+              identifies_screen: true
+            - id: mail_alliance_button
+              template: mail/mail_alliance_button.png
+              region:
+                - 0.017620000000000004
+                - 0.17474
+                - 0.48951999999999996
+                - 0.29795000000000005
+              threshold: 0.85
+              identifies_screen: false
+            - id: mail_event_button
+              template: mail/mail_event_button.png
+              region:
+                - 0.012860000000000003
+                - 0.26152
+                - 0.43476000000000004
+                - 0.38151999999999997
+              threshold: 0.85
+              identifies_screen: false
+            - id: mail_system_button
+              template: mail/mail_system_button.png
+              region:
+                - 0.015240000000000004
+                - 0.34831
+                - 0.46570999999999996
+                - 0.46509
+              threshold: 0.85
+              identifies_screen: false
+    mail_alliance:
+        anchors:
+            - id: mail
+              template: mail_alliance/mail.png
+              region:
+                - 0
+                - 0.91188
+                - 0.15619
+                - 1
+              threshold: 0.85
+              identifies_screen: false
+            - id: mail_alliance
+              template: mail_alliance/mail_alliance.png
+              region:
+                - 0
+                - 0.009739999999999999
+                - 1
+                - 0.17795
+              threshold: 0.85
+              identifies_screen: true
+            - id: mail_button
+              template: mail_alliance/mail_button.png
+              region:
+                - 0.0009499999999999995
+                - 0.91188
+                - 0.15143
+                - 1
+              threshold: 0.85
+              identifies_screen: false
+    mail_event:
+        anchors:
+            - id: mail_button
+              template: mail_event/mail_button.png
+              region:
+                - 0
+                - 0.91081
+                - 0.15619
+                - 1
+              threshold: 0.85
+              identifies_screen: false
+            - id: mail_event
+              template: mail_event/mail_event.png
+              region:
+                - 0
+                - 0.02581
+                - 1
+                - 0.17581
+              threshold: 0.85
+              identifies_screen: true
+    mail_system:
+        anchors:
+            - id: mail_button
+              template: mail_system/mail_button.png
+              region:
+                - 0.0009499999999999995
+                - 0.91188
+                - 0.15143
+                - 1
+              threshold: 0.85
+              identifies_screen: false
+            - id: mail_system
+              template: mail_system/mail_system.png
+              region:
+                - 0
+                - 0.021520000000000004
+                - 0.31333
+                - 0.11044999999999999
+              threshold: 0.85
+              identifies_screen: true
+    radar:
+        anchors:
+            - id: base_button
+              template: radar/base_button.png
+              region:
+                - 0.81286
+                - 0.91081
+                - 0.9657100000000001
+                - 1
+              threshold: 0.85
+              identifies_screen: true
+    world_map:
+        anchors:
+            - id: base_button
+              template: world_map/base_button.png
+              region:
+                - 0.75571
+                - 0.89903
+                - 1
+                - 1
+              threshold: 0.85
+              identifies_screen: true
