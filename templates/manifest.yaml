@@ -391,8 +391,8 @@ screens:
             - id: base_button
               template: world_map/base_button.png
               region:
-                - 0.75571
-                - 0.89903
+                - 0.7581
+                - 0.9226
                 - 1
                 - 1
               threshold: 0.85
