@@ -81,11 +81,57 @@ func Match(img image.Image, tmpl image.Image, region transport.Rect, refHeight i
 		return MatchResult{}, fmt.Errorf("vision: template has zero variance (uniform), NCC undefined")
 	}
 
-	// Search bounds: the region in frame pixels, clamped so the template fits.
-	x1 := fb.Min.X + int(region.X1*float64(fb.Dx()))
-	y1 := fb.Min.Y + int(region.Y1*float64(fb.Dy()))
-	x2 := fb.Min.X + int(region.X2*float64(fb.Dx()))
-	y2 := fb.Min.Y + int(region.Y2*float64(fb.Dy()))
+	// Search bounds: the region in frame pixels. Rounded with math.Round, the
+	// same rule the template's own scaling uses above — mixing round() here
+	// with truncation there is what made a region exactly the size of its
+	// template shrink by a pixel relative to the scaled template and admit no
+	// placement at all instead of one, at almost any scale factor.
+	x1 := fb.Min.X + int(math.Round(region.X1*float64(fb.Dx())))
+	y1 := fb.Min.Y + int(math.Round(region.Y1*float64(fb.Dy())))
+	x2 := fb.Min.X + int(math.Round(region.X2*float64(fb.Dx())))
+	y2 := fb.Min.Y + int(math.Round(region.Y2*float64(fb.Dy())))
+
+	// The box's four corners are each rounded independently, so a region
+	// defined to exactly match its own template's footprint can still land a
+	// pixel short in either dimension purely from rounding, even with the
+	// same rounding rule on both sides. Expand rather than trust the
+	// arithmetic to land exactly: a search region is "where to look", which
+	// by definition must never end up smaller than what it is looking for.
+	if x2-x1 < tw {
+		x2 = x1 + tw
+	}
+	if y2-y1 < th {
+		y2 = y1 + th
+	}
+	// The expansion above can push x2/y2 past the frame's own far edge when
+	// x1/y1 rounded toward it (a region flush against the right or bottom
+	// edge, sized within a pixel of the scaled template). The placement loop
+	// below is separately bounded by ox+tw<=fb.Max.X / oy+th<=fb.Max.Y and
+	// has no way to claim pixels beyond that, so an unclamped x2 past
+	// fb.Max.X silently shrinks the usable span below tw and the loop admits
+	// nothing. Shift the whole box back by the overrun instead of clamping
+	// only the far edge, so the span the loop actually gets to search keeps
+	// its full tw/th width. Then clamp x1/y1 to fb.Min: for a template that
+	// truly does not fit the frame (already rejected above by the
+	// tw>fb.Dx()/th>fb.Dy() check) this is unreachable, but it keeps the
+	// shift from ever producing a negative origin if that invariant is ever
+	// weakened.
+	if x2 > fb.Max.X {
+		overrun := x2 - fb.Max.X
+		x1 -= overrun
+		x2 -= overrun
+		if x1 < fb.Min.X {
+			x1 = fb.Min.X
+		}
+	}
+	if y2 > fb.Max.Y {
+		overrun := y2 - fb.Max.Y
+		y1 -= overrun
+		y2 -= overrun
+		if y1 < fb.Min.Y {
+			y1 = fb.Min.Y
+		}
+	}
 
 	best := MatchResult{Score: -2} // below any real NCC, which lives in [-1,1]
 	found := false
@@ -147,6 +193,16 @@ func ncc(frame *image.Gray, ox, oy int, tdev []float64, tVar float64, tw, th int
 	return num / math.Sqrt(tVar*pVar)
 }
 
+// Resize scales an image to exact dimensions, in grayscale.
+//
+// Exported so the scoring harness can synthesize a second resolution from a
+// one-handset corpus. That measures the matcher's scale handling; it is not
+// evidence of cross-device generalization, because a real second device
+// differs in DPI and therefore in layout and font hinting, not only in scale.
+func Resize(img image.Image, w, h int) *image.Gray {
+	return resizeGray(Grayscale(img), w, h)
+}
+
 // resizeGray nearest-neighbour resizes src to w×h. Nearest neighbour keeps the
 // template's hard edges (and matches Upscale for integer factors), which is
 // what NCC correlates against; interpolation would blur the very structure the
@@ -162,6 +218,24 @@ func resizeGray(src *image.Gray, w, h int) *image.Gray {
 		}
 	}
 	return out
+}
+
+// variance returns the sum of squared deviations from the mean gray value.
+// Zero means every pixel is identical: NCC is undefined against such a
+// template (see the tVar check in Match), and it is exactly what a crop of
+// blank UI produces — a perfectly valid PNG with nothing in it to look for.
+func variance(img image.Image) float64 {
+	g := Grayscale(img)
+	b := g.Bounds()
+	mean := meanGray(g, b)
+	var v float64
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			d := float64(g.GrayAt(x, y).Y) - mean
+			v += d * d
+		}
+	}
+	return v
 }
 
 func meanGray(g *image.Gray, b image.Rectangle) float64 {

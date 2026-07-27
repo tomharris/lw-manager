@@ -198,7 +198,7 @@ func (c *Ctx) Sleep(ctx context.Context, min, max time.Duration) error {
 	if err := c.ks.Check(ctx); err != nil {
 		return err
 	}
-	t := time.NewTimer(jitter(c.rand, min, max))
+	t := time.NewTimer(Jitter(c.rand, min, max))
 	defer t.Stop()
 	select {
 	case <-ctx.Done():

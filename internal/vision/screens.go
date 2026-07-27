@@ -1,0 +1,55 @@
+package vision
+
+// ScreenNames is the recognizable game screen set: every screen a corpus frame
+// may be labeled with, and therefore every screen the recognizer must be able
+// to name.
+//
+// This is the single declaration of that vocabulary. It lives here, in the
+// package that does the recognizing, because both consumers can reach it:
+// internal/studio (which offers the labels and validates crops against them)
+// already imports vision, and the M1 gate is a vision test. Declaring it in
+// studio instead would put it out of the gate's reach — studio imports vision,
+// so vision cannot import studio back — and the two copies would drift. That
+// drift is silent in the worst way: add a screen to the labelling UI, forget
+// the gate, and the gate simply stops checking the screen you just added.
+//
+// A screen belongs here when the recognizer must name it, which is not the
+// same as the graph navigating to it. alliance_members and vs_ranking have no
+// DefaultGraph edges and are still listed: they are labeled in the corpus for
+// M4, and a labeled screen with no identifying anchor is scored wrong on every
+// run, forever. Recognition and navigation are separate concerns.
+//
+// Two of these are trees rather than single screens, and both are modelled the
+// same way: one screen per state a task must act *from*. Invariant #3 requires
+// a matched anchor before every tap, so a state you tap from is a state you
+// must be able to name. Recognizing "some mail screen" and tapping claim-all,
+// or "some ranking screen" and parsing it, is the blind tap that invariant
+// forbids — and for the ranking it would feed M4 numbers off whichever view
+// happened to be showing, which invariant #4's "every number traces back to a
+// screenshot" cannot save you from if the screenshot is the wrong screen.
+//
+// Mail: `mail` is the mailbox index reached from base, and each mailbox drills
+// down into its own screen carrying the message list and the claim-all button.
+// Only the three mailboxes we act on are modelled.
+//
+// VS ranking: base -> vs -> vs_ranking -> "weekly ranking" tab -> select your
+// alliance. It is NOT reachable from Alliance; docs that describe the route as
+// "Alliance -> Members -> VS Ranking" are wrong. vs_ranking_alliance is the
+// screen M4 parses; the three above it exist because the task has to tap its
+// way down and confirm each landing.
+var ScreenNames = []string{
+	"base",
+	"world_map",
+	"alliance",
+	"alliance_tech",
+	"alliance_members",
+	"vs",
+	"vs_ranking",
+	"vs_ranking_weekly",
+	"vs_ranking_alliance",
+	"mail",
+	"mail_alliance",
+	"mail_event",
+	"mail_system",
+	"radar",
+}

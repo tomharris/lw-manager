@@ -90,7 +90,7 @@ func (c *Ctx) Swipe(ctx context.Context, from, to transport.Norm) error {
 	if _, err := c.recognizeOrRecover(ctx); err != nil {
 		return err
 	}
-	d := jitter(c.rand, 250*time.Millisecond, 600*time.Millisecond)
+	d := Jitter(c.rand, 250*time.Millisecond, 600*time.Millisecond)
 	return c.tr.Swipe(ctx, c.jitterNorm(from), c.jitterNorm(to), d)
 }
 

@@ -226,3 +226,51 @@ func orDefault(v, def string) string {
 	}
 	return v
 }
+
+// ParseVersionName pulls versionName out of `dumpsys package` output. It
+// returns the first occurrence: a package with several split APKs repeats the
+// field, and the first is the base.
+func ParseVersionName(dumpsys string) string {
+	const key = "versionName="
+	for _, line := range strings.Split(dumpsys, "\n") {
+		i := strings.Index(line, key)
+		if i < 0 {
+			continue
+		}
+		return strings.TrimSpace(line[i+len(key):])
+	}
+	return ""
+}
+
+// DeviceProps reads the device model and the installed game's version.
+//
+// This is a package function rather than a Transport method on purpose. The
+// interface is deliberately narrow — pixels in, touches out — and adding a
+// general shell escape hatch to it would hand every caller a way around
+// invariant #1.
+//
+// A failed model read is a hard error: getprop failing on a device that is
+// already attached and probed is genuinely anomalous, not a condition worth
+// papering over. The game version is different — it is not essential to
+// capturing, and the game may not be installed on a device used only for
+// capture — so a failed dumpsys yields an empty gameVersion rather than an
+// error: unknown is worth recording as unknown, and is not a reason to
+// abandon a capture session.
+func DeviceProps(ctx context.Context, adbPath, serial, pkg string) (model, gameVersion string, err error) {
+	args := func(rest ...string) []string {
+		return append([]string{"-s", serial}, rest...)
+	}
+
+	out, err := exec.CommandContext(ctx, adbPath, args("shell", "getprop", "ro.product.model")...).Output()
+	if err != nil {
+		return "", "", fmt.Errorf("transport: reading model from %s: %w", serial, err)
+	}
+	model = strings.TrimSpace(string(out))
+
+	dump, err := exec.CommandContext(ctx, adbPath, args("shell", "dumpsys", "package", pkg)...).Output()
+	if err != nil {
+		// The game may not be installed on a device used only for capture.
+		return model, "", nil
+	}
+	return model, ParseVersionName(string(dump)), nil
+}
