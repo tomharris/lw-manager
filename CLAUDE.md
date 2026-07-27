@@ -2,8 +2,15 @@
 
 Last War automation and alliance analytics platform. The architectural thesis:
 **the bot is the collection tier for the analytics tier.** A bot that can
-navigate to Alliance → Members → VS Ranking can screenshot those screens on a
-schedule and feed the parser directly.
+navigate to the alliance roster and to the VS ranking can screenshot those
+screens on a schedule and feed the parser directly.
+
+Those are two separate routes, not one chain. The roster is Alliance →
+Members. The VS ranking is **not reachable from Alliance at all**: it is
+base → VS → Ranking → "weekly ranking" tab → select your alliance. Earlier
+docs describe it as "Alliance → Members → VS Ranking", which is wrong and is
+worth correcting wherever it appears — a route that does not exist is the
+kind of thing a task gets written against.
 
 Full design: `docs/lastwar-platform-design.gen`.
 Current milestone spec: `docs/superpowers/specs/`.

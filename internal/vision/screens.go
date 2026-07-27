@@ -19,19 +19,34 @@ package vision
 // M4, and a labeled screen with no identifying anchor is scored wrong on every
 // run, forever. Recognition and navigation are separate concerns.
 //
-// Mail is a tree rather than a tabbed screen. `mail` is the mailbox index
-// reached from base, and each mailbox drills down into its own screen carrying
-// the message list and the claim-all button. They are separate screens because
-// a task must know which mailbox it is standing in before it claims anything —
-// recognizing "some mail screen" and tapping claim-all is the blind tap
-// invariant #3 forbids. Only the three mailboxes we act on are modelled.
+// Two of these are trees rather than single screens, and both are modelled the
+// same way: one screen per state a task must act *from*. Invariant #3 requires
+// a matched anchor before every tap, so a state you tap from is a state you
+// must be able to name. Recognizing "some mail screen" and tapping claim-all,
+// or "some ranking screen" and parsing it, is the blind tap that invariant
+// forbids — and for the ranking it would feed M4 numbers off whichever view
+// happened to be showing, which invariant #4's "every number traces back to a
+// screenshot" cannot save you from if the screenshot is the wrong screen.
+//
+// Mail: `mail` is the mailbox index reached from base, and each mailbox drills
+// down into its own screen carrying the message list and the claim-all button.
+// Only the three mailboxes we act on are modelled.
+//
+// VS ranking: base -> vs -> vs_ranking -> "weekly ranking" tab -> select your
+// alliance. It is NOT reachable from Alliance; docs that describe the route as
+// "Alliance -> Members -> VS Ranking" are wrong. vs_ranking_alliance is the
+// screen M4 parses; the three above it exist because the task has to tap its
+// way down and confirm each landing.
 var ScreenNames = []string{
 	"base",
 	"world_map",
 	"alliance",
 	"alliance_tech",
 	"alliance_members",
+	"vs",
 	"vs_ranking",
+	"vs_ranking_weekly",
+	"vs_ranking_alliance",
 	"mail",
 	"mail_alliance",
 	"mail_event",
