@@ -91,6 +91,12 @@ func runScore(ctx context.Context, cfg config.Config, args []string) error {
 			"passed": report.Accuracy() >= *gate,
 			"matrix": report.Matrix, "separations": seps,
 			"rescaled": rescaled,
+			// Per-frame, so a misrecognition can be traced back to the frame
+			// that caused it. The matrix says five base frames went to <none>;
+			// only this says which five, and the hash is what the studio
+			// opens. Emitted whole rather than errors-only: which rows are
+			// interesting depends on the question being asked.
+			"predictions": preds,
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")

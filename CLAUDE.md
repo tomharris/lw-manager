@@ -36,6 +36,7 @@ make build                    # bin/agent, bin/control
 ./bin/agent studio --addr 0.0.0.0:8088            # label and crop, from a browser
 ./bin/agent corpus index && ./bin/agent corpus push
 ./bin/agent score                                 # the M1 gate, with diagnostics
+./bin/agent score --json                          # + per-frame predictions, to localize a failure
 make gate                                         # the same gate, as a test
 ```
 
@@ -178,6 +179,46 @@ a non-positive gap — or zero in-screen observations at all — means **recrop*
 because no threshold can separate them. That distinction matters because
 recognition aggregates anchors by min per screen, so one bad anchor caps its
 entire screen.
+
+### Both reports are aggregates. `--json` is how you localize.
+
+Neither the matrix nor the separation report can name a frame, and past a
+certain point that is the only question left. `agent score --json` adds a
+`predictions` array — one `{Hash, Label, Predicted}` per frame — and the hash
+is what `agent studio` opens. Filter it with
+`jq '.predictions[] | select(.Label != .Predicted)'`, remembering that a
+`_none` frame predicts the empty string and is *correct*.
+
+Reach for it when a number will not move. `worst-in` is a **minimum over
+frames**, so one catastrophic frame drags it down exactly as far as forty
+would: a systematically bad crop and five frames that simply do not contain
+the button produce the same reading, and they need opposite fixes. Three
+separate recrops chasing `base`'s `worst-in 0.145` moved nothing, because the
+anchors were fine — five frames had caught the bottom nav bar mid-animation
+and had no buttons in them at all. Per-frame output localized it in one pass:
+all five sat in a single four-minute capture burst, 5 of 18 there against 0
+of 46 elsewhere, before anyone looked at a pixel.
+
+The corollary is that **a low `worst-in` is a hypothesis about the anchor or
+about the frames, and the report cannot tell you which.** Check the frames
+first — they are cheaper to inspect than a crop is to redo, and a mislabel
+found is worth more than a threshold tuned around it.
+
+### A RECROP verdict on a screen with no false positives is declinable
+
+The separation report judges one anchor at a time and is blind to the
+min-aggregation it warns you about. An anchor reading `best-out 1.000 →
+RECROP` looks unsalvageable, and on a single-anchor screen it is. On a screen
+with three identifying anchors and zero false-positive cells in the matrix,
+the exclusion work is already being done by the other two; that anchor
+contributes only a failure mode, and relaxing it cannot cost what it does not
+provide. `vs_ranking_weekly_button` sat at `best-out 1.000` while
+`vs_ranking_alliance` committed no false positives at all.
+
+The matrix is ground truth for whether a screen over-claims. Read the
+separation row for *why*, then decide — and prefer a recrop anyway when the
+score was depressed by a transient (a focus glow, a slide-in), since a
+threshold fitted to one observed animation frame is fitted to a sample of one.
 
 The recognizer needs an identifying anchor for **every** labeled screen, not
 just the six `DefaultGraph()` navigates. `alliance_members` and `vs_ranking`
