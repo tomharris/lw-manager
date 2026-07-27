@@ -69,7 +69,7 @@ Dimensions that change a design rather than a crop:
 | `help_all` | on `alliance`, tap the help button | **floating icon on `base`** — no navigation at all |
 | `daily_gather` | iterate resource buildings | **any one collect bubble collects everything** |
 | `mail_collect` | 3 mailboxes, Claim All each | correct — but Claim All is **always present and always enabled** |
-| `tech_donate` | tap a tech, donate N times | correct that it is a tree; the tech is chosen by a **red thumbs-up badge**, and the donate button **greys rather than vanishing** |
+| `tech_donate` | tap a tech, donate N times | correct that it is a tree; the tech is chosen by a **red thumbs-up badge**, the screen has **two tabs** and the recommendation may be on either, and the donate button **greys rather than vanishing** |
 | `radar_quick` / `radar_claim` | two independent tasks | **one flow** — the buttons are mutually exclusive and a pending claim blocks the next execution |
 
 ### D5 is where a task can pass the gate while doing nothing
@@ -96,6 +96,35 @@ Two tasks hit D5 and each resolves differently:
   information at all. Tapping when there is nothing to claim is a harmless
   no-op. The task therefore cannot detect "nothing to claim" and must not try;
   what it must handle is that **the rewards popup is optional.**
+
+### The recommendation hides behind a tab, and the signal self-suppresses
+
+`alliance_tech` has two tabs and the recommended tech may be on either. The tab
+holding it carries the same badge on its header — **but only while that tab is
+unselected.** Selecting the tab removes the badge from it. Both badges are
+tappable, and the tab's badge switches tabs.
+
+With tab A selected, the state space is:
+
+| recommendation is | tab badge | tech badge in list |
+|---|---|---|
+| on A (selected) | **hidden** | present |
+| on B (unselected) | present on B's header | absent |
+| nowhere | absent | absent |
+
+So *"no tab badge"* is ambiguous — the recommendation is either on this tab or
+does not exist. The signal is suppressed exactly when it would disambiguate.
+That is the presence/absence problem for the fourth time in this milestone.
+
+It resolves **without ever testing for absence**, by ordering two presence
+checks (§6). Each step asks "is this here?", which NCC can answer; nothing asks
+"is this missing?", which it cannot. Where a previous section had to find a
+different discriminator, here the ambiguity dissolves purely in the order the
+questions are asked — worth noting as the cheapest resolution of this pattern
+found so far.
+
+Each tab fits on one screen: the recommendation is never below the fold, so no
+scroll-and-search is needed (D6 clear).
 
 ### The scrim is exactly invisible to NCC
 
@@ -191,7 +220,8 @@ route's care to the graph's, and the graph must be updated in the same change.
 |---|---|---|
 | `help_all_button` | `base` | content-addressed, broad search region |
 | `collect_bubble` | `base` | same; must be separable from `help_all_button` |
-| `tech_recommended_badge` | `alliance_tech` | see below |
+| `tech_recommended_badge` | `alliance_tech` | region over the tech list; see below |
+| `tab_recommended_badge` | `alliance_tech` | **same template**, region over the tab headers |
 | identifying anchor | `alliance_tech_donate` | |
 | `donate_button` | `alliance_tech_donate` | crop **includes the counter** (D5) |
 | `quick_execute_button` | `radar` | presence *is* the state |
@@ -240,6 +270,19 @@ the buttons are. The rule is directional: **widen toward what is invariant,
 never toward what varies.** A wider crop that reaches the tech icon is worse
 than a flat one, because it fails on the techs it was not cut from.
 
+**One template, two anchors, disambiguated only by region.** The tab badge and
+the tech badge are the same icon, so a single PNG is referenced by two anchor
+entries whose `region` values differ — one over the tab headers, one over the
+tech list. `region` is already per-anchor (`manifest.yaml:5–22`), so this needs
+no new mechanism.
+
+The load-bearing property is that **the two regions must be disjoint.** If they
+overlap, each anchor can match the other's badge and the tab logic in §6
+inverts: the task would "find" a tech badge that is really the tab badge, tap
+it, switch tabs, and report a donation it never made. Registry validation
+should reject overlapping regions for anchors sharing a template on the same
+screen, rather than leaving it to whoever draws the crops.
+
 ### Offsets from a match: the rule, stated correctly
 
 An earlier draft of this spec said *"never an offset from a match — an offset
@@ -287,8 +330,7 @@ edges are missing.
 ```
 mail                        → mail_alliance | mail_event | mail_system   (tap)
 mail_alliance|event|system  → mail                                       (Back)
-alliance_tech               → alliance_tech_donate    (tap tech_recommended_badge)
-alliance_tech_donate        → alliance_tech           (Back)
+alliance_tech_donate        → alliance_tech                            (Back)
 rewards_popup               → radar | mail_alliance | mail_event | mail_system
                                                       (tap close_button)
 ```
@@ -329,13 +371,34 @@ enforced by what can be expressed, not by what is remembered. The concept also
 pays forward — confirm dialogs, level-up interstitials, and event popups are
 all this shape, so M4 would otherwise re-litigate it.
 
-### Popups are graph sinks: out-edges only, never in-edges
+### Conditional nodes get out-edges only, never in-edges
 
-BFS cannot route *through* a node it cannot enter. Without this rule a shared
-`rewards_popup` with in-edges from four origins becomes a teleporter, making
-`base → radar → rewards_popup → mail_alliance` look like a valid path —
-a route that requires tapping Claim All on the radar in order to reach the
-mail. Tasks open popups by tapping; only `NavigateTo` ever leaves one.
+Both `rewards_popup` and `alliance_tech_donate` are entered by tapping
+something that is only sometimes there. Neither gets an in-edge:
+
+> **A node whose entry depends on transient game state gets out-edges only.**
+> The graph models routes that are always available; conditional transitions
+> are task logic.
+
+Two distinct failures motivate it, and they are worth separating.
+
+**For `rewards_popup`, an in-edge corrupts routing.** BFS cannot route *through*
+a node it cannot enter, and a shared popup with in-edges from four origins
+becomes a teleporter: `base → radar → rewards_popup → mail_alliance` would look
+like a valid path — a route that requires tapping Claim All on the radar in
+order to reach the mail.
+
+**For `alliance_tech_donate`, an in-edge is a trap.** The edge would name
+`tech_recommended_badge`, which is absent whenever the recommendation sits on
+the unselected tab (§2). `NavigateTo("alliance_tech_donate")` would then fail
+with `ErrAnchorNotFound` — and `walk` only re-plans on `ErrWrongScreen`
+(`navigate.go:36`), so the error propagates and the task fails, when in fact
+the dialog is one tab-tap away. Leaving the edge out means the only way in is
+the task's own tab logic, which is the code that knows how to look.
+
+Tab switching is not an edge at all: it is `alliance_tech → alliance_tech`,
+intra-screen. Both tabs remain one screen probed by anchors, consistent with
+the radar decision (§2).
 
 The cost of one shared popup with four escape edges is that `Path` may pick the
 wrong origin. `walk`'s `WaitFor` then returns `ErrWrongScreen` and `NavigateTo`
@@ -354,12 +417,33 @@ No new `Ctx` primitives. Everything composes from `NavigateTo`, `Tap`,
 | `help_all` | on `base`, tap `help_all_button`; absent ⇒ success. No navigation. |
 | `daily_gather` | on `base`, tap `collect_bubble`; absent ⇒ success |
 | `mail_collect` | for each of the three mailboxes: enter, tap Claim All, **optionally** dismiss the popup, back |
-| `tech_donate` | `→ alliance_tech`, tap the badge, donate until the counter-bearing anchor stops matching, hard-bounded |
+| `tech_donate` | `→ alliance_tech`, find the recommendation across both tabs (below), donate until the counter-bearing anchor stops matching, hard-bounded |
 | `radar` | **new**, replaces `radar_quick` + `radar_claim`: loop Quick Execute → poll for Claim All → tap → dismiss → repeat until no Quick Execute |
 
 `help_all` at a 180s cadence is roughly 320 of the day's ~340 runs and now
 never leaves `base` — the dominant contributor to the 24h window is also the
 cheapest and least failure-prone thing in it.
+
+### Finding the recommendation across two tabs
+
+`tech_donate` locates the recommendation with two ordered presence checks and
+never a test for absence (§2):
+
+1. `Tap(alliance_tech, tech_recommended_badge)` — found ⇒ the donate dialog
+   opens. Proceed.
+2. Else `Tap(alliance_tech, tab_recommended_badge)` — found ⇒ the tab switches.
+   Retry step 1 **once**.
+3. Else no recommendation exists ⇒ return nil. Nothing to donate is success,
+   the same contract `collectTask` already uses.
+
+The retry is bounded at one because there are exactly two tabs: after switching
+once, either the badge is in the list or the game contradicted itself. An
+unbounded loop here would ping-pong between tabs forever on a UI change, and it
+would do so while reporting nothing wrong.
+
+Step order matters for cost, not correctness. List-first is one step in the
+common case where the recommendation is already on the selected tab;
+tab-first is two steps in *every* case.
 
 ### Two helpers in `internal/tasks`
 
@@ -448,8 +532,11 @@ around it, and because each trip to the handset is a context switch.
 
 The walk must deliberately capture **both** states of every stateful control:
 donate enabled *and* exhausted, radar with Quick Execute *and* with Claim All,
-a mailbox with rewards *and* empty, `base` with a collect bubble *and* without.
-A single-state capture is how a threshold gets fitted to a sample of one.
+a mailbox with rewards *and* empty, `base` with a collect bubble *and* without,
+and `alliance_tech` with the recommendation on the **selected** tab *and* on
+the unselected one — the two cases the §6 tab logic branches on, and the only
+way to see both badge positions. A single-state capture is how a threshold gets
+fitted to a sample of one.
 
 Open questions the session resolves:
 
@@ -516,6 +603,7 @@ instrumentation.
 | A greyed button matches and every tap silently succeeds | Positive discriminator cropped to include the counter; `tapUntilGone`'s hard cap as backstop; Phase A run against a *known-exhausted* state to prove the loop terminates |
 | The two `base` broad-region anchors match each other | Separation measured explicitly between them during the capture session, not only against other screens |
 | The badge crop is too flat to discriminate, and cannot be widened toward the tech's contents | Widen toward the button's chrome instead, which is uniform across techs (§4). Measure stddev against the reference band before trusting the crop |
+| The tech-list and tab-header regions overlap, so each anchor matches the other's badge | Registry validation rejects overlapping regions for anchors sharing a template on one screen (§4). Without it the failure is silent: the task taps the tab badge believing it is a tech, switches tabs, and reports a donation it never made |
 | Radar targets cap out, invalidating the VS-day schedule | Audit item §8.1, resolved before the migration is written |
 | Two new screens push the recognizer below 98% | `make gate` is a gate, not a report; `agent score --json` localizes per frame |
 | Popup left open by a crash strands the next task | `rewards_popup` has escape edges to all four origins, so `NavigateTo` recovers without the panic route |
