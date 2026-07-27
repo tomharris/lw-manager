@@ -214,18 +214,68 @@ to measure against. Both anchors must be checked for separation **against each
 other**, not only against other screens: two HUD badges that both mean "tap me"
 are precisely the pair a min-aggregated recognizer would let blur.
 
-**The badge is tapped *through*.** `Tap` jitters inside the matched box
-(`act.go:73`), so anchoring on the thumbs-up alone aims at the badge's few
-dozen pixels rather than the tech button's. That works only if the badge sits
-inside the button's hit area. If it does not, the fix is **not** an offset — an
-offset from a match is a blind tap wearing a disguise, and invariant #3 forbids
-it — but a wider crop whose box spans badge and button, keeping the badge as
-the discriminating content.
+**The badge is tapped *through*, and that works.** `Tap` jitters inside the
+matched box (`act.go:73`), so anchoring on the thumbs-up aims at the badge's
+few dozen pixels rather than the tech button's. Confirmed in the audit: the
+badge is inside the button's hit area, so tapping it activates the button and
+no offset is required.
 
-**Small crops are near-degenerate.** The badge is small, and `CLAUDE.md`
-records that a nearly-flat template correlates ~1.0 with any similarly flat
-region. Measure its standard deviation against the reference band (empty
-checkbox 2,346 / checkbox+check 10,324 / wordmark 25,927) before trusting it.
+**The badge template must be exactly the badge.** The tech buttons are uniform
+in size with only their contents differing, so the badge is the *only* pixel
+content invariant across recommendations. Cropping wider to include the tech's
+icon, name, or cost means that when a different tech is recommended that region
+differs and the NCC score collapses — widening does not trade tap accuracy for
+match reliability here, it destroys the match outright.
+
+**Which removes the usual remedy for a flat crop.** The badge is small, and
+`CLAUDE.md` records that a nearly-flat template correlates ~1.0 with any
+similarly flat region. Measure its standard deviation against the reference
+band (empty checkbox 2,346 / checkbox+check 10,324 / wordmark 25,927) before
+trusting it — but note that the normal fix, cropping wider for more structure,
+is unavailable in the direction of the button's contents.
+
+If the badge alone proves too flat, widen toward the button's **chrome** — its
+border, corner, or panel edge — which is uniform across techs precisely because
+the buttons are. The rule is directional: **widen toward what is invariant,
+never toward what varies.** A wider crop that reaches the tech icon is worse
+than a flat one, because it fails on the techs it was not cut from.
+
+### Offsets from a match: the rule, stated correctly
+
+An earlier draft of this spec said *"never an offset from a match — an offset
+from a match is a blind tap wearing a disguise."* That is wrong, and it is
+worth correcting here rather than leaving a rule that would misdirect the next
+anchor to hit this.
+
+> **Never a coordinate that survives its anchor being wrong.**
+
+That is the property invariant #3 actually protects. A fixed screen coordinate
+is dangerous because it still produces a tap after the UI has moved out from
+under it. A coordinate *derived from a verified match* inherits the anchor's
+failure mode: if the layout shifts, the anchor stops matching, `Tap` returns
+`ErrAnchorNotFound`, and no tap happens. That is the guarantee we want, and the
+absolutist phrasing discarded it along with the genuinely unsafe case.
+
+**No offset is needed in this milestone** — the badge is tappable, so this
+stays a correction to the reasoning rather than a feature. But the case that
+forced it is worth recording, because it exposed a conflation that is still in
+the code:
+
+`MatchResult.Box` (`matcher.go:17`) does two jobs. It is where the template was
+*found*, and `act.go:73` also treats it as where to *aim*. Those coincide for
+every anchor cut so far — a wordmark, a nav button — because their
+discriminating pixels and their hit area are the same rectangle. Nothing
+guarantees that: `Match` wants the box that is maximally *invariant*, `Tap`
+wants the box that is maximally aligned with the *touch target*.
+
+When an anchor does force them apart, the answer is an optional `tap_box` on
+the anchor, expressed in multiples of the matched box (`[0,0,1,1]` being the
+identity and the default, so existing anchors are untouched), declared in
+`manifest.yaml` and authored visually in `agent studio`. Match-box multiples
+rather than screen fractions, because that states a fact about the UI's own
+geometry and scales with whatever the anchor scales with. Deliberately **not
+built now** — YAGNI, and an unused offset field is one more thing to tune
+wrongly.
 
 ---
 
@@ -405,7 +455,11 @@ Open questions the session resolves:
 
 1. Do radar targets accumulate across days, or cap out? **Decides whether the
    VS-day schedule is right** (§2).
-2. Is the thumbs-up badge inside the tech button's hit area? (§4)
+2. Does the tech button's **chrome** stay invariant across recommendations?
+   Only needed if the badge crop measures too flat (§4) — it is the one
+   direction the crop can widen in. Capture the recommendation on several
+   different techs in the same session so this is answerable without a second
+   trip.
 3. Does the collect bubble vanish when there is nothing to collect?
 4. Does an empty mailbox's Claim All raise a popup anyway?
 5. Measured separation between `base`'s two broad-region anchors.
@@ -461,7 +515,7 @@ instrumentation.
 |---|---|
 | A greyed button matches and every tap silently succeeds | Positive discriminator cropped to include the counter; `tapUntilGone`'s hard cap as backstop; Phase A run against a *known-exhausted* state to prove the loop terminates |
 | The two `base` broad-region anchors match each other | Separation measured explicitly between them during the capture session, not only against other screens |
-| The badge is not inside the tech button's hit area | Widen the crop to span badge and button. **Never** an offset from the match — invariant #3 |
+| The badge crop is too flat to discriminate, and cannot be widened toward the tech's contents | Widen toward the button's chrome instead, which is uniform across techs (§4). Measure stddev against the reference band before trusting the crop |
 | Radar targets cap out, invalidating the VS-day schedule | Audit item §8.1, resolved before the migration is written |
 | Two new screens push the recognizer below 98% | `make gate` is a gate, not a report; `agent score --json` localizes per frame |
 | Popup left open by a crash strands the next task | `rewards_popup` has escape edges to all four origins, so `NavigateTo` recovers without the panic route |
