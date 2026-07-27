@@ -31,7 +31,7 @@ This milestone cuts the real anchors, writes the real bodies, and runs one
 account unattended for 24 hours.
 
 **In scope:** action anchors, two new screens, the graph edges to reach them,
-a modal-precedence rule in the recognizer, five task bodies, a migration
+a shared-template region guard in the registry, five task bodies, a migration
 reshaping the tasks table, and a two-phase acceptance gate.
 
 **Out of scope:** the loot truck (its own follow-up task), M3 fleet work, and
@@ -126,36 +126,67 @@ found so far.
 Each tab fits on one screen: the recommendation is never below the fold, so no
 scroll-and-search is needed (D6 clear).
 
-### The scrim is exactly invisible to NCC
+### There is no popup, and no scrim — corrected by measurement
 
-The rewards overlay is a centred panel, not a full-screen takeover: **the origin
-screen's header stays visible behind it, only dimmed.** That single layout fact
-has consequences the rest of this design is shaped around.
+An earlier draft of this section argued at length that the rewards overlay is a
+centred panel over a dimmed origin, that both screens therefore qualify in the
+recognizer, and that a `modal` precedence rule was needed to break the tie. The
+reconnaissance capture (`2026-07-27-m2-recon-findings.md`) measured it, and the
+premise was false.
 
-`recognizer.go:80` scores every screen and keeps the highest-confidence one
-that qualifies, and `scoreScreen` qualifies a screen when every identifying
-anchor clears its own threshold. With the origin's header still visible, an
-overlay frame qualifies as **both** the origin and the popup, and the winner is
-decided by whichever has the higher `min` score — an implementation accident
-that an unrelated recrop could flip.
+**The rewards display is a transient celebration animation, not a dialog.**
 
-The dimming does not help, and not approximately. `matcher.go:180–193` is full
-zero-mean, unit-variance NCC. A scrim blending the background toward a constant
-maps each pixel `p → αp + (1−α)c`, so every deviation from the patch mean
-becomes `α(p − mean)`: the numerator scales by `α`, the denominator by `α`, and
-**the score is mathematically unchanged.** The one cue a human uses to see that
-a modal is up is precisely the cue this matcher is designed to discard.
+| assumed | measured |
+|---|---|
+| dimmed scrim over the origin | **no dimming** — background at full brightness |
+| a close/X button | **none anywhere** |
+| origin partly obscured | origin **fully visible and identifiable** |
+| dismissed by tapping close | **dismissed by tapping anywhere** |
 
-That is the same theme a third time. Variance-normalization made the empty
-checkbox useless (`CLAUDE.md`); mean-normalization makes the scrim invisible.
-**Every robustness in a matcher is a blindness, and the blindnesses are where
-tasks report success for doing nothing.**
+The argument rested on the algebra of NCC under a scrim: `p → αp + (1−α)c`
+leaves the numerator and denominator both scaled by `α`, so the score is
+mathematically unchanged. That derivation is correct. **It is also about a
+world this game does not implement** — there is no scrim to be invisible to.
 
-It also creates a failure mode worth naming on its own: **matchable ≠
-tappable.** An anchor behind the scrim matches at full score while the scrim
-intercepts the touch. `Tap` succeeds, the transport reports a tap, `Run()`
-records `succeeded`, nothing happened. §5 makes this structurally impossible
-rather than merely discouraged.
+That is why §8 lists measurement of a derived claim as an audit item rather
+than treating the derivation as settled. **A derivation can be sound and still
+be about the wrong thing**, and the only defence is to look.
+
+The consequence is a simplification: an overlay frame is not "the popup over
+the mail screen", it *is* the mail screen with an animation playing on it. The
+recognizer is already correct about it and needs no change. Deleted from this
+design: the `rewards_popup` screen, the `modal` manifest field and precedence
+rule, the `close_button` anchor, the popup's four escape edges, and
+`dismissModal`.
+
+### Dismissing the animation is still an action
+
+Tap-anywhere is not free. Invariant #3 forbids acting without a matched anchor,
+and "anywhere" is not a coordinate this design is allowed to express.
+
+The dismiss target is the **`CONGRATULATIONS!` banner itself**. Tapping it is
+tapping "anywhere", and the anchor is self-gating: it matches only while the
+animation plays, so when there is nothing to dismiss `tapIfPresent` returns
+false and no tap happens at all.
+
+The rejected alternative is worth recording. The bottom-left corner of both the
+radar and every mailbox holds a **back arrow**, and tapping there does dismiss
+the animation — the catcher swallows the tap and the arrow never fires. But if
+the animation has already cleared, the same tap hits a real Back button:
+harmless in a mailbox, and on the radar an exit to `base` mid-task. The banner
+removes that failure mode instead of timing around it. **Prefer the anchor
+whose presence is the condition you are testing for.**
+
+### Ambient toasts occlude the top of any screen
+
+The recon caught a *"Sarah's Gift received!"* notification sliding across the
+top of the radar, unrelated to anything the agent did. These arrive
+spontaneously and will land in corpus frames.
+
+This is the `world_map` return-home bubble from M1 in a new guise, and it cost
+three recrops there before the cause was found. **Prefer anchors from the
+bottom bar**; treat any top-of-screen crop as occlusion-prone and check its
+failing frames before its threshold.
 
 ### The radar contradiction
 
@@ -171,11 +202,44 @@ cadence would find no button ~8 times a day and record ~8 successes for doing
 nothing. The schedule was written against a model of the game that does not
 hold.
 
-**Resolution:** one `radar` task, scheduled `{1,3,5,6}`, that loops Quick
-Execute → Claim All until no targets remain. Targets accumulate untouched on
-non-scoring days, which preserves the VS optimization the original schedule was
-reaching for, and immediate claiming makes the blocking constraint harmless.
-This depends on radar targets accumulating rather than capping — an open audit
+**Resolution:** one `radar` task, scheduled `{1,3,5,6}`. Targets accumulate
+untouched on non-scoring days, which preserves the VS optimization the original
+schedule was reaching for, and immediate claiming makes the blocking constraint
+harmless.
+
+### Quick Execute lies, and tapping it can spend money
+
+The recon added a constraint nothing in this design anticipated. One frame
+reads:
+
+> **"You can complete 6 tasks, requires 60 Stamina"** — with **⚡31** in the HUD,
+> and Quick Execute **present and rendered enabled**.
+
+So the button's presence does not mean the action can succeed, and **tapping it
+with insufficient stamina opens a buy/refill prompt** — a dialog that spends
+currency, now reachable by an automated tap. A second HUD element reads
+`29/40` beside *"13 Radar Task(s) will be restored in 05:14:33"*: a capped pool
+that regenerates over time, on top of the per-task stamina cost.
+
+This kills the sweep loop. A loop terminating when Quick Execute goes *absent*
+never terminates on insufficient stamina, because the button is never absent
+merely because you are broke — it would run to `maxRadarSweeps` and report
+`ErrTapCapReached`, a defect verdict, on a radar that was simply out of
+stamina.
+
+It is also the disabled-control trap in its most expensive form yet. The
+donate button greys; mail's Claim All no-ops; **Quick Execute charges you.**
+
+**Resolution:** a single execute-then-claim pass per run, and a named
+`stamina_prompt` screen the task recognizes and leaves without touching
+anything. Stamina regenerates on its own, so the next run three hours later
+can afford what this one could not — being out of stamina is an *ordinary
+outcome*, not a failure. Reading the stamina figure would need OCR, which this
+milestone deliberately excludes; recognition is what protects us instead, which
+is invariant #3 earning its keep.
+
+The earlier concern about targets accumulating is resolved: one frame shows
+**"11 task rewards can be claimed"**, so rewards bank in quantity — an open audit
 item (§8).
 
 ---
@@ -184,14 +248,18 @@ item (§8).
 
 `internal/vision/screens.go` gains:
 
-- **`rewards_popup`** — the overlay raised by Claim All, declared **modal**
-  (§5). One name, not one per origin: the mail and radar overlays are the same
-  UI, so per-origin labels would put contradictory labels on the same pixels
-  and the recognizer would be scored wrong on half of them regardless of the
-  crop. Dismissing it returns to whichever screen raised it, which is graph
-  topology (§5), not visual identity.
 - **`alliance_tech_donate`** — the donate dialog reached from the recommended
   tech.
+- **`stamina_prompt`** — the buy/refill dialog Quick Execute raises when
+  stamina is short (§2). It is modelled for one reason only: so the agent can
+  *recognize* it and leave. A screen that spends currency is the strongest
+  possible case for invariant #3 — the task must never act on it beyond
+  escaping, and it can only refuse to act on a screen it can name.
+
+**`rewards_popup` is not a screen** and was removed after measurement (§2). The
+celebration animation plays over its origin, which stays fully recognizable, so
+an overlay frame is labelled as its origin — `mail_alliance`, `radar` — which
+is what it is.
 
 `internal/vision/corpus_test.go:77` requires **≥10 corpus frames for every name
 in `ScreenNames`**, and the gate demands ≥98% across all of them.
@@ -200,17 +268,24 @@ in `ScreenNames`**, and the gate demands ≥98% across all of them.
 > screens.** The M1 gate is not a one-time event; it is a standing invariant
 > that every vocabulary change re-tests.
 
-### Naming a popup removes it from the panic route's care
+### A screen we name is a screen we own
 
-Today popups are unrecognized, so `recognizeOrRecover` → `panicRoute` → back ×3
-dismisses them incidentally (`panic.go:12`: *"Popups and interstitials die to
-back"*). Once `rewards_popup` is in `ScreenNames` with an anchor, it recognizes
-cleanly, the panic route never fires for it, and `NavigateTo` calls
-`Path(rewards_popup, target)` — which returns `ErrNoPath` for a node with no
+Today an unrecognized dialog is handled incidentally: `recognizeOrRecover` →
+`panicRoute` → back ×3 (`panic.go:12`, *"Popups and interstitials die to
+back"*). Once `stamina_prompt` is in `ScreenNames` with an anchor, it
+recognizes cleanly, the panic route never fires for it, and `NavigateTo` calls
+`Path(stamina_prompt, target)` — which returns `ErrNoPath` for a node with no
 edges, failing the task.
 
-**A screen we name is a screen we own.** Naming one transfers it from the panic
-route's care to the graph's, and the graph must be updated in the same change.
+Naming a screen transfers it from the panic route's care to the graph's, and
+**the graph must be updated in the same change**. `stamina_prompt` therefore
+ships with its escape edge or not at all.
+
+This cuts both ways, and it is why the vocabulary is not a free-for-all. Left
+unnamed, the stamina dialog would have been dismissed by the panic route with
+three back presses — accidentally correct, but as a side effect of *failing to
+recognize* it, and a run whose recovery path fires routinely has no signal left
+for real trouble.
 
 ---
 
@@ -227,8 +302,18 @@ route's care to the graph's, and the graph must be updated in the same change.
 | `quick_execute_button` | `radar` | presence *is* the state |
 | `claim_all_button` | `radar` | presence *is* the state |
 | `claim_all_button` | `mail_event`, `mail_system` | `mail_alliance` already has one (`manifest.yaml:159`) |
-| identifying anchor | `rewards_popup` | |
-| `close_button` | `rewards_popup` | |
+| `rewards_banner` | `radar`, `mail_alliance`, `mail_event`, `mail_system` | the `CONGRATULATIONS!` banner; **self-gating dismiss target** (§2) |
+| identifying anchor | `stamina_prompt` | recognition only — nothing on this screen is ever tapped |
+
+`rewards_banner` is likely one template across all four screens, but that is
+**unconfirmed**: the recon captured the celebration in a mailbox and never on
+the radar. If the radar's differs, it is a second template, not a looser
+threshold. It should also be a strong anchor on its own merits — a large,
+high-contrast orange banner with white text, at the opposite end of the
+variance scale from the empty checkbox that started this discussion.
+
+`stamina_prompt` gets an identifying anchor and nothing else. It has no action
+anchor because it has no action: the only correct interaction is to leave.
 
 Three of these are unlike anything currently in the manifest.
 
@@ -330,63 +415,29 @@ edges are missing.
 ```
 mail                        → mail_alliance | mail_event | mail_system   (tap)
 mail_alliance|event|system  → mail                                       (Back)
-alliance_tech_donate        → alliance_tech                            (Back)
-rewards_popup               → radar | mail_alliance | mail_event | mail_system
-                                                      (tap close_button)
+alliance_tech_donate        → alliance_tech                              (Back)
+stamina_prompt              → radar                                      (Back)
 ```
 
-### Modal precedence: a new field, and a small recognizer change
-
-Because the origin's header stays visible behind the scrim (§2), both the
-origin and `rewards_popup` qualify, and confidence cannot honestly break the
-tie. A screen therefore gains one declarative property in the manifest:
-
-> **`modal: true`** — this screen renders *on top of* another. When a modal
-> screen qualifies, it outranks any non-modal screen that also qualifies,
-> regardless of confidence.
-
-`recognize` (`recognizer.go:60`) applies precedence before confidence:
-among qualifying screens, prefer modal ones, then take the highest confidence
-within that group. Confidence still breaks ties inside each group, so nothing
-about existing behaviour changes — **no screen is modal today, so this is a
-no-op on the M1 corpus**, which is what makes it safe to land in code the
-recognizer gate was tuned against.
-
-Two rejected alternatives, recorded so they are not re-proposed:
-
-- **Prefer whichever screen matched more identifying anchors.** Makes anchor
-  count a proxy for specificity, so any two-anchor screen permanently outranks
-  any one-anchor screen. Arbitrary, and it silently re-ranks screens whenever
-  someone adds an anchor for an unrelated reason.
-- **Drop `rewards_popup` and declare `rewards_close_button` as a non-identifying
-  anchor on each of the four origins.** Genuinely cheapest — no new screen, no
-  corpus frames, no recognizer change. Rejected because it leaves *matchable ≠
-  tappable* (§2) as a rule every future task author must remember, and this
-  milestone has already found three distinct ways for a task to report success
-  while doing nothing. `modal` converts that into `Tap(radar,
-  quick_execute_button)` failing with `ErrWrongScreen` while the overlay is up.
-
-This is the same move as `Tap` refusing to accept coordinates: the invariant is
-enforced by what can be expressed, not by what is remembered. The concept also
-pays forward — confirm dialogs, level-up interstitials, and event popups are
-all this shape, so M4 would otherwise re-litigate it.
+**No recognizer change.** An earlier draft added a `modal: true` manifest field
+and a precedence rule so a popup could outrank the screen it covered. §2's
+measurement removed the need: there is no overlay screen competing with its
+origin, so `recognize` (`recognizer.go:60`) stays exactly as the M1 gate tuned
+it. Recorded because the idea is tempting and someone will re-propose it —
+revisit it only when a real full-screen dialog leaves its origin recognizable,
+which no screen in this milestone does.
 
 ### Conditional nodes get out-edges only, never in-edges
 
-Both `rewards_popup` and `alliance_tech_donate` are entered by tapping
-something that is only sometimes there. Neither gets an in-edge:
+Both `alliance_tech_donate` and `stamina_prompt` are entered by tapping
+something whose effect depends on state the graph cannot see. Neither gets an
+in-edge:
 
 > **A node whose entry depends on transient game state gets out-edges only.**
 > The graph models routes that are always available; conditional transitions
 > are task logic.
 
 Two distinct failures motivate it, and they are worth separating.
-
-**For `rewards_popup`, an in-edge corrupts routing.** BFS cannot route *through*
-a node it cannot enter, and a shared popup with in-edges from four origins
-becomes a teleporter: `base → radar → rewards_popup → mail_alliance` would look
-like a valid path — a route that requires tapping Claim All on the radar in
-order to reach the mail.
 
 **For `alliance_tech_donate`, an in-edge is a trap.** The edge would name
 `tech_recommended_badge`, which is absent whenever the recommendation sits on
@@ -396,14 +447,16 @@ with `ErrAnchorNotFound` — and `walk` only re-plans on `ErrWrongScreen`
 the dialog is one tab-tap away. Leaving the edge out means the only way in is
 the task's own tab logic, which is the code that knows how to look.
 
+**For `stamina_prompt`, an in-edge would be an instruction to spend money.**
+The edge would name `quick_execute_button` on `radar` — a button that usually
+starts an execution and *sometimes* opens a purchase dialog. Modelling that as
+a navigable route would make "get to the stamina prompt" a thing `NavigateTo`
+could be asked to do, and a re-plan could then choose it as a path segment. The
+graph must not contain a route whose traversal is a purchase.
+
 Tab switching is not an edge at all: it is `alliance_tech → alliance_tech`,
 intra-screen. Both tabs remain one screen probed by anchors, consistent with
 the radar decision (§2).
-
-The cost of one shared popup with four escape edges is that `Path` may pick the
-wrong origin. `walk`'s `WaitFor` then returns `ErrWrongScreen` and `NavigateTo`
-re-plans from where it actually is (`navigate.go:36`). Self-correcting, and
-`maxReplans` is 3, so there is headroom.
 
 ---
 
@@ -416,9 +469,9 @@ No new `Ctx` primitives. Everything composes from `NavigateTo`, `Tap`,
 |---|---|
 | `help_all` | on `base`, tap `help_all_button`; absent ⇒ success. No navigation. |
 | `daily_gather` | on `base`, tap `collect_bubble`; absent ⇒ success |
-| `mail_collect` | for each of the three mailboxes: enter, tap Claim All, **optionally** dismiss the popup, back |
+| `mail_collect` | for each of the three mailboxes: enter, tap Claim All, dismiss the banner if it appeared, back |
 | `tech_donate` | `→ alliance_tech`, find the recommendation across both tabs (below), donate until the counter-bearing anchor stops matching, hard-bounded |
-| `radar` | **new**, replaces `radar_quick` + `radar_claim`: loop Quick Execute → poll for Claim All → tap → dismiss → repeat until no Quick Execute |
+| `radar` | **new**, replaces `radar_quick` + `radar_claim`: a single execute-then-claim pass (below) |
 
 `help_all` at a 180s cadence is roughly 320 of the day's ~340 runs and now
 never leaves `base` — the dominant contributor to the 24h window is also the
@@ -445,25 +498,53 @@ Step order matters for cost, not correctness. List-first is one step in the
 common case where the recommendation is already on the selected tab;
 tab-first is two steps in *every* case.
 
+### The radar's single pass
+
+```
+NavigateTo(radar)
+claim any banked rewards           → a pending claim blocks the next execution
+tap Quick Execute                  → absent ⇒ nothing to execute, return nil
+if stamina_prompt appeared         → Back out, return nil     (ordinary outcome)
+poll for Claim All, tap it, dismiss the banner
+```
+
+**Claim-first is load-bearing.** A pending Claim All blocks Quick Execute, so a
+run that skipped claiming would find Quick Execute absent, correctly conclude
+"nothing to execute", and stop — while sitting on banked rewards it could have
+claimed and then executed. Claiming first turns a wasted run into a productive
+one.
+
+**No loop.** The sweep loop died with the stamina finding (§2): a loop
+terminating on Quick Execute's absence never terminates when the button is
+present but unaffordable. One pass per run cannot spiral, and the next run is
+three hours away.
+
+**`ErrClaimNeverAppeared` is a real signal again.** It was going to be
+swallowed by the stamina case; now that insufficient stamina exits via the
+prompt, a Claim All that never appears after a genuine execution means
+something is actually wrong.
+
 ### Two helpers in `internal/tasks`
 
-**`tapAndDismiss`** — tap an action anchor, briefly poll for `rewards_popup`,
-close it if it appeared.
+**`dismissRewards`** — tap `rewards_banner` if it is present, do nothing if it
+is not.
 
-`WaitFor` is the wrong primitive for an optional screen: it polls to a 20s
-deadline, runs the panic route, then returns `ErrWrongScreen` (`ctx.go:169`).
-Using it for a popup that legitimately may not come costs 20s plus a spurious
-back ×3 recovery, three times per `mail_collect` run. The right shape is a
-short bounded poll of `CurrentScreen` over ~2s, treating "still on the origin
-screen" as *no popup* rather than as a failure. The bound must exist because
-the popup animates in, so a single immediate check races it.
+The banner is a **self-gating** dismiss target: it exists only while the
+celebration is playing, and tapping it is tapping "anywhere". So the whole
+helper is one `tapIfPresent` call, and the "nothing to dismiss" case costs one
+match and no tap.
 
-Modal precedence (§5) is what makes this readable at all: with the overlay up
-`CurrentScreen` returns `rewards_popup`, and without it the origin — a clean
-two-valued answer instead of a contest between two qualifying screens. It is
-also what makes the *absence* case trustworthy, since "still on the mailbox"
-now genuinely means no modal is up rather than "the mailbox happened to score
-higher this time".
+The rejected alternative — tapping the bottom-left corner, which on every one
+of these screens is a **back arrow** — works while the animation plays, because
+the tap-catcher swallows it. But if the animation has already cleared, the same
+tap navigates: harmless in a mailbox, an exit to `base` mid-task on the radar.
+**Prefer the anchor whose presence is the condition you are testing for.**
+
+An earlier draft used `WaitFor` here. That is wrong for a screen that
+legitimately may not appear: it polls to a 20s deadline and then runs the panic
+route (`ctx.go:169`), costing 20s and a spurious back ×3 on every empty
+mailbox. With a self-gating anchor the question disappears — there is no screen
+to wait for.
 
 **`tapUntilGone`** — `Tap` in a loop, terminating on `ErrAnchorNotFound`, with
 a hard iteration cap passed by the caller.
@@ -503,20 +584,18 @@ device-free tests quietly stop covering the new code.** Moving `help_all` from
 `TestAllTierOneTasksRegistered` (`tasks_test.go:15`) must drop `radar_claim`
 and `radar_quick` and gain `radar`.
 
-`runtimetest` also needs a synthetic modal screen, so `tapAndDismiss` is
-exercised device-free in both branches: overlay present and overlay absent.
+`runtimetest` also needs synthetic `rewards_banner` and `stamina_prompt`
+anchors, so `dismissRewards` and the radar's stamina bail-out are exercised
+device-free in both branches: present and absent.
 
-The modal precedence rule needs its own tests in `internal/vision`, and the
-cases that matter are the ones that would otherwise pass by accident:
+The recognizer needs no new tests: §2's measurement removed the modal rule
+before it was written, so `recognizer.go` is untouched by this milestone.
 
-- a modal and a non-modal screen both qualifying, **modal wins even when its
-  confidence is lower** — this is the whole point of the rule, and a test that
-  gives the modal the higher score proves nothing;
-- two modals both qualifying — confidence still decides;
-- no modal qualifying — behaviour identical to today;
-- a manifest with no modal screens at all — byte-identical decisions to the
-  current recognizer, which is the claim that makes this safe to land against
-  M1-tuned thresholds.
+The shared-template region guard (§4) does need its own, and the case that
+matters is the one that would otherwise pass by accident: two anchors on one
+screen naming the same template with **overlapping** regions must be rejected
+at load, while two anchors naming *different* templates may overlap freely —
+`base`'s help icon and collect bubble both search most of the screen by design.
 
 Per invariant #6, `make test` continues to pass with no emulator, no adb, and
 no Docker.
@@ -540,24 +619,30 @@ fitted to a sample of one.
 
 Open questions the session resolves:
 
-1. Do radar targets accumulate across days, or cap out? **Decides whether the
-   VS-day schedule is right** (§2).
+1. Is the `CONGRATULATIONS!` banner **identical on the radar and in the
+   mailboxes**? The recon captured the celebration in a mailbox only, never on
+   the radar, so a shared template is assumed and unverified. If it differs it
+   is a second template, never a looser threshold.
 2. Does the tech button's **chrome** stay invariant across recommendations?
    Only needed if the badge crop measures too flat (§4) — it is the one
    direction the crop can widen in. Capture the recommendation on several
    different techs in the same session so this is answerable without a second
    trip.
 3. Does the collect bubble vanish when there is nothing to collect?
-4. Does an empty mailbox's Claim All raise a popup anyway?
+4. Does an empty mailbox's Claim All raise the celebration anyway?
+   `dismissRewards` is a no-op either way, so this changes nothing in the code
+   — it decides only how many frames of each state the corpus needs.
 5. Measured separation between `base`'s two broad-region anchors.
 6. Standard deviation of the badge crop against the reference band.
 7. D7: does any action animate past the 20s `WaitFor` default?
-8. **Does each origin's identifying anchor still clear its threshold with the
-   overlay up?** §2 argues from the NCC algebra that it must, since the scrim
-   cancels exactly. Measure it rather than trust the derivation — if the origin
-   is in fact disqualified, `modal` is unnecessary and §5 collapses back to a
-   plain popup screen. Capture one overlay frame per origin and score the
-   origin's anchors against it directly.
+8. What does the radar show when the **40-task daily cap** is reached (§2)?
+   If Quick Execute persists there too, the cap is a second unaffordable-but-
+   present state, and the task's "tap it and see" shape already covers it — but
+   only if tapping does not open a purchase dialog for that case as well.
+9. Capture the **`stamina_prompt`** deliberately: tap Quick Execute while
+   stamina is short and hold on the dialog. It needs ≥10 frames and an
+   identifying anchor like any other screen. **Take nothing else in that
+   dialog** — it spends currency.
 
 ---
 
@@ -606,7 +691,8 @@ instrumentation.
 | The tech-list and tab-header regions overlap, so each anchor matches the other's badge | Registry validation rejects overlapping regions for anchors sharing a template on one screen (§4). Without it the failure is silent: the task taps the tab badge believing it is a tech, switches tabs, and reports a donation it never made |
 | Radar targets cap out, invalidating the VS-day schedule | Audit item §8.1, resolved before the migration is written |
 | Two new screens push the recognizer below 98% | `make gate` is a gate, not a report; `agent score --json` localizes per frame |
-| Popup left open by a crash strands the next task | `rewards_popup` has escape edges to all four origins, so `NavigateTo` recovers without the panic route |
-| A task taps an anchor behind the scrim and reports success (*matchable ≠ tappable*, §2) | Modal precedence makes the overlaid origin unrecognizable as itself, so the tap fails with `ErrWrongScreen` rather than landing on glass |
-| Modal precedence changes code the M1 gate was tuned against | No screen is modal today, so the change is a provable no-op on the current corpus — asserted by a test (§7) — and `make gate` re-runs regardless |
-| The scrim turns out to disqualify the origin after all, making `modal` dead weight | Audit item §8.8 measures it before the recognizer is touched; if so, §5 reverts to a plain popup screen and the rest of the design is unaffected |
+| A crash leaves the agent on the stamina dialog or the donate dialog | Both carry a `Back` escape edge, so `NavigateTo` recovers without the panic route. The celebration needs no equivalent: it plays over a screen that stays fully recognizable, so nothing is ever stranded on it |
+| **An automated tap spends currency** via the stamina purchase dialog | `stamina_prompt` is a named screen with an identifying anchor and a `Back` escape, and no action anchor at all — there is nothing on it the task is able to tap. It has no in-edge, so `NavigateTo` can never choose a route whose traversal is a purchase (§5) |
+| The radar's daily 40-task cap presents as another present-but-unaffordable Quick Execute | Audit item §8.8. The single-pass shape already tolerates it; what must be checked is whether that case also opens a purchase dialog |
+| The celebration banner differs on the radar from the mailboxes | Audit item §8.1. A second template, never a looser threshold — one crop stretched to match two different graphics matches neither well |
+| The dismiss tap lands after the animation has cleared | Cannot happen: `rewards_banner` is self-gating, so no banner means no tap. This is the failure the rejected back-arrow target would have carried (§6) |
