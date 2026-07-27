@@ -20,7 +20,7 @@ const (
 	ScreenMailEvent          = "mail_event"
 	ScreenMailSystem         = "mail_system"
 	ScreenRadar              = "radar"
-	ScreenRewardsPopup       = "rewards_popup"
+	ScreenStaminaPrompt      = "stamina_prompt"
 )
 
 // ScreenNames is the recognizable game screen set: every screen a corpus frame
@@ -61,11 +61,16 @@ const (
 // screen M4 parses; the three above it exist because the task has to tap its
 // way down and confirm each landing.
 //
-// alliance_tech_donate is the dialog reached from the recommended tech, and
-// rewards_popup is the overlay Claim All raises. Both are states a task acts
-// from, so both must be nameable — and rewards_popup is declared modal in the
-// manifest, because the origin screen stays visible behind its scrim and would
-// otherwise compete with it for recognition.
+// alliance_tech_donate is the dialog reached from the recommended tech.
+// stamina_prompt is the buy/refill dialog Quick Execute raises when stamina is
+// short — named not because a task acts from it, but so a task can recognize
+// it and leave. It is the one screen here that spends real currency, and
+// nothing on it is ever tapped.
+//
+// The rewards celebration is deliberately NOT a screen. It is a transient
+// animation over a fully visible origin, so an overlay frame is its origin —
+// mail_alliance, radar — and is labelled that way. Naming it would demand ten
+// corpus frames of a screen that does not exist.
 var ScreenNames = []string{
 	ScreenBase,
 	ScreenWorldMap,
@@ -82,5 +87,5 @@ var ScreenNames = []string{
 	ScreenMailEvent,
 	ScreenMailSystem,
 	ScreenRadar,
-	ScreenRewardsPopup,
+	ScreenStaminaPrompt,
 }

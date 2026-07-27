@@ -15,7 +15,7 @@ func TestScreenNamesContainsEveryDeclaredConstant(t *testing.T) {
 		vision.ScreenAlliance, vision.ScreenAllianceMembers, vision.ScreenAllianceTech,
 		vision.ScreenAllianceTechDonate, vision.ScreenBase, vision.ScreenMail,
 		vision.ScreenMailAlliance, vision.ScreenMailEvent, vision.ScreenMailSystem,
-		vision.ScreenRadar, vision.ScreenRewardsPopup, vision.ScreenVS,
+		vision.ScreenRadar, vision.ScreenStaminaPrompt, vision.ScreenVS,
 		vision.ScreenVSRanking, vision.ScreenVSRankingAlliance, vision.ScreenVSRankingWeekly,
 		vision.ScreenWorldMap,
 	}
