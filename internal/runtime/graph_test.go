@@ -103,3 +103,84 @@ func TestDefaultGraphShape(t *testing.T) {
 		}
 	}
 }
+
+// A node entered by tapping something that is only sometimes there gets
+// out-edges only. Two different failures motivate it.
+//
+// For stamina_prompt an in-edge would be an instruction to spend money: it
+// would name quick_execute_button, a control that usually starts an execution
+// and sometimes opens a purchase dialog. A re-plan could then pick that edge
+// as a path segment. The graph must not contain a route whose traversal is a
+// purchase.
+//
+// For alliance_tech_donate an in-edge is a trap: it would name
+// tech_recommended_badge, which is absent whenever the recommendation is on
+// the unselected tab. walk only re-plans on ErrWrongScreen, so
+// ErrAnchorNotFound would propagate and fail the task when the dialog was one
+// tab-tap away.
+func TestConditionalNodesHaveNoInEdges(t *testing.T) {
+	conditional := map[string]bool{
+		vision.ScreenStaminaPrompt:      true,
+		vision.ScreenAllianceTechDonate: true,
+	}
+	for _, e := range DefaultGraph().Edges {
+		if conditional[e.To] {
+			t.Errorf("edge %q -> %q: conditional nodes must have out-edges only", e.From, e.To)
+		}
+	}
+}
+
+// The stamina dialog spends currency. No route may pass through it, because a
+// re-plan that chose it as a path segment would be making a purchase to get
+// somewhere.
+func TestPathNeverRoutesThroughTheStaminaPrompt(t *testing.T) {
+	g := DefaultGraph()
+	for _, to := range []string{vision.ScreenMailAlliance, vision.ScreenBase, vision.ScreenAllianceTech} {
+		path, err := g.Path(vision.ScreenRadar, to)
+		if err != nil {
+			t.Fatalf("Path(radar, %s): %v", to, err)
+		}
+		for _, e := range path {
+			if e.From == vision.ScreenStaminaPrompt || e.To == vision.ScreenStaminaPrompt {
+				t.Fatalf("Path(radar, %s) routed through the stamina prompt: %+v", to, path)
+			}
+		}
+	}
+}
+
+// A crash on the stamina dialog must not strand the next task.
+func TestTheStaminaPromptEscapesToRadar(t *testing.T) {
+	if _, err := DefaultGraph().Path(vision.ScreenStaminaPrompt, vision.ScreenRadar); err != nil {
+		t.Errorf("no route out of the stamina prompt: %v", err)
+	}
+}
+
+func TestEveryMailboxIsReachableFromBase(t *testing.T) {
+	g := DefaultGraph()
+	for _, box := range []string{
+		vision.ScreenMailAlliance, vision.ScreenMailEvent, vision.ScreenMailSystem,
+	} {
+		if _, err := g.Path(vision.ScreenBase, box); err != nil {
+			t.Errorf("no route from base to %q: %v", box, err)
+		}
+	}
+}
+
+// The donate dialog is entered only by task code, but must always be
+// escapable — a crash there would otherwise strand every later task.
+func TestTheDonateDialogEscapesToAllianceTech(t *testing.T) {
+	if _, err := DefaultGraph().Path(
+		vision.ScreenAllianceTechDonate, vision.ScreenAllianceTech); err != nil {
+		t.Errorf("no route out of the donate dialog: %v", err)
+	}
+}
+
+func TestDefaultGraphValidatesAgainstTheShippingManifest(t *testing.T) {
+	reg, err := vision.LoadRegistry("../../templates/manifest.yaml")
+	if err != nil {
+		t.Skipf("shipping manifest not loadable: %v", err)
+	}
+	if err := DefaultGraph().Validate(reg); err != nil {
+		t.Fatalf("DefaultGraph must validate against the real templates: %v", err)
+	}
+}

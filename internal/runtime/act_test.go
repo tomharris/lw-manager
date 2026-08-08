@@ -12,24 +12,27 @@ import (
 
 func TestTapHitsInsideMatchedAnchor(t *testing.T) {
 	c, tr := newCtx(t, &runtimetest.FakeKill{}, "base")
-	if err := c.Tap(context.Background(), "base", "gather_button"); err != nil {
+	if err := c.Tap(context.Background(), "base", "collect_bubble"); err != nil {
 		t.Fatal(err)
 	}
 	acts := tr.Actions()
 	if len(acts) != 1 || acts[0].Kind != "tap" {
 		t.Fatalf("actions: %+v", acts)
 	}
-	// The synthetic base pattern occupies pixels (4,4)-(12,12) of 64 → the
-	// tap must land inside that box in normalized coordinates.
+	// The tap must land inside the anchor's own grid cell. Asking runtimetest
+	// for the region beats writing the pixels down: cell assignment shifts
+	// whenever the synthetic layout gains an anchor, and a hard-coded box
+	// would then pass or fail for reasons having nothing to do with Tap.
+	r := runtimetest.AnchorRegion("base", "collect_bubble")
 	p := acts[0].At
-	if p.X < 4.0/64 || p.X > 12.0/64 || p.Y < 4.0/64 || p.Y > 12.0/64 {
-		t.Fatalf("tap at %+v outside the matched anchor box", p)
+	if p.X < r.X1 || p.X > r.X2 || p.Y < r.Y1 || p.Y > r.Y2 {
+		t.Fatalf("tap at %+v outside the matched anchor's region %+v", p, r)
 	}
 }
 
 func TestTapWrongScreenRefused(t *testing.T) {
 	c, tr := newCtx(t, &runtimetest.FakeKill{}, "mail")
-	err := c.Tap(context.Background(), "base", "gather_button")
+	err := c.Tap(context.Background(), "base", "collect_bubble")
 	if !errors.Is(err, runtime.ErrWrongScreen) {
 		t.Fatalf("got %v, want ErrWrongScreen", err)
 	}

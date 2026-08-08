@@ -1,5 +1,28 @@
 package vision
 
+// Screen names, as constants rather than bare strings. The screen graph,
+// every task body, and the synthetic test registry all name these; a typo
+// in a string literal compiles and fails at runtime, where it presents as a
+// mysterious "unknown screen" mid-task.
+const (
+	ScreenBase               = "base"
+	ScreenWorldMap           = "world_map"
+	ScreenAlliance           = "alliance"
+	ScreenAllianceTech       = "alliance_tech"
+	ScreenAllianceTechDonate = "alliance_tech_donate"
+	ScreenAllianceMembers    = "alliance_members"
+	ScreenVS                 = "vs"
+	ScreenVSRanking          = "vs_ranking"
+	ScreenVSRankingWeekly    = "vs_ranking_weekly"
+	ScreenVSRankingAlliance  = "vs_ranking_alliance"
+	ScreenMail               = "mail"
+	ScreenMailAlliance       = "mail_alliance"
+	ScreenMailEvent          = "mail_event"
+	ScreenMailSystem         = "mail_system"
+	ScreenRadar              = "radar"
+	ScreenStaminaPrompt      = "stamina_prompt"
+)
+
 // ScreenNames is the recognizable game screen set: every screen a corpus frame
 // may be labeled with, and therefore every screen the recognizer must be able
 // to name.
@@ -37,19 +60,32 @@ package vision
 // "Alliance -> Members -> VS Ranking" are wrong. vs_ranking_alliance is the
 // screen M4 parses; the three above it exist because the task has to tap its
 // way down and confirm each landing.
+//
+// alliance_tech_donate is the dialog reached from the recommended tech.
+// stamina_prompt is the buy/refill dialog Quick Execute raises when stamina is
+// short — named not because a task acts from it, but so a task can recognize
+// it and leave. It is the one screen here that spends real currency, and
+// nothing on it is ever tapped.
+//
+// The rewards celebration is deliberately NOT a screen. It is a transient
+// animation over a fully visible origin, so an overlay frame is its origin —
+// mail_alliance, radar — and is labelled that way. Naming it would demand ten
+// corpus frames of a screen that does not exist.
 var ScreenNames = []string{
-	"base",
-	"world_map",
-	"alliance",
-	"alliance_tech",
-	"alliance_members",
-	"vs",
-	"vs_ranking",
-	"vs_ranking_weekly",
-	"vs_ranking_alliance",
-	"mail",
-	"mail_alliance",
-	"mail_event",
-	"mail_system",
-	"radar",
+	ScreenBase,
+	ScreenWorldMap,
+	ScreenAlliance,
+	ScreenAllianceTech,
+	ScreenAllianceTechDonate,
+	ScreenAllianceMembers,
+	ScreenVS,
+	ScreenVSRanking,
+	ScreenVSRankingWeekly,
+	ScreenVSRankingAlliance,
+	ScreenMail,
+	ScreenMailAlliance,
+	ScreenMailEvent,
+	ScreenMailSystem,
+	ScreenRadar,
+	ScreenStaminaPrompt,
 }

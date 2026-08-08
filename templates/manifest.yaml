@@ -51,6 +51,44 @@ screens:
                 - 0.23795
               threshold: 0.85
               identifies_screen: true
+            - id: tab_recommended_badge
+              template: alliance_tech/tab_recommended_badge.png
+              region:
+                - 0.47714
+                - 0.20259
+                - 0.57524
+                - 0.27116
+              threshold: 0.85
+              identifies_screen: false
+            - id: tech_recommended_badge
+              template: alliance_tech/tech_recommended_badge.png
+              region:
+                - 0.03429
+                - 0.41152
+                - 0.13952
+                - 0.48651999999999995
+              threshold: 0.85
+              identifies_screen: false
+    alliance_tech_donate:
+        anchors:
+            - id: alliance_tech_donate
+              template: alliance_tech_donate/alliance_tech_donate.png
+              region:
+                - 0.31286
+                - 0.19402
+                - 0.70857
+                - 0.28188
+              threshold: 0.85
+              identifies_screen: true
+            - id: donate_button
+              template: alliance_tech_donate/donate_button.png
+              region:
+                - 0.59619
+                - 0.65367
+                - 0.79905
+                - 0.72867
+              threshold: 0.85
+              identifies_screen: false
     base:
         anchors:
             - id: alliance_button
@@ -71,6 +109,24 @@ screens:
                 - 1
               threshold: 0.85
               identifies_screen: true
+            - id: collect_bubble
+              template: base/collect_bubble.png
+              region:
+                - 0.08
+                - 0.32
+                - 0.9
+                - 0.86
+              threshold: 0.85
+              identifies_screen: false
+            - id: help_all_button
+              template: base/help_all_button.png
+              region:
+                - 0.72
+                - 0.72224
+                - 0.84429
+                - 0.80688
+              threshold: 0.85
+              identifies_screen: false
             - id: mail_button
               template: base/mail_button.png
               region:
@@ -159,9 +215,18 @@ screens:
             - id: claim_all_button
               template: mail_alliance/claim_all_button.png
               region:
-                - 0.63429
-                - 0.90867
-                - 0.95857
+                - 0.65095
+                - 0.9151
+                - 0.97048
+                - 1
+              threshold: 0.85
+              identifies_screen: false
+            - id: delete_all_button
+              template: mail_alliance/delete_all_button.png
+              region:
+                - 0.245
+                - 0.9
+                - 0.6383
                 - 1
               threshold: 0.85
               identifies_screen: true
@@ -192,8 +257,26 @@ screens:
                 - 1
               threshold: 0.85
               identifies_screen: false
+            - id: rewards_banner
+              template: mail_alliance/rewards_banner.png
+              region:
+                - 0.18667
+                - 0.30223999999999995
+                - 0.80143
+                - 0.38795
+              threshold: 0.85
+              identifies_screen: false
     mail_event:
         anchors:
+            - id: claim_all_button
+              template: mail_event/claim_all_button.png
+              region:
+                - 0.65095
+                - 0.91403
+                - 0.95857
+                - 1
+              threshold: 0.85
+              identifies_screen: false
             - id: mail_button
               template: mail_event/mail_button.png
               region:
@@ -212,8 +295,26 @@ screens:
                 - 0.10724
               threshold: 0.7
               identifies_screen: true
+            - id: rewards_banner
+              template: mail_event/rewards_banner.png
+              region:
+                - 0.18905
+                - 0.30008999999999997
+                - 0.80143
+                - 0.38902000000000003
+              threshold: 0.85
+              identifies_screen: false
     mail_system:
         anchors:
+            - id: claim_all_button
+              template: mail_system/claim_all_button.png
+              region:
+                - 0.65095
+                - 0.91081
+                - 0.95619
+                - 1
+              threshold: 0.85
+              identifies_screen: false
             - id: mail_button
               template: mail_system/mail_button.png
               region:
@@ -232,6 +333,15 @@ screens:
                 - 0.11044999999999999
               threshold: 0.85
               identifies_screen: true
+            - id: rewards_banner
+              template: mail_system/rewards_banner.png
+              region:
+                - 0.21048
+                - 0.29688000000000003
+                - 0.77762
+                - 0.38795
+              threshold: 0.85
+              identifies_screen: false
     radar:
         anchors:
             - id: base_button
@@ -241,6 +351,62 @@ screens:
                 - 0.91081
                 - 0.9657100000000001
                 - 1
+              threshold: 0.85
+              identifies_screen: false
+            - id: claim_all_button
+              template: radar/claim_all_button.png
+              region:
+                - 0.36285999999999996
+                - 0.9161699999999999
+                - 0.6276200000000001
+                - 0.9976
+              threshold: 0.85
+              identifies_screen: false
+            - id: quick_execute_button
+              template: radar/quick_execute_button.png
+              region:
+                - 0.34143
+                - 0.91831
+                - 0.65857
+                - 0.9997400000000001
+              threshold: 0.85
+              identifies_screen: false
+            - id: radar
+              template: radar/radar.png
+              region:
+                - 0.8506
+                - 0.1063
+                - 0.9967
+                - 0.2013
+              threshold: 0.85
+              identifies_screen: true
+            - id: rewards_banner
+              template: radar/rewards_banner.png
+              region:
+                - 0.18905
+                - 0.30117000000000005
+                - 0.80381
+                - 0.38902000000000003
+              threshold: 0.85
+              identifies_screen: false
+    stamina_prompt:
+        anchors:
+            - id: radar_button
+              template: stamina_prompt/radar_button.png
+              region:
+                - 0.8581
+                - 0.14581
+                - 0.9847600000000001
+                - 0.23152
+              threshold: 0.85
+              identifies_screen: false
+            - id: stamina_prompt
+              template: stamina_prompt/stamina_prompt.png
+              region:
+                - 0.28667
+                - 0.14581
+                - 0.70857
+                - 0.23045
               threshold: 0.85
               identifies_screen: true
     vs:

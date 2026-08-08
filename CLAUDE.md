@@ -171,6 +171,24 @@ Two properties are load-bearing:
   loose that every frame matches something, and acting on a misidentified
   screen is exactly the blind tap invariant #3 forbids.
 
+**`agent record` rewrites `index.yaml` from what is on disk — so pull first.**
+`corpus.Reindex` builds the index solely from a scan of the working tree; the
+previous index is consulted only to carry metadata forward for hashes still
+present. That is coherent with "the label is the directory", but it means
+recording into a corpus that was never pulled **silently drops every labelled
+entry from the committed index**, because those directories do not exist
+locally. It looks like a clean 204-frame index rather than like a truncation.
+
+Nothing is destroyed — the bytes are in the blob store and `index.yaml` is in
+git — but the recovery is a *merge*, not a checkout: the new frames'
+`captured_at`, `device`, and `game_version` live only in the freshly written
+file, and those stamps are the whole reason the index exists. Restore the
+committed index, `corpus pull`, append the new entries onto it, then
+`corpus index`.
+
+The habit that avoids all of it: **`agent corpus pull` before `agent record`,
+every time, on any machine that has not pulled.**
+
 `agent score` prints a confusion matrix and a separation report keyed on
 **(anchor ID, screen)**, not on anchor ID alone: `registry.go` allows the same
 anchor ID to be declared on two different screens (a `back_button` on both,

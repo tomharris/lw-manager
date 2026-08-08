@@ -111,10 +111,44 @@ func LoadRegistry(manifestPath string) (*Registry, error) {
 				IdentifiesScreen: am.IdentifiesScreen,
 			})
 		}
+		if err := checkSharedTemplateRegions(manifestPath, name, sm.Anchors); err != nil {
+			return nil, err
+		}
 		reg.Screens = append(reg.Screens, s)
 	}
 	sort.Slice(reg.Screens, func(i, j int) bool { return reg.Screens[i].Name < reg.Screens[j].Name })
 	return reg, nil
+}
+
+// checkSharedTemplateRegions rejects two anchors on one screen that name the
+// same template file and whose search regions overlap.
+//
+// The alliance tech recommendation badge is the case: the same icon appears on
+// a tab header and on a tech button, and if one PNG served both anchors then
+// region would be the only thing telling them apart. Overlapping regions let
+// each match the other's instance, and the resulting failure is silent — a
+// task taps what it believes is one and gets the other, with no error to show
+// for it. Today's manifest cuts two separate PNGs, so this guard is a trap set
+// for the recrop that consolidates them, not a check on current data.
+//
+// Anchors with different templates may overlap freely; base's help icon and
+// collect bubble both search most of the screen by design, because neither has
+// a fixed position.
+func checkSharedTemplateRegions(manifestPath, screen string, anchors []anchorManifest) error {
+	for i := 0; i < len(anchors); i++ {
+		for j := i + 1; j < len(anchors); j++ {
+			if anchors[i].Template != anchors[j].Template {
+				continue
+			}
+			a := transport.Rect{X1: anchors[i].Region[0], Y1: anchors[i].Region[1], X2: anchors[i].Region[2], Y2: anchors[i].Region[3]}
+			b := transport.Rect{X1: anchors[j].Region[0], Y1: anchors[j].Region[1], X2: anchors[j].Region[2], Y2: anchors[j].Region[3]}
+			if a.X1 < b.X2 && b.X1 < a.X2 && a.Y1 < b.Y2 && b.Y1 < a.Y2 {
+				return fmt.Errorf("vision: manifest %s: screen %q anchors %q and %q share template %s with overlapping regions; region is the only thing telling them apart",
+					manifestPath, screen, anchors[i].ID, anchors[j].ID, anchors[i].Template)
+			}
+		}
+	}
+	return nil
 }
 
 func loadPNG(path string) (image.Image, error) {

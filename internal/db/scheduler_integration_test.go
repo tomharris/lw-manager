@@ -27,15 +27,21 @@ func TestSchedulerSnapshotSeedRows(t *testing.T) {
 	if got := byName["tech_donate"].CadenceSeconds; got != 7200 {
 		t.Errorf("tech_donate cadence: got %d, want 7200", got)
 	}
-	rc, ok := byName["radar_claim"]
+	// Migration 00004 merged radar_quick and radar_claim back into one task:
+	// the two buttons are mutually exclusive and a pending claim blocks the
+	// next execute, so the split could not work. It runs on VS scoring days
+	// only, so targets accumulate untouched in between.
+	r, ok := byName["radar"]
 	if !ok {
-		t.Fatal("radar_claim not in snapshot")
+		t.Fatal("radar not in snapshot")
 	}
-	if len(rc.DaysOfWeek) != 4 {
-		t.Fatalf("radar_claim days: got %v, want {1,3,5,6}", rc.DaysOfWeek)
+	if len(r.DaysOfWeek) != 4 {
+		t.Fatalf("radar days: got %v, want {1,3,5,6}", r.DaysOfWeek)
 	}
-	if _, ok := byName["radar"]; ok {
-		t.Error("old single 'radar' task still present; it should have split")
+	for _, gone := range []string{"radar_quick", "radar_claim"} {
+		if _, ok := byName[gone]; ok {
+			t.Errorf("%s still present; migration 00004 should have deleted it", gone)
+		}
 	}
 }
 
