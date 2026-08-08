@@ -15,5 +15,6 @@ import (
 // fast enough that nobody is tempted to skip it.
 func TestMain(m *testing.M) {
 	tapSettle = time.Millisecond
+	tabSettle = time.Millisecond
 	os.Exit(m.Run())
 }
