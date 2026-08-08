@@ -1,11 +1,11 @@
 // Package runtimetest provides synthetic screens, a matching graph, and
 // fakes for testing the task runtime with no device attached.
 //
-// Five screens share one 8x8 template, distinguished by position: each
-// screen's anchors search only its own region of the 64x64 frame, and
-// Frame(screen) renders the pattern only at that screen's spot. Recognition
-// is therefore exact and deterministic without needing patterns that are
-// provably NCC-distinct from each other.
+// The synthetic frame is a grid of cells, one per (screen, anchor) pair, all
+// carrying the same 8x8 pattern. Recognition is therefore exact and
+// deterministic without needing patterns that are provably NCC-distinct from
+// each other: an anchor matches when — and only when — its own cell was
+// drawn into.
 package runtimetest
 
 import (
@@ -13,7 +13,9 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"math/rand"
+	"sort"
 	"sync"
 	"time"
 
@@ -22,107 +24,182 @@ import (
 	"github.com/tomharris/lw-manager/internal/vision"
 )
 
-// spot places one screen's pattern and the region its anchors search.
-type spot struct {
-	px, py int            // paste position of the 8x8 pattern
-	region transport.Rect // search region containing it, disjoint from others
+// The grid geometry. One cell per (screen, anchor) pair means a frame can
+// render some of a screen's anchors and omit others, which is what "the
+// button is not on screen" means — and every task's nothing-to-do path
+// branches on it.
+//
+// Previously all of a screen's anchors shared one region, which made anchor
+// presence inseparable from screen presence. The only way to simulate a
+// missing button was to move its search region onto flat pixels, which tests
+// the matcher rather than the task.
+const (
+	frameSize   = 128 // synthetic frames are frameSize x frameSize
+	cellSize    = 16  // one anchor's slot; regions are disjoint by construction
+	patternSize = 8   // the pattern, centred in its cell
+	cellsPerRow = frameSize / cellSize
+
+	// idAnchor is the identifying anchor every synthetic screen carries. It
+	// is the only anchor with IdentifiesScreen set, so omitting an action
+	// anchor never costs the screen its identity — which is precisely the
+	// real behaviour a celebration frame or a greyed-out button has.
+	idAnchor = "id"
+
+	// flatGray is the background every frame is painted with. Any cell not
+	// drawn into stays flat, and NCC against a flat patch scores 0.
+	flatGray = 100
+)
+
+// layout names every screen's anchors in a fixed order. Cell assignment is
+// derived from this, so it is deterministic across runs without any cell
+// numbers being written down.
+//
+// It must cover every screen and anchor runtime.DefaultGraph() names, since
+// Graph below returns that graph and Ctx validates it against Registry.
+var layout = map[string][]string{
+	vision.ScreenBase:               {idAnchor, "help_all_button", "collect_bubble", "alliance_button", "mail_button", "radar_button", "world_map_button"},
+	vision.ScreenStaminaPrompt:      {idAnchor},
+	vision.ScreenWorldMap:           {idAnchor, "base_button"},
+	vision.ScreenAlliance:           {idAnchor, "tech_button"},
+	vision.ScreenAllianceTech:       {idAnchor, "tech_recommended_badge", "tab_recommended_badge"},
+	vision.ScreenAllianceTechDonate: {idAnchor, "donate_button"},
+	vision.ScreenMail:               {idAnchor, "mail_alliance_button", "mail_event_button", "mail_system_button"},
+	vision.ScreenMailAlliance:       {idAnchor, "claim_all_button", "rewards_banner"},
+	vision.ScreenMailEvent:          {idAnchor, "claim_all_button", "rewards_banner"},
+	vision.ScreenMailSystem:         {idAnchor, "claim_all_button", "rewards_banner"},
+	vision.ScreenRadar:              {idAnchor, "quick_execute_button", "claim_all_button", "rewards_banner"},
 }
 
-var spots = map[string]spot{
-	"base":          {4, 4, transport.Rect{X1: 0, Y1: 0, X2: 0.45, Y2: 0.45}},
-	"alliance":      {44, 4, transport.Rect{X1: 0.55, Y1: 0, X2: 1, Y2: 0.45}},
-	"mail":          {4, 44, transport.Rect{X1: 0, Y1: 0.55, X2: 0.45, Y2: 1}},
-	"radar":         {44, 44, transport.Rect{X1: 0.55, Y1: 0.55, X2: 1, Y2: 1}},
-	"alliance_tech": {28, 28, transport.Rect{X1: 0.42, Y1: 0.42, X2: 0.58, Y2: 0.58}},
+// screenOrder is layout's keys, sorted, so cell indices never depend on map
+// iteration order.
+func screenOrder() []string {
+	names := make([]string, 0, len(layout))
+	for n := range layout {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
-// tapAnchors names the tap targets each Tier 1 skeleton uses, per screen.
-// The radar screen carries two because its task split into radar_quick and
-// radar_claim, each with its own button.
-var tapAnchors = map[string][]string{
-	"base":          {"gather_button"},
-	"alliance":      {"help_all_button"},
-	"mail":          {"collect_all_button"},
-	"alliance_tech": {"donate_button"},
-	"radar":         {"radar_quick_button", "radar_claim_button"},
+// cellIndex returns the grid cell owned by one (screen, anchor) pair.
+func cellIndex(screen, anchorID string) int {
+	i := 0
+	for _, s := range screenOrder() {
+		for _, a := range layout[s] {
+			if s == screen && a == anchorID {
+				return i
+			}
+			i++
+		}
+	}
+	panic(fmt.Sprintf("runtimetest: no cell for %s/%s", screen, anchorID))
+}
+
+// cellOrigin is a cell's top-left pixel.
+func cellOrigin(i int) (int, int) {
+	if i >= cellsPerRow*cellsPerRow {
+		panic(fmt.Sprintf("runtimetest: cell %d does not fit a %dx%d grid; raise frameSize", i, cellsPerRow, cellsPerRow))
+	}
+	return (i % cellsPerRow) * cellSize, (i / cellsPerRow) * cellSize
+}
+
+// cellRect is a cell's normalized search region. Cells never overlap, so no
+// anchor can match another's pattern.
+func cellRect(i int) transport.Rect {
+	x, y := cellOrigin(i)
+	return transport.Rect{
+		X1: float64(x) / frameSize,
+		Y1: float64(y) / frameSize,
+		X2: float64(x+cellSize) / frameSize,
+		Y2: float64(y+cellSize) / frameSize,
+	}
 }
 
 func pattern() *image.Gray {
-	g := image.NewGray(image.Rect(0, 0, 8, 8))
-	for y := 0; y < 8; y++ {
-		for x := 0; x < 8; x++ {
+	g := image.NewGray(image.Rect(0, 0, patternSize, patternSize))
+	for y := 0; y < patternSize; y++ {
+		for x := 0; x < patternSize; x++ {
 			g.SetGray(x, y, color.Gray{Y: uint8((x*37 + y*53) % 256)})
 		}
 	}
 	return g
 }
 
-// Registry builds the five-screen synthetic registry at ReferenceHeight 64.
-// Each screen has an identifying anchor plus the tap anchor its skeleton
-// task needs; both share the screen's pattern spot.
+// Registry builds the synthetic registry at ReferenceHeight frameSize. Each
+// screen carries an identifying anchor plus every action anchor its task
+// needs, each in its own cell.
 func Registry() *vision.Registry {
 	p := pattern()
-	reg := &vision.Registry{ReferenceHeight: 64}
-	for _, name := range []string{"alliance", "alliance_tech", "base", "mail", "radar"} {
-		s := spots[name]
-		anchors := []vision.Anchor{
-			{ID: "id", Template: p, Region: s.region, Threshold: 0.9, IdentifiesScreen: true},
-		}
-		for _, btn := range tapAnchors[name] {
-			anchors = append(anchors, vision.Anchor{ID: btn, Template: p, Region: s.region, Threshold: 0.9})
+	reg := &vision.Registry{ReferenceHeight: frameSize}
+	for _, name := range screenOrder() {
+		var anchors []vision.Anchor
+		for _, id := range layout[name] {
+			anchors = append(anchors, vision.Anchor{
+				ID:               id,
+				Template:         p,
+				Region:           cellRect(cellIndex(name, id)),
+				Threshold:        0.9,
+				IdentifiesScreen: id == idAnchor,
+			})
 		}
 		reg.Screens = append(reg.Screens, vision.Screen{Name: name, Anchors: anchors})
 	}
 	return reg
 }
 
-// Graph mirrors DefaultGraph's topology over the synthetic screens, using
-// the "id" anchor as every tap edge's target (it is present and matchable
-// on each screen's frame).
-func Graph() *runtime.Graph {
-	return &runtime.Graph{
-		Entry: "base",
-		Edges: []runtime.Edge{
-			{From: "base", To: "alliance", Action: runtime.ActionTap, AnchorID: "id"},
-			{From: "alliance", To: "base", Action: runtime.ActionBack},
-			{From: "alliance", To: "alliance_tech", Action: runtime.ActionTap, AnchorID: "id"},
-			{From: "alliance_tech", To: "alliance", Action: runtime.ActionBack},
-			{From: "base", To: "mail", Action: runtime.ActionTap, AnchorID: "id"},
-			{From: "mail", To: "base", Action: runtime.ActionBack},
-			{From: "base", To: "radar", Action: runtime.ActionTap, AnchorID: "id"},
-			{From: "radar", To: "base", Action: runtime.ActionBack},
-		},
+// Graph is the production topology. It is returned rather than re-declared
+// because layout now provides every screen and anchor DefaultGraph names —
+// and a second copy of the edge list is a second thing to forget to update,
+// which is the drift screens.go was written to prevent, one layer down.
+func Graph() *runtime.Graph { return runtime.DefaultGraph() }
+
+// Frame renders every anchor of one screen.
+func Frame(screen string) image.Image { return FrameWithout(screen) }
+
+// FrameWithout renders a screen with the named anchors absent. A button that
+// is not rendered is a button the matcher cannot find, which is what every
+// "nothing to do" branch means.
+func FrameWithout(screen string, omit ...string) image.Image {
+	skip := make(map[string]bool, len(omit))
+	for _, o := range omit {
+		skip[o] = true
 	}
+	img := Blank()
+	drawScreen(img, screen, skip)
+	return img
 }
 
-// Frame renders the named screen: flat gray with the pattern at the
-// screen's spot. Panics on unknown names — a test bug, not a runtime case.
-func Frame(screen string) image.Image {
-	s, ok := spots[screen]
+// FrameCelebrating renders a screen with its rewards_banner present, which is
+// what a real celebration frame looks like: the origin screen, fully
+// recognizable, with an animation drawn on it. There is no second screen
+// involved — the celebration is not a screen.
+func FrameCelebrating(screen string) image.Image { return Frame(screen) }
+
+func drawScreen(img *image.Gray, screen string, skip map[string]bool) {
+	anchors, ok := layout[screen]
 	if !ok {
 		panic(fmt.Sprintf("runtimetest: unknown screen %q", screen))
 	}
-	out := image.NewGray(image.Rect(0, 0, 64, 64))
-	for y := 0; y < 64; y++ {
-		for x := 0; x < 64; x++ {
-			out.SetGray(x, y, color.Gray{Y: 100})
-		}
-	}
 	p := pattern()
-	for y := 0; y < 8; y++ {
-		for x := 0; x < 8; x++ {
-			out.SetGray(s.px+x, s.py+y, p.GrayAt(x, y))
+	for _, id := range anchors {
+		if skip[id] {
+			continue
 		}
+		x, y := cellOrigin(cellIndex(screen, id))
+		off := (cellSize - patternSize) / 2
+		draw.Draw(img,
+			image.Rect(x+off, y+off, x+off+patternSize, y+off+patternSize),
+			p, p.Bounds().Min, draw.Src)
 	}
-	return out
 }
 
-// Blank is a frame no screen recognizes.
-func Blank() image.Image {
-	out := image.NewGray(image.Rect(0, 0, 64, 64))
-	for y := 0; y < 64; y++ {
-		for x := 0; x < 64; x++ {
-			out.SetGray(x, y, color.Gray{Y: 100})
+// Blank is a frame no screen recognizes. It returns the concrete type so the
+// frame constructors can draw into it without a type assertion.
+func Blank() *image.Gray {
+	out := image.NewGray(image.Rect(0, 0, frameSize, frameSize))
+	for y := 0; y < frameSize; y++ {
+		for x := 0; x < frameSize; x++ {
+			out.SetGray(x, y, color.Gray{Y: flatGray})
 		}
 	}
 	return out
@@ -140,6 +217,13 @@ func Frames(names ...string) []image.Image {
 		}
 	}
 	return out
+}
+
+// AnchorRegion is the search region one anchor owns, so a test can assert a
+// tap landed on the anchor it named without hard-coding grid arithmetic that
+// shifts whenever layout gains an entry.
+func AnchorRegion(screen, anchorID string) transport.Rect {
+	return cellRect(cellIndex(screen, anchorID))
 }
 
 // FakeKill is a settable kill switch for tests.
