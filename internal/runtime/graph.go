@@ -100,25 +100,51 @@ func (g *Graph) Path(from, to string) ([]Edge, error) {
 	return nil, fmt.Errorf("runtime: %q -> %q: %w", from, to, ErrNoPath)
 }
 
-// DefaultGraph is the production topology for the Tier 1 tasks. The anchor
-// IDs name templates that will exist once the real corpus is captured; until
-// then Validate rejects this graph against the shipping manifest, which is
-// the designed behavior — skeleton tasks must refuse to run rather than
-// blind-tap unproven screens.
+// DefaultGraph is the production topology for the Tier 1 tasks.
+//
+// Two screens are reachable only by task code and appear here with out-edges
+// only: alliance_tech_donate and stamina_prompt. Both are entered by tapping
+// something whose effect depends on state the graph cannot see, and the graph
+// models routes that are always available.
+//
+// An in-edge to the donate dialog would name an anchor that is absent whenever
+// the recommendation sits on the unselected tab. An in-edge to the stamina
+// prompt would be worse: it would name quick_execute_button, a control that
+// usually starts an execution and sometimes opens a purchase dialog. The graph
+// must not contain a route whose traversal is a purchase.
+//
+// The rewards celebration needs no edges at all. It plays over a screen that
+// stays fully recognizable, so nothing is ever stranded on it and NavigateTo
+// is never confused by it.
+//
+// alliance_members and the vs tree stay unrouted: they are recognized for
+// M4's benefit, and navigating them is M4's problem.
 func DefaultGraph() *Graph {
 	return &Graph{
-		Entry: "base",
+		Entry: vision.ScreenBase,
 		Edges: []Edge{
-			{From: "base", To: "world_map", Action: ActionTap, AnchorID: "world_map_button"},
-			{From: "world_map", To: "base", Action: ActionTap, AnchorID: "base_button"},
-			{From: "base", To: "alliance", Action: ActionTap, AnchorID: "alliance_button"},
-			{From: "alliance", To: "base", Action: ActionBack},
-			{From: "alliance", To: "alliance_tech", Action: ActionTap, AnchorID: "tech_button"},
-			{From: "alliance_tech", To: "alliance", Action: ActionBack},
-			{From: "base", To: "mail", Action: ActionTap, AnchorID: "mail_button"},
-			{From: "mail", To: "base", Action: ActionBack},
-			{From: "base", To: "radar", Action: ActionTap, AnchorID: "radar_button"},
-			{From: "radar", To: "base", Action: ActionBack},
+			{From: vision.ScreenBase, To: vision.ScreenWorldMap, Action: ActionTap, AnchorID: "world_map_button"},
+			{From: vision.ScreenWorldMap, To: vision.ScreenBase, Action: ActionTap, AnchorID: "base_button"},
+
+			{From: vision.ScreenBase, To: vision.ScreenAlliance, Action: ActionTap, AnchorID: "alliance_button"},
+			{From: vision.ScreenAlliance, To: vision.ScreenBase, Action: ActionBack},
+			{From: vision.ScreenAlliance, To: vision.ScreenAllianceTech, Action: ActionTap, AnchorID: "tech_button"},
+			{From: vision.ScreenAllianceTech, To: vision.ScreenAlliance, Action: ActionBack},
+			{From: vision.ScreenAllianceTechDonate, To: vision.ScreenAllianceTech, Action: ActionBack},
+
+			{From: vision.ScreenBase, To: vision.ScreenMail, Action: ActionTap, AnchorID: "mail_button"},
+			{From: vision.ScreenMail, To: vision.ScreenBase, Action: ActionBack},
+			{From: vision.ScreenMail, To: vision.ScreenMailAlliance, Action: ActionTap, AnchorID: "mail_alliance_button"},
+			{From: vision.ScreenMailAlliance, To: vision.ScreenMail, Action: ActionBack},
+			{From: vision.ScreenMail, To: vision.ScreenMailEvent, Action: ActionTap, AnchorID: "mail_event_button"},
+			{From: vision.ScreenMailEvent, To: vision.ScreenMail, Action: ActionBack},
+			{From: vision.ScreenMail, To: vision.ScreenMailSystem, Action: ActionTap, AnchorID: "mail_system_button"},
+			{From: vision.ScreenMailSystem, To: vision.ScreenMail, Action: ActionBack},
+
+			{From: vision.ScreenBase, To: vision.ScreenRadar, Action: ActionTap, AnchorID: "radar_button"},
+			{From: vision.ScreenRadar, To: vision.ScreenBase, Action: ActionBack},
+
+			{From: vision.ScreenStaminaPrompt, To: vision.ScreenRadar, Action: ActionBack},
 		},
 	}
 }
