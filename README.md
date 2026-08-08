@@ -26,10 +26,10 @@ surface area at "a fast player."
 |---|---|---|
 | **M0** Foundations | ✅ | Postgres, migrations, config, `Transport`, capture → blob store |
 | **M1** Vision core | ✅ | **99.72%** recognizer accuracy (355/356) against a 98% gate |
-| **M2** Task runtime | 🚧 | Runtime, screen graph, panic route, kill switch, scheduler — all built and tested device-free. Tier 1 task bodies are still skeletons. |
-| **M3** Fleet | ⬜ | Multi-device orchestration, dashboard |
+| **M2** Task runtime | 🚧 | Runtime, screen graph, panic route, kill switch, scheduler, and all five Tier 1 task bodies — built, cropped, and tested device-free. The gate is what's left: one account unattended for 24h, which needs the handset. |
 | **M4** Analytics collection | ⬜ | Scroll-and-stitch, row segmentation, OCR, roster matching, facts |
 | **M5** Participation surface | ⬜ | Leaderboard, VS compliance, inactivity watchlist |
+| **M3** Fleet | 💤 | Deferred until after M5, and may not happen. Dashboard + WebSocket status; the registry and the multi-device run loop already shipped in M0/M2 |
 
 The M1 corpus is 356 frames across 14 screens with 57 negatives, captured from
 a moto g play 2024 at 720×1600 on game version 1.0.354.

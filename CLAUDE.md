@@ -15,6 +15,15 @@ kind of thing a task gets written against.
 Full design: `docs/lastwar-platform-design.gen`.
 Current milestone spec: `docs/superpowers/specs/`.
 
+**The milestone order is M0 → M1 → M2 → M4 → M5, then M3 if ever.** M3 (Fleet)
+is deferred behind M5 as an enhancement that may not get built. It is still
+called M3 — the numbers are cited by name in this file, in the corpus notes,
+and in spec filenames, so renumbering would break more than it fixes. Most of
+what M3 listed already exists (`agent register`/`agent accounts` is the
+registry, `internal/scheduler` holds per-account cadences, `agent run` already
+drives every attached serial); the deferred part is the dashboard and the
+WebSocket status feed, which nothing in M4 or M5 depends on.
+
 ## Quickstart
 
 ```bash
@@ -26,7 +35,7 @@ make build                    # bin/agent, bin/control
 ./bin/agent devices                                  # confirm the probe works
 ./bin/agent register --nickname myalt --role alliance_data
 ./bin/agent capture --account <id printed above>
-./bin/agent run-task --account <id> --task help_all   # runs once templates exist
+./bin/agent run-task --account <id> --task help_all   # one task now, no scheduler
 ./bin/agent run                                       # scheduler loop, all attached devices
 ./bin/control pause --reason "alliance event"         # global kill switch
 ./bin/control resume

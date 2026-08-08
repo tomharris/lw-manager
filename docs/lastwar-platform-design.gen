@@ -331,14 +331,33 @@ Each phase ends in something runnable. Don't let Claude Code build past a failin
 **M2 — Task runtime + Tier 1 tasks (2 wk).** FSM ctx, screen graph, panic route, humanization, scheduler, kill switch. Then daily gather, help-all, mail/chest collect, donation, radar.
 *Gate:* one account runs unattended 24h, ≥95% task success, zero stuck-screen incidents.
 
-**M3 — Fleet (1 wk).** Multi-device orchestration, account registry, per-account schedules, dashboard Fleet + Tasks views, WebSocket status.
-*Gate:* 4 accounts running concurrently, independently pausable.
-
 **M4 — Analytics collection (2 wk).** Capture routes, scroll-and-stitch, row segmentation, field parsing, fuzzy roster matcher, review queue, facts table.
 *Gate:* daily VS capture matches a hand-checked screenshot within ±1% on ≥95% of rows; every discrepancy lands in review, none silently dropped.
 
 **M5 — Participation surface (1–2 wk).** Derived metrics, leaderboard, VS compliance, inactivity watchlist, train schedule + auto-assign, message templates, MCP tools.
 *Gate:* one full week of real alliance data producing a leaderboard you'd actually post in chat.
+
+**M3 — Fleet (1 wk). Deferred until after M5; an enhancement, and may not happen at all.** Dashboard Fleet + Tasks views, WebSocket status.
+*Gate:* 4 accounts running concurrently, independently pausable.
+
+The number is kept rather than renumbered — M4 and M5 are cited by that name in
+`CLAUDE.md`, in the corpus notes, and across spec filenames, and shifting them
+would invalidate all of it to buy nothing.
+
+Deferring is cheap because most of what M3 listed already landed under M0 and
+M2. The account registry is `agent register` / `agent accounts`, per-account
+cadences live in `internal/scheduler`, and `agent run` already enumerates every
+attached serial and drives them concurrently, skipping accounts whose device is
+attached to some other host. What is left is the *presentation* layer: a
+dashboard and a live status feed.
+
+Nothing downstream needs that layer. M4's gate is a capture reconciled against
+a hand-checked screenshot, and M5's is a leaderboard you would post in alliance
+chat — a chat message and a set of MCP tools, not a web view. The real cost of
+deferring is observability: until the dashboard exists, running several accounts
+is watched through `slog` output and the CLI, so a wedged account is noticed on
+the next read of the logs rather than on a screen. That is a fair trade at four
+accounts and a bad one at twenty, which is the signal to pick M3 back up.
 
 **M6 — Hardening.** Auto-shield, map scan, alerting on agent death, backup/restore, template-drift detection (alert when a screen's match confidence trends down across runs — this is your early warning for a game update).
 
