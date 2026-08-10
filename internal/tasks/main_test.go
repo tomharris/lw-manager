@@ -17,5 +17,6 @@ func TestMain(m *testing.M) {
 	tapSettle = time.Millisecond
 	tabSettle = time.Millisecond
 	claimPollInterval = time.Millisecond
+	claimPollBudget = 2 * time.Second
 	os.Exit(m.Run())
 }
