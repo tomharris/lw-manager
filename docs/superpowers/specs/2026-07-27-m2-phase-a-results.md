@@ -1,5 +1,14 @@
 # M2 Phase A — per-task reliability on the handset
 
+> **Superseded in part by Phase B (2026-08-11).** The root cause identified
+> below — that `claimPollAttempts` was merely too short — is **wrong**. A
+> 4-minute budget was later exhausted without Claim All ever appearing, and a
+> screenshot showed why: Quick Execute grants its rewards through a
+> celebration panel and never reveals a Claim All button at all, so the wait
+> is for a control that flow does not produce. The measurements in this
+> document stand; the diagnosis in "Root cause" does not. See
+> `2026-07-27-m2-phase-b-results.md`.
+
 **Run:** 2026-08-10, 12:54–13:55 UTC
 **Device:** moto g play 2024, `ZL8326G8MZ`, 720x1600
 **Account:** 16 (`lw34alt`, `alliance_data`)
