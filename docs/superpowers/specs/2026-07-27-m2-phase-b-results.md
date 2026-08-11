@@ -353,3 +353,57 @@ So **the M2 outage would not have been prevented by code alone** — but with
 `stayon` set, `Wake` now demonstrably recovers the exact failure that produced
 it. A future unattended run should assert `mStayOn` before it starts rather
 than discovering it four hours in.
+
+## The failing radar run, caught frame by frame (2026-08-11)
+
+Run 356 was burst-captured at 2s intervals across its whole life. It failed
+after **260s** — the entire `claimPollBudget` — with
+`ErrClaimNeverAppeared`. Run 355, four minutes earlier on the same refill,
+succeeded in 41s. Frames 04 and 05 in `evidence/radar-2026-08-11/`.
+
+The state at the start of the wait and the state four minutes later are the
+same state:
+
+| | 15:46:35 (frame 04) | 15:49:52 (frame 05) |
+|---|---|---|
+| `Quick Execute` | present | **still present** |
+| "You can complete N tasks" | 1 | **1** |
+| stamina | 46 | **47** |
+| XP | 2,001 | **2,001** |
+
+**Nothing ever executed.** Stamina did not fall by the 10 an execution costs —
+it *rose* by one, which is regeneration. So the four-minute wait was for the
+reward of an execution that never happened.
+
+And `radarPass` only reaches `claimWhenReady` when `tapIfPresent` reported it
+did tap, so the tap landed and the game ignored it. In frame 04 the radar's
+sweep animation is mid-cycle, which is a plausible reason the game swallowed
+it — but that is a guess about the game's internals, and the fix must not
+depend on it.
+
+### The design flaw, which does not depend on knowing why
+
+**`tapIfPresent` returning `true` means "I tapped", not "the game acted".**
+`radarPass` treats the tap as a completed state transition and proceeds
+directly to waiting for its consequence. When the tap is ignored, the task
+waits out the full budget for something that cannot arrive, then reports a
+failure naming the wrong thing — the claim is blamed for an execute that never
+started.
+
+That also explains Phase A's alternating pattern without any appeal to reveal
+latency: a run whose tap is swallowed does nothing and fails; the next run
+finds the same target still waiting, taps at a moment the game accepts, and
+succeeds.
+
+The fix is to **confirm the execution actually started before waiting for its
+reward** — `Quick Execute` ceasing to match is the local proof the game
+accepted the tap — and to retry the tap a bounded number of times when it does
+not. That converts a 260s wrong-cause failure into either a success or a fast,
+honestly-named one. The stamina prompt must stay an ordinary outcome inside
+that loop, which is why the retirement of "no sweep loop" (`radar.go:43-46`)
+is safe now: `claimWhenReady` already watches for `ScreenStaminaPrompt`, and
+the retry must too.
+
+`claimPollBudget` should drop back to something near the observed reveal once
+this lands. Four minutes only ever bought time for a consequence that was never
+coming.
