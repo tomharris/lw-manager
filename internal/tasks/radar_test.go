@@ -5,6 +5,7 @@ import (
 	"errors"
 	"image"
 	"testing"
+	"time"
 
 	"github.com/tomharris/lw-manager/internal/runtime/runtimetest"
 	"github.com/tomharris/lw-manager/internal/vision"
@@ -119,14 +120,53 @@ func TestRadarBacksOutOfTheStaminaPromptWithoutTappingAnything(t *testing.T) {
 	}
 }
 
-// Claim All is revealed a few seconds after an execution and the screen
-// never changes — both states are `radar` — so WaitFor cannot express this
-// wait and only the anchor's arrival can. If it never arrives, that is a
+// The reveal is far slower than "a few seconds": on the handset it lands
+// 90-125s after the execute tap. The retired budget was eight *attempts*,
+// which sounds generous and was worth only 75-109s of wall clock, because
+// every attempt costs a screencap plus a full recognition pass. It fell
+// short on every run that had work to do. The bound must be wall clock.
+func TestRadarPollsPastTheOldAttemptCount(t *testing.T) {
+	exec, claim, celebrating, done := radarStates()
+
+	frames := toRadar()
+	// WaitFor, arrival CurrentScreen, the banked-claim check, the execute tap.
+	frames = append(frames, rep(exec, 4)...)
+	// Twenty fruitless poll iterations at two frames each — well past the
+	// eight the old count allowed.
+	frames = append(frames, rep(exec, 40)...)
+	// The poll's CurrentScreen, then the claim tap.
+	frames = append(frames, rep(claim, 2)...)
+	frames = append(frames, celebrating)
+	frames = append(frames, rep(done, 2)...)
+	rt, tr := ctxFor(t, frames...)
+
+	fn, ok := Get("radar")
+	if !ok {
+		t.Fatal("radar not registered")
+	}
+	if err := fn(context.Background(), rt); err != nil {
+		t.Fatalf("radar: %v", err)
+	}
+	if taps := countTaps(tr); taps != 4 {
+		t.Errorf("got %d taps, want 4 (navigation, execute, claim, dismiss)", taps)
+	}
+}
+
+// Claim All is revealed after an execution and the screen never changes —
+// both states are `radar` — so WaitFor cannot express this wait and only the
+// anchor's arrival can. If it never arrives within the budget, that is a
 // fault, not a quiet success.
 func TestRadarFailsWhenClaimAllNeverAppears(t *testing.T) {
 	exec, _, _, _ := radarStates()
 
-	frames := append(toRadar(), rep(exec, 4*claimPollAttempts)...)
+	// Collapse the budget rather than counting frames: the loop is bounded by
+	// wall clock now, so the number of polls it fits is not a fixed number.
+	// ReplayTransport holds its last frame, so Quick Execute simply stays put.
+	restore := claimPollBudget
+	claimPollBudget = 20 * time.Millisecond
+	t.Cleanup(func() { claimPollBudget = restore })
+
+	frames := append(toRadar(), rep(exec, 8)...)
 	rt, _ := ctxFor(t, frames...)
 	fn, _ := Get("radar")
 	if err := fn(context.Background(), rt); !errors.Is(err, ErrClaimNeverAppeared) {

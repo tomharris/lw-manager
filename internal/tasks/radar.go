@@ -9,12 +9,23 @@ import (
 	"github.com/tomharris/lw-manager/internal/vision"
 )
 
-// claimPollAttempts and claimPollInterval bound the wait for Claim All,
-// which the game reveals a few seconds after an execution. The interval is a
-// var only so the device-free suite can collapse it; see TestMain.
-const claimPollAttempts = 8
-
-var claimPollInterval = 700 * time.Millisecond
+// claimPollBudget and claimPollInterval bound the wait for Claim All, which
+// the game reveals well after an execution. Both are vars only so the
+// device-free suite can collapse them; see TestMain.
+//
+// The budget is wall clock, not an attempt count, and that distinction is the
+// whole point. It was eight *attempts*, which reads as a few seconds and was
+// worth 75-109s on a moto g play 2024, because every attempt costs a screencap
+// plus a full recognition pass — roughly 9s, a figure no reader of the
+// constant could see. Phase A measured the reveal at 90-125s after the execute
+// tap, so the budget fell just short on every run that had work to do: radar
+// scored 16/20, and each failure was a false negative, since claim-first
+// collected the banked reward on the very next run. An attempt count means
+// whatever the device's speed makes it mean; a duration means what it says.
+var (
+	claimPollBudget   = 4 * time.Minute
+	claimPollInterval = 700 * time.Millisecond
+)
 
 func init() { Register("radar", radarPass) }
 
@@ -82,7 +93,8 @@ func claimAndDismiss(ctx context.Context, rt *runtime.Ctx) error {
 // regenerates on its own before the next run. That makes it an ordinary
 // outcome rather than a failure.
 func claimWhenReady(ctx context.Context, rt *runtime.Ctx) error {
-	for i := 0; i < claimPollAttempts; i++ {
+	deadline := time.Now().Add(claimPollBudget)
+	for {
 		r, err := rt.CurrentScreen(ctx)
 		if err != nil {
 			return err
@@ -99,6 +111,11 @@ func claimWhenReady(ctx context.Context, rt *runtime.Ctx) error {
 			if claimed {
 				return dismissRewards(ctx, rt, vision.ScreenRadar)
 			}
+		}
+		// Checked after the poll, as WaitFor does, so a budget collapsed to
+		// nothing still buys one look.
+		if time.Now().After(deadline) {
+			break
 		}
 		if err := rt.Sleep(ctx, claimPollInterval, 2*claimPollInterval); err != nil {
 			return err
