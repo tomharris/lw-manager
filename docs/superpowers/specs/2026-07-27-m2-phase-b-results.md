@@ -56,13 +56,20 @@ interact, and the percentage alone cannot surface a blackout. **A future gate
 should assert on the longest gap between consecutive successes, not only on a
 ratio.**
 
-Root cause of the outage is not established. It resolved without intervention
-and nothing in the log names a trigger — the plausible candidates (a game
-maintenance window, an OS dialog, the screen locking) are not distinguishable
-from what was recorded, because nothing captures a frame on the unrecognized
-path. **That is the actionable gap: the panic route should blob a screenshot
-before it gives up.** Without it a four-hour incident leaves no evidence beyond
-its own error string.
+> **Root cause established 2026-08-11.** It was the display going to sleep.
+> Once the panic route was made to retain its frame, the failure reproduced on
+> demand and the retained frame was solid black — a sleeping screen, which
+> `screencap` returns as all black and which matches no anchor. Neither a back
+> press nor an app restart turns a screen on, so the ladder could not have
+> recovered. See "The display was asleep" below.
+
+When this was first written the root cause was *not* established: nothing in
+the log named a trigger, and the plausible candidates (a game maintenance
+window, an OS dialog, the screen locking) were indistinguishable from what had
+been recorded, because nothing captured a frame on the unrecognized path.
+**That was the actionable gap, and closing it answered the question within
+minutes** — which is the argument for the fix better than any reasoning about
+it.
 
 ## The offline window ran in UTC, not local
 
@@ -163,6 +170,12 @@ reads "You can complete 1 tasks, requires 10 Stamina" (stamina 51, so
 affordable), shows Quick Execute present, and "13 Radar Task(s) will be
 restored in 04:33:49", confirming the 6h refill.
 
+> **Corrected 2026-08-11 by frame-by-frame recon.** The claim below — that the
+> flow "never reveals a Claim All button" — is **too strong**. A burst capture
+> of one full radar run (evidence in `evidence/radar-2026-08-11/`) shows the
+> flow does produce a claim control. See "What the radar flow actually does"
+> at the end of this document. The observed defect is a race, not an absence.
+
 **The flow model in `radar.go` is wrong.** Quick Execute grants its rewards
 directly through that celebration panel; it does not reveal a Claim All button.
 `Claim All` belongs to radar tasks that completed *passively* in the background
@@ -210,3 +223,116 @@ Carried forward, none blocking the gate:
    gap too.
 5. `mail_collect` ran once and failed (inside the outage), so its once-daily
    path still has no successful unattended observation.
+
+## What the radar flow actually does (recon, 2026-08-11)
+
+One radar run was burst-captured at 2s intervals while `agent run-task
+--account 16 --task radar` executed (run 350, succeeded, 42s). Frames are in
+`evidence/radar-2026-08-11/`. Deliberately not `agent record`: that rewrites
+`fixtures/corpus/index.yaml` from the working tree, and this corpus had not
+been pulled here.
+
+The observed sequence:
+
+1. **`01-radar-quick-execute.png`** — radar screen. "13 Radar Task(s) will be
+   restored in 02:21:47", "You can complete 1 tasks, requires 10 Stamina",
+   stamina 77, `Quick Execute` present, no claim control.
+2. **`02-post-execute-scattered-rewards.png`** — after the tap. Stamina 77 →
+   67 and XP 1,987 → 1,992, so the execution ran. The rewards appear as
+   **loose items scattered across the map**, `Quick Execute` is gone, and a
+   small **collect tray sits at bottom right**. Still no button labelled
+   Claim All, but there *is* a claim control.
+3. **`03-congratulations-after-collect.png`** — after the tray is tapped, the
+   CONGRATULATIONS panel with the reward grid.
+
+Two corrections to the section above fall out of this:
+
+- **The flow does produce a claim control.** "Never reveals a Claim All
+  button" was over-generalized from a single screenshot taken after the fact.
+  The control is the collect tray, and the `claim_all_button` anchor evidently
+  matches it — run 350 collected successfully.
+- **The celebration is a modal with a scrim, not "a transient animation over
+  its origin screen".** `helpers.go:53-57` states the opposite, and frame 03
+  shows the map clearly dimmed behind it. That premise is what justifies
+  `dismissRewards` tapping the banner itself and shrugging when it is absent.
+
+### The observed defect is a race
+
+The run reported `succeeded` at 13:23:01. The CONGRATULATIONS panel rendered at
+**13:23:04** — three seconds *after* the task had finished. So `dismissRewards`
+looked for `rewards_banner` before the panel existed, matched nothing, and
+returned nil, which its self-gating design cannot distinguish from "nothing to
+dismiss". The device was left on the panel, which is exactly the leftover state
+recorded earlier in this document.
+
+That also supplies a mechanism for Phase A's alternating pass/fail that does
+not require the reveal-latency story: a run that leaves the panel up hides
+`Quick Execute` from the next run, and a run that clears it does not.
+
+**This is still not enough to redesign against.** What is missing is a
+burst-captured *failing* run — run 350 succeeded, so the frames above show the
+happy path only. `ErrClaimNeverAppeared` has not yet been observed frame by
+frame, and two previous radar diagnoses were wrong precisely because they
+reasoned from durations and single screenshots instead of the sequence. The
+next radar refill is the opportunity; the recon harness is
+`scratchpad/recon.sh` in shape and takes about a minute to re-point.
+
+Until then `radar` remains an open defect, and `claimPollBudget` should be
+lowered from 4 minutes so a doomed run fails fast rather than slowly.
+
+## The display was asleep
+
+With the panic route retaining its frame, the outage reproduced on the first
+attempt. Letting the handset doze and then running any task gives the outage's
+error string verbatim:
+
+```
+runtime: account 16 unrecoverable after 3 backs and a restart:
+runtime: lost - no screen recognized after recovery
+```
+
+The retained frame is **solid black**, and the content-addressed blob store
+deduplicated it onto an object first written on **26 July** — so this exact
+frame is a recurring condition, not a one-off.
+
+The mechanism is complete and leaves nothing to infer:
+
+| step | measured |
+|---|---|
+| display asleep | `screencap` returns 7,904 bytes, all black |
+| a black frame | matches no anchor → `ErrNoScreenRecognized` |
+| `Back` | `input keyevent KEYCODE_BACK` — does not wake a display |
+| `AppRestart` | `am force-stop` + `monkey` — does not wake a display |
+| after `KEYCODE_WAKEUP` | 812,945 bytes, a real frame |
+
+So 0/10 was structural. No rung of the ladder could turn a screen on, and the
+route was retrying the only three things that cannot help.
+
+### The code fix is necessary but not sufficient
+
+`Transport.Wake` now runs as rung zero, before the back presses it would
+otherwise render useless. On hardware that converts the black frame into a real
+one — and the run still fails, for two reasons the runtime cannot fix:
+
+1. **The handset re-locks on sleep, and adb cannot dismiss its keyguard.**
+   `input keyevent KEYCODE_MENU`, `wm dismiss-keyguard`, a swipe, and a power
+   toggle all leave `isKeyguardShowing=true`. What the recognizer then sees is
+   the lock screen, which matches no game anchor. `locksettings get-disabled`
+   reports `false` — this device has a keyguard configured.
+2. **The display re-sleeps during the 93s restart wait**, so even a successful
+   wake is undone before the route finishes.
+
+Both halves are operational, and belong in the handset's setup rather than in
+the runtime:
+
+```bash
+adb shell svc power stayon true      # do not sleep while charging
+adb shell locksettings set-disabled true
+```
+
+`Wake` is still worth having: it is what makes a dozing display recoverable at
+all on a handset configured this way, and it is the difference between a black
+frame and a real one. But **the M2 24-hour run's outage would not have been
+prevented by code alone**, and a future unattended run should assert the
+device's power and keyguard settings before it starts rather than discovering
+them four hours in.
