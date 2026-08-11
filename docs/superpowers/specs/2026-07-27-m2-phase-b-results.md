@@ -308,31 +308,48 @@ The mechanism is complete and leaves nothing to infer:
 So 0/10 was structural. No rung of the ladder could turn a screen on, and the
 route was retrying the only three things that cannot help.
 
-### The code fix is necessary but not sufficient
+### The code fix works, and it is not the whole story
 
-`Transport.Wake` now runs as rung zero, before the back presses it would
-otherwise render useless. On hardware that converts the black frame into a real
-one — and the run still fails, for two reasons the runtime cannot fix:
+`Transport.Wake` runs as rung zero, before the back presses it would otherwise
+render useless. **Confirmed on hardware** — run 354:
 
-1. **The handset re-locks on sleep, and adb cannot dismiss its keyguard.**
-   `input keyevent KEYCODE_MENU`, `wm dismiss-keyguard`, a swipe, and a power
-   toggle all leave `isKeyguardShowing=true`. What the recognizer then sees is
-   the lock screen, which matches no game anchor. `locksettings get-disabled`
-   reports `false` — this device has a keyguard configured.
+```
+panic route: waking the display
+panic route: recovered by waking the display  screen=base
+run_id=354 task=help_all account=16 status=succeeded
+```
+
+That is the first successful recovery this route has ever recorded, against
+0/10 during the outage.
+
+It only works on a handset that is not keyguard-locked, and two conditions the
+runtime cannot fix still apply:
+
+1. **A secured keyguard defeats everything, and adb cannot clear it.**
+   `KEYCODE_MENU`, `wm dismiss-keyguard`, a swipe, and a power toggle all leave
+   `isKeyguardShowing=true`. What the recognizer then sees is the lock screen,
+   which matches no game anchor. Worse, `locksettings set-disabled true`
+   *reports success and changes nothing* when a PIN is set: `get-disabled`
+   still returns `false` afterwards. Unlocking needs the credential typed in
+   (`input swipe` to raise the pad, `input text <pin>`, `KEYCODE_ENTER`) —
+   which is exactly what an unattended run cannot do.
 2. **The display re-sleeps during the 93s restart wait**, so even a successful
    wake is undone before the route finishes.
 
-Both halves are operational, and belong in the handset's setup rather than in
-the runtime:
+Both are operational, and belong in the handset's setup rather than the
+runtime:
 
 ```bash
-adb shell svc power stayon true      # do not sleep while charging
-adb shell locksettings set-disabled true
+adb shell svc power stayon true                       # the load-bearing one
+adb shell dumpsys power | grep -o 'mStayOn=[a-z]*'    # verify: want true
 ```
 
-`Wake` is still worth having: it is what makes a dozing display recoverable at
-all on a handset configured this way, and it is the difference between a black
-frame and a real one. But **the M2 24-hour run's outage would not have been
-prevented by code alone**, and a future unattended run should assert the
-device's power and keyguard settings before it starts rather than discovering
-them four hours in.
+`stayon` is load-bearing twice over: it stops the display sleeping during the
+90s restart wait, and a device that never sleeps never reaches the keyguard at
+all. Clearing the PIN (`locksettings clear --old <pin>`) is the belt-and-braces
+option, and is the operator's call rather than something to do silently.
+
+So **the M2 outage would not have been prevented by code alone** — but with
+`stayon` set, `Wake` now demonstrably recovers the exact failure that produced
+it. A future unattended run should assert `mStayOn` before it starts rather
+than discovering it four hours in.

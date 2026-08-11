@@ -319,24 +319,38 @@ Run alts, not a main. Humanize timing. Keep the kill switch working.
 ### The handset must not sleep, and must not have a keyguard
 
 ```bash
-adb shell svc power stayon true        # do not sleep while charging
-adb shell locksettings set-disabled true
+adb shell svc power stayon true              # the load-bearing one
+adb shell dumpsys power | grep -o 'mStayOn=[a-z]*'   # verify: want true
 ```
 
-Both are setup, not code, and the runtime cannot enforce either. A sleeping
-display is **indistinguishable from a broken one**: `screencap` returns an
-all-black frame, which matches no anchor, so recognition fails exactly as it
-would on a corrupted screen. The M2 24-hour run lost four hours to this and
-the panic route recovered 0 of 10 incidents, because neither a back press nor
-an app restart turns a screen on — the ladder was retrying the only three
-things that cannot help.
+This is setup, not code, and the runtime cannot enforce it. A sleeping display
+is **indistinguishable from a broken one**: `screencap` returns an all-black
+frame, which matches no anchor, so recognition fails exactly as it would on a
+corrupted screen. The M2 24-hour run lost four hours to this and the panic
+route recovered 0 of 10 incidents, because neither a back press nor an app
+restart turns a screen on — the ladder was retrying the only three things that
+cannot help.
 
-`Transport.Wake` (panic route rung zero) makes a dozing display recoverable,
-but only on a handset configured as above. If a keyguard is present the woken
-screen shows the lock screen, which matches no game anchor either, and adb
-cannot dismiss it: `KEYCODE_MENU`, `wm dismiss-keyguard`, a swipe and a power
-toggle all leave `isKeyguardShowing=true`. That state needs a physical touch,
-which is the one thing an unattended run cannot arrange.
+`Transport.Wake` is the panic route's rung zero and does recover a dozing
+display — confirmed on the handset: `panic route: recovered by waking the
+display screen=base`, the first successful recovery this route has ever
+recorded. **`stayon` still matters**, because the display re-sleeps during the
+90s restart wait, and because a device that never sleeps never reaches the
+keyguard below.
 
-Check both before starting any unattended run. Discovering them four hours in
-costs the run.
+**A keyguard defeats all of it, and adb cannot clear a secured one.**
+`locksettings set-disabled true` reports success and changes nothing when a PIN
+is set — `locksettings get-disabled` still returns `false` afterwards. Nor will
+`KEYCODE_MENU`, `wm dismiss-keyguard`, a swipe or a power toggle: all leave
+`isKeyguardShowing=true`. Unlocking needs the credential:
+
+```bash
+adb shell input swipe 360 1400 360 400 200   # x=360: this panel is 720 wide
+adb shell input text <pin>
+adb shell input keyevent KEYCODE_ENTER
+```
+
+Which an unattended run cannot do. So either clear the PIN on the automation
+handset (`locksettings clear --old <pin>`) or rely on `stayon` keeping it from
+ever locking. Check `mStayOn` before starting any unattended run — discovering
+this four hours in costs the run.
