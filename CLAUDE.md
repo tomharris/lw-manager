@@ -315,3 +315,28 @@ fixtures/       recorded screenshots for device-free tests
 
 Automation of this kind violates Last War's ToS and accounts can be banned.
 Run alts, not a main. Humanize timing. Keep the kill switch working.
+
+### The handset must not sleep, and must not have a keyguard
+
+```bash
+adb shell svc power stayon true        # do not sleep while charging
+adb shell locksettings set-disabled true
+```
+
+Both are setup, not code, and the runtime cannot enforce either. A sleeping
+display is **indistinguishable from a broken one**: `screencap` returns an
+all-black frame, which matches no anchor, so recognition fails exactly as it
+would on a corrupted screen. The M2 24-hour run lost four hours to this and
+the panic route recovered 0 of 10 incidents, because neither a back press nor
+an app restart turns a screen on — the ladder was retrying the only three
+things that cannot help.
+
+`Transport.Wake` (panic route rung zero) makes a dozing display recoverable,
+but only on a handset configured as above. If a keyguard is present the woken
+screen shows the lock screen, which matches no game anchor either, and adb
+cannot dismiss it: `KEYCODE_MENU`, `wm dismiss-keyguard`, a swipe and a power
+toggle all leave `isKeyguardShowing=true`. That state needs a physical touch,
+which is the one thing an unattended run cannot arrange.
+
+Check both before starting any unattended run. Discovering them four hours in
+costs the run.
