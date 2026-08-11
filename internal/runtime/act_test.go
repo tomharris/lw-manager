@@ -8,6 +8,7 @@ import (
 	"github.com/tomharris/lw-manager/internal/runtime"
 	"github.com/tomharris/lw-manager/internal/runtime/runtimetest"
 	"github.com/tomharris/lw-manager/internal/transport"
+	"github.com/tomharris/lw-manager/internal/vision"
 )
 
 func TestTapHitsInsideMatchedAnchor(t *testing.T) {
@@ -89,5 +90,42 @@ func TestTypeTextRequiresRecognizedScreen(t *testing.T) {
 	}
 	if acts := tr.Actions(); len(acts) != 1 || acts[0].Text != "hello" {
 		t.Fatalf("actions: %+v", acts)
+	}
+}
+
+// A task that must confirm an action landed needs to ask whether a control is
+// still there, and Tap was the only anchor query available — which means the
+// probe was itself an action. That is what left radar unable to tell "the game
+// accepted my tap" from "the game ignored it".
+func TestSeesReportsAnchorPresenceWithoutTapping(t *testing.T) {
+	withButton := runtimetest.FrameWithout(vision.ScreenRadar, "claim_all_button", "rewards_banner")
+	withoutButton := runtimetest.FrameWithout(vision.ScreenRadar, "quick_execute_button", "rewards_banner")
+	tr, err := transport.NewReplayTransportFromImages(withButton, withoutButton)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := runtime.New(runtimetest.Options(tr, &runtimetest.FakeKill{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seen, err := c.Sees(context.Background(), vision.ScreenRadar, "quick_execute_button")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !seen {
+		t.Error("Sees reported the button absent while it was on screen")
+	}
+
+	seen, err = c.Sees(context.Background(), vision.ScreenRadar, "quick_execute_button")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen {
+		t.Error("Sees reported the button present after it went away")
+	}
+
+	if n := len(tr.Actions()); n != 0 {
+		t.Errorf("Sees performed %d actions, want 0 — it is a query, not an act: %+v", n, tr.Actions())
 	}
 }
