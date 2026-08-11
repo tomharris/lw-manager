@@ -37,10 +37,12 @@ runtime: lost - no screen recognized after recovery
 ```
 
 The agent recovered on its own at 06:43 and ran clean to the end of the window.
-The panic route behaved correctly throughout: three back presses, then an app
-restart (ten of them, all logged), then it *reported* rather than acting. It
-never tapped a screen it could not identify, so invariant #3 held under four
-hours of sustained failure, and no run ever hung — zero stuck rows.
+The panic route ran its full ladder each time — three back presses, then an app
+restart, then it *reported* rather than acting. It never tapped a screen it
+could not identify, so invariant #3 held under four hours of sustained failure,
+and no run ever hung — zero stuck rows. It also never actually recovered
+anything; see "The panic route recovered nothing" below, which is a separate
+and more serious finding than the outage itself.
 
 The `help_all` failures were spaced 8m → 13m → 24m → 49m → 1h37m, each roughly
 double the last. That is `backoff.go` (`cadence * (2^failures - 1)`) doing its
@@ -94,7 +96,7 @@ This is a one-line fix (pass the operator location into `scheduler.Options`)
 but it is a behaviour change to the detection-avoidance schedule, so it is
 recorded here rather than folded into the M2 gate.
 
-## The plan's Step 5 greps for a string the code never logs
+## The panic route recovered nothing, in any of the ten incidents
 
 Step 5 counts restart recoveries with:
 
@@ -102,23 +104,39 @@ Step 5 counts restart recoveries with:
 grep "panic route: recovered via restart" /tmp/m2-24h.log
 ```
 
-That matches **zero** lines. The messages the runtime actually emits are
-`panic route: back exhausted, restarting app` and `app restarted`, each
-appearing **10 times** in this run. Followed literally, the step reports no
-restart recoveries during an incident that had ten — the precise signal it
-exists to surface. Counts below come from the real strings.
+That matches **zero** lines. An earlier revision of this document read that as
+a broken step — a grep for a string the runtime never logs. **That was wrong.**
+The runtime does emit it, at `panic.go:57`, when a restart recovers. It never
+recovered.
 
 | signal | count |
 |---|---|
 | `panic route: pressing back` | 30 |
+| `panic route: recovered` (via back) | **0** |
 | `panic route: back exhausted, restarting app` | 10 |
 | `app restarted` | 10 |
+| `panic route: recovered via restart` | **0** |
 | `scheduler tick error` | 10 |
 
-Ten restart recoveries is not ordinary. Per the plan's own standard — "back
-press recoveries are ordinary, restart recoveries are not" — this run warrants
-investigation despite passing, and the missing screenshot-on-panic is what
-prevents it.
+30 back presses across 10 incidents is exactly 3 each, and `panicRoute` returns
+the instant a back press recovers — so **no back press recovered either**, or
+the total would be below 30. Every incident ran the ladder to the bottom: three
+backs, a restart, the full `restartTimeout`, then `ErrLost`.
+
+So the panic route has **no observed successful recovery at all** across 24
+hours. The agent's return to health at 06:43 was not the route succeeding; it
+was whatever had broken recognition going away on its own.
+
+What the route did do correctly is refuse to act. It never tapped a screen it
+could not identify, which is invariant #3 holding under precisely the
+conditions designed to break it. That is worth stating separately: **the
+route's safety property is proven; its recovery property is unproven and
+currently measures zero.**
+
+This strengthens the case for screenshot-on-panic rather than weakening it. A
+recovery ladder with a 0/10 success rate cannot be tuned — more backs? a longer
+`restartTimeout`? a different entry screen? — without knowing what was on the
+display, and nothing captured it.
 
 ## The radar fix from Phase A does not work
 
@@ -186,8 +204,8 @@ Carried forward, none blocking the gate:
    revision of Task 14.
 2. The scheduler runs on UTC while documenting operator-local, inverting the
    offline window and mis-gating radar's weekdays.
-3. The panic route discards the evidence it most needs — blob a frame before
-   giving up.
+3. The panic route recovered 0 of 10 incidents, and discards the evidence
+   needed to say why — blob a frame before giving up.
 4. A ratio gate cannot see a blackout; assert on the longest success-to-success
    gap too.
 5. `mail_collect` ran once and failed (inside the outage), so its once-daily
