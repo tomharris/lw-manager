@@ -18,6 +18,15 @@ var ErrTapCapReached = errors.New("tasks: tap cap reached")
 // after an execution.
 var ErrClaimNeverAppeared = errors.New("tasks: claim never appeared")
 
+// ErrExecuteIgnored reports that Quick Execute was tapped and the game did not
+// start an execution — the button stayed exactly where it was.
+//
+// It is deliberately distinct from ErrClaimNeverAppeared. The two are easy to
+// confuse from the outside and were confused for three investigations: a run
+// whose tap is swallowed does nothing at all, and then blames the claim for
+// failing to appear after an execution that never happened.
+var ErrExecuteIgnored = errors.New("tasks: quick execute was ignored")
+
 // tapSettle paces repeated taps on one control so the game registers each,
 // and so the tap stream is not a metronome.
 //

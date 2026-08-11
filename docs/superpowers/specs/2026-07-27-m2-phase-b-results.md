@@ -37,10 +37,12 @@ runtime: lost - no screen recognized after recovery
 ```
 
 The agent recovered on its own at 06:43 and ran clean to the end of the window.
-The panic route behaved correctly throughout: three back presses, then an app
-restart (ten of them, all logged), then it *reported* rather than acting. It
-never tapped a screen it could not identify, so invariant #3 held under four
-hours of sustained failure, and no run ever hung — zero stuck rows.
+The panic route ran its full ladder each time — three back presses, then an app
+restart, then it *reported* rather than acting. It never tapped a screen it
+could not identify, so invariant #3 held under four hours of sustained failure,
+and no run ever hung — zero stuck rows. It also never actually recovered
+anything; see "The panic route recovered nothing" below, which is a separate
+and more serious finding than the outage itself.
 
 The `help_all` failures were spaced 8m → 13m → 24m → 49m → 1h37m, each roughly
 double the last. That is `backoff.go` (`cadence * (2^failures - 1)`) doing its
@@ -54,13 +56,20 @@ interact, and the percentage alone cannot surface a blackout. **A future gate
 should assert on the longest gap between consecutive successes, not only on a
 ratio.**
 
-Root cause of the outage is not established. It resolved without intervention
-and nothing in the log names a trigger — the plausible candidates (a game
-maintenance window, an OS dialog, the screen locking) are not distinguishable
-from what was recorded, because nothing captures a frame on the unrecognized
-path. **That is the actionable gap: the panic route should blob a screenshot
-before it gives up.** Without it a four-hour incident leaves no evidence beyond
-its own error string.
+> **Root cause established 2026-08-11.** It was the display going to sleep.
+> Once the panic route was made to retain its frame, the failure reproduced on
+> demand and the retained frame was solid black — a sleeping screen, which
+> `screencap` returns as all black and which matches no anchor. Neither a back
+> press nor an app restart turns a screen on, so the ladder could not have
+> recovered. See "The display was asleep" below.
+
+When this was first written the root cause was *not* established: nothing in
+the log named a trigger, and the plausible candidates (a game maintenance
+window, an OS dialog, the screen locking) were indistinguishable from what had
+been recorded, because nothing captured a frame on the unrecognized path.
+**That was the actionable gap, and closing it answered the question within
+minutes** — which is the argument for the fix better than any reasoning about
+it.
 
 ## The offline window ran in UTC, not local
 
@@ -94,7 +103,7 @@ This is a one-line fix (pass the operator location into `scheduler.Options`)
 but it is a behaviour change to the detection-avoidance schedule, so it is
 recorded here rather than folded into the M2 gate.
 
-## The plan's Step 5 greps for a string the code never logs
+## The panic route recovered nothing, in any of the ten incidents
 
 Step 5 counts restart recoveries with:
 
@@ -102,23 +111,39 @@ Step 5 counts restart recoveries with:
 grep "panic route: recovered via restart" /tmp/m2-24h.log
 ```
 
-That matches **zero** lines. The messages the runtime actually emits are
-`panic route: back exhausted, restarting app` and `app restarted`, each
-appearing **10 times** in this run. Followed literally, the step reports no
-restart recoveries during an incident that had ten — the precise signal it
-exists to surface. Counts below come from the real strings.
+That matches **zero** lines. An earlier revision of this document read that as
+a broken step — a grep for a string the runtime never logs. **That was wrong.**
+The runtime does emit it, at `panic.go:57`, when a restart recovers. It never
+recovered.
 
 | signal | count |
 |---|---|
 | `panic route: pressing back` | 30 |
+| `panic route: recovered` (via back) | **0** |
 | `panic route: back exhausted, restarting app` | 10 |
 | `app restarted` | 10 |
+| `panic route: recovered via restart` | **0** |
 | `scheduler tick error` | 10 |
 
-Ten restart recoveries is not ordinary. Per the plan's own standard — "back
-press recoveries are ordinary, restart recoveries are not" — this run warrants
-investigation despite passing, and the missing screenshot-on-panic is what
-prevents it.
+30 back presses across 10 incidents is exactly 3 each, and `panicRoute` returns
+the instant a back press recovers — so **no back press recovered either**, or
+the total would be below 30. Every incident ran the ladder to the bottom: three
+backs, a restart, the full `restartTimeout`, then `ErrLost`.
+
+So the panic route has **no observed successful recovery at all** across 24
+hours. The agent's return to health at 06:43 was not the route succeeding; it
+was whatever had broken recognition going away on its own.
+
+What the route did do correctly is refuse to act. It never tapped a screen it
+could not identify, which is invariant #3 holding under precisely the
+conditions designed to break it. That is worth stating separately: **the
+route's safety property is proven; its recovery property is unproven and
+currently measures zero.**
+
+This strengthens the case for screenshot-on-panic rather than weakening it. A
+recovery ladder with a 0/10 success rate cannot be tuned — more backs? a longer
+`restartTimeout`? a different entry screen? — without knowing what was on the
+display, and nothing captured it.
 
 ## The radar fix from Phase A does not work
 
@@ -144,6 +169,12 @@ you received this time"** — with a grid of granted rewards. The same frame als
 reads "You can complete 1 tasks, requires 10 Stamina" (stamina 51, so
 affordable), shows Quick Execute present, and "13 Radar Task(s) will be
 restored in 04:33:49", confirming the 6h refill.
+
+> **Corrected 2026-08-11 by frame-by-frame recon.** The claim below — that the
+> flow "never reveals a Claim All button" — is **too strong**. A burst capture
+> of one full radar run (evidence in `evidence/radar-2026-08-11/`) shows the
+> flow does produce a claim control. See "What the radar flow actually does"
+> at the end of this document. The observed defect is a race, not an absence.
 
 **The flow model in `radar.go` is wrong.** Quick Execute grants its rewards
 directly through that celebration panel; it does not reveal a Claim All button.
@@ -186,9 +217,193 @@ Carried forward, none blocking the gate:
    revision of Task 14.
 2. The scheduler runs on UTC while documenting operator-local, inverting the
    offline window and mis-gating radar's weekdays.
-3. The panic route discards the evidence it most needs — blob a frame before
-   giving up.
+3. The panic route recovered 0 of 10 incidents, and discards the evidence
+   needed to say why — blob a frame before giving up.
 4. A ratio gate cannot see a blackout; assert on the longest success-to-success
    gap too.
 5. `mail_collect` ran once and failed (inside the outage), so its once-daily
    path still has no successful unattended observation.
+
+## What the radar flow actually does (recon, 2026-08-11)
+
+One radar run was burst-captured at 2s intervals while `agent run-task
+--account 16 --task radar` executed (run 350, succeeded, 42s). Frames are in
+`evidence/radar-2026-08-11/`. Deliberately not `agent record`: that rewrites
+`fixtures/corpus/index.yaml` from the working tree, and this corpus had not
+been pulled here.
+
+The observed sequence:
+
+1. **`01-radar-quick-execute.png`** — radar screen. "13 Radar Task(s) will be
+   restored in 02:21:47", "You can complete 1 tasks, requires 10 Stamina",
+   stamina 77, `Quick Execute` present, no claim control.
+2. **`02-post-execute-scattered-rewards.png`** — after the tap. Stamina 77 →
+   67 and XP 1,987 → 1,992, so the execution ran. The rewards appear as
+   **loose items scattered across the map**, `Quick Execute` is gone, and a
+   small **collect tray sits at bottom right**. Still no button labelled
+   Claim All, but there *is* a claim control.
+3. **`03-congratulations-after-collect.png`** — after the tray is tapped, the
+   CONGRATULATIONS panel with the reward grid.
+
+Two corrections to the section above fall out of this:
+
+- **The flow does produce a claim control.** "Never reveals a Claim All
+  button" was over-generalized from a single screenshot taken after the fact.
+  The control is the collect tray, and the `claim_all_button` anchor evidently
+  matches it — run 350 collected successfully.
+- **The celebration is a modal with a scrim, not "a transient animation over
+  its origin screen".** `helpers.go:53-57` states the opposite, and frame 03
+  shows the map clearly dimmed behind it. That premise is what justifies
+  `dismissRewards` tapping the banner itself and shrugging when it is absent.
+
+### The observed defect is a race
+
+The run reported `succeeded` at 13:23:01. The CONGRATULATIONS panel rendered at
+**13:23:04** — three seconds *after* the task had finished. So `dismissRewards`
+looked for `rewards_banner` before the panel existed, matched nothing, and
+returned nil, which its self-gating design cannot distinguish from "nothing to
+dismiss". The device was left on the panel, which is exactly the leftover state
+recorded earlier in this document.
+
+That also supplies a mechanism for Phase A's alternating pass/fail that does
+not require the reveal-latency story: a run that leaves the panel up hides
+`Quick Execute` from the next run, and a run that clears it does not.
+
+**This is still not enough to redesign against.** What is missing is a
+burst-captured *failing* run — run 350 succeeded, so the frames above show the
+happy path only. `ErrClaimNeverAppeared` has not yet been observed frame by
+frame, and two previous radar diagnoses were wrong precisely because they
+reasoned from durations and single screenshots instead of the sequence. The
+next radar refill is the opportunity; the recon harness is
+`scratchpad/recon.sh` in shape and takes about a minute to re-point.
+
+Until then `radar` remains an open defect, and `claimPollBudget` should be
+lowered from 4 minutes so a doomed run fails fast rather than slowly.
+
+## The display was asleep
+
+With the panic route retaining its frame, the outage reproduced on the first
+attempt. Letting the handset doze and then running any task gives the outage's
+error string verbatim:
+
+```
+runtime: account 16 unrecoverable after 3 backs and a restart:
+runtime: lost - no screen recognized after recovery
+```
+
+The retained frame is **solid black**, and the content-addressed blob store
+deduplicated it onto an object first written on **26 July** — so this exact
+frame is a recurring condition, not a one-off.
+
+The mechanism is complete and leaves nothing to infer:
+
+| step | measured |
+|---|---|
+| display asleep | `screencap` returns 7,904 bytes, all black |
+| a black frame | matches no anchor → `ErrNoScreenRecognized` |
+| `Back` | `input keyevent KEYCODE_BACK` — does not wake a display |
+| `AppRestart` | `am force-stop` + `monkey` — does not wake a display |
+| after `KEYCODE_WAKEUP` | 812,945 bytes, a real frame |
+
+So 0/10 was structural. No rung of the ladder could turn a screen on, and the
+route was retrying the only three things that cannot help.
+
+### The code fix works, and it is not the whole story
+
+`Transport.Wake` runs as rung zero, before the back presses it would otherwise
+render useless. **Confirmed on hardware** — run 354:
+
+```
+panic route: waking the display
+panic route: recovered by waking the display  screen=base
+run_id=354 task=help_all account=16 status=succeeded
+```
+
+That is the first successful recovery this route has ever recorded, against
+0/10 during the outage.
+
+It only works on a handset that is not keyguard-locked, and two conditions the
+runtime cannot fix still apply:
+
+1. **A secured keyguard defeats everything, and adb cannot clear it.**
+   `KEYCODE_MENU`, `wm dismiss-keyguard`, a swipe, and a power toggle all leave
+   `isKeyguardShowing=true`. What the recognizer then sees is the lock screen,
+   which matches no game anchor. Worse, `locksettings set-disabled true`
+   *reports success and changes nothing* when a PIN is set: `get-disabled`
+   still returns `false` afterwards. Unlocking needs the credential typed in
+   (`input swipe` to raise the pad, `input text <pin>`, `KEYCODE_ENTER`) —
+   which is exactly what an unattended run cannot do.
+2. **The display re-sleeps during the 93s restart wait**, so even a successful
+   wake is undone before the route finishes.
+
+Both are operational, and belong in the handset's setup rather than the
+runtime:
+
+```bash
+adb shell svc power stayon true                       # the load-bearing one
+adb shell dumpsys power | grep -o 'mStayOn=[a-z]*'    # verify: want true
+```
+
+`stayon` is load-bearing twice over: it stops the display sleeping during the
+90s restart wait, and a device that never sleeps never reaches the keyguard at
+all. Clearing the PIN (`locksettings clear --old <pin>`) is the belt-and-braces
+option, and is the operator's call rather than something to do silently.
+
+So **the M2 outage would not have been prevented by code alone** — but with
+`stayon` set, `Wake` now demonstrably recovers the exact failure that produced
+it. A future unattended run should assert `mStayOn` before it starts rather
+than discovering it four hours in.
+
+## The failing radar run, caught frame by frame (2026-08-11)
+
+Run 356 was burst-captured at 2s intervals across its whole life. It failed
+after **260s** — the entire `claimPollBudget` — with
+`ErrClaimNeverAppeared`. Run 355, four minutes earlier on the same refill,
+succeeded in 41s. Frames 04 and 05 in `evidence/radar-2026-08-11/`.
+
+The state at the start of the wait and the state four minutes later are the
+same state:
+
+| | 15:46:35 (frame 04) | 15:49:52 (frame 05) |
+|---|---|---|
+| `Quick Execute` | present | **still present** |
+| "You can complete N tasks" | 1 | **1** |
+| stamina | 46 | **47** |
+| XP | 2,001 | **2,001** |
+
+**Nothing ever executed.** Stamina did not fall by the 10 an execution costs —
+it *rose* by one, which is regeneration. So the four-minute wait was for the
+reward of an execution that never happened.
+
+And `radarPass` only reaches `claimWhenReady` when `tapIfPresent` reported it
+did tap, so the tap landed and the game ignored it. In frame 04 the radar's
+sweep animation is mid-cycle, which is a plausible reason the game swallowed
+it — but that is a guess about the game's internals, and the fix must not
+depend on it.
+
+### The design flaw, which does not depend on knowing why
+
+**`tapIfPresent` returning `true` means "I tapped", not "the game acted".**
+`radarPass` treats the tap as a completed state transition and proceeds
+directly to waiting for its consequence. When the tap is ignored, the task
+waits out the full budget for something that cannot arrive, then reports a
+failure naming the wrong thing — the claim is blamed for an execute that never
+started.
+
+That also explains Phase A's alternating pattern without any appeal to reveal
+latency: a run whose tap is swallowed does nothing and fails; the next run
+finds the same target still waiting, taps at a moment the game accepts, and
+succeeds.
+
+The fix is to **confirm the execution actually started before waiting for its
+reward** — `Quick Execute` ceasing to match is the local proof the game
+accepted the tap — and to retry the tap a bounded number of times when it does
+not. That converts a 260s wrong-cause failure into either a success or a fast,
+honestly-named one. The stamina prompt must stay an ordinary outcome inside
+that loop, which is why the retirement of "no sweep loop" (`radar.go:43-46`)
+is safe now: `claimWhenReady` already watches for `ScreenStaminaPrompt`, and
+the retry must too.
+
+`claimPollBudget` should drop back to something near the observed reveal once
+this lands. Four minutes only ever bought time for a consequence that was never
+coming.

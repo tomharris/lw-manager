@@ -31,16 +31,16 @@ func (c *Ctx) verifyScreen(ctx context.Context, screen string) (image.Image, err
 	return frame, nil
 }
 
-// Tap verifies the screen, matches the anchor, and taps a jittered point
-// inside the match's bounding box. It accepts no coordinates: invariant #3
-// (no blind taps) is enforced by this signature.
-func (c *Ctx) Tap(ctx context.Context, screen, anchorID string) error {
+// findAnchor verifies the screen and matches one of its anchors, returning the
+// match box. A below-threshold match is ErrAnchorNotFound, carrying the score
+// and threshold so a miss can be tuned without re-running the matcher by hand.
+func (c *Ctx) findAnchor(ctx context.Context, screen, anchorID string) (transport.Rect, error) {
 	if err := c.ks.Check(ctx); err != nil {
-		return err
+		return transport.Rect{}, err
 	}
 	s, ok := c.reg.Screen(screen)
 	if !ok {
-		return fmt.Errorf("runtime: unknown screen %q", screen)
+		return transport.Rect{}, fmt.Errorf("runtime: unknown screen %q", screen)
 	}
 	var anchor *vision.Anchor
 	for i := range s.Anchors {
@@ -50,22 +50,55 @@ func (c *Ctx) Tap(ctx context.Context, screen, anchorID string) error {
 		}
 	}
 	if anchor == nil {
-		return fmt.Errorf("runtime: screen %q has no anchor %q", screen, anchorID)
+		return transport.Rect{}, fmt.Errorf("runtime: screen %q has no anchor %q", screen, anchorID)
 	}
 
 	frame, err := c.verifyScreen(ctx, screen)
 	if err != nil {
-		return err
+		return transport.Rect{}, err
 	}
 	m, err := vision.Match(frame, anchor.Template, anchor.Region, c.reg.ReferenceHeight)
 	if err != nil {
-		return fmt.Errorf("runtime: matching %q on %q: %w", anchorID, screen, err)
+		return transport.Rect{}, fmt.Errorf("runtime: matching %q on %q: %w", anchorID, screen, err)
 	}
 	if m.Score < anchor.Threshold {
-		return fmt.Errorf("runtime: screen %q anchor %q scored %.3f below %.3f: %w",
+		return transport.Rect{}, fmt.Errorf("runtime: screen %q anchor %q scored %.3f below %.3f: %w",
 			screen, anchorID, m.Score, anchor.Threshold, ErrAnchorNotFound)
 	}
-	return c.tr.Tap(ctx, c.jitterPoint(m.Box))
+	return m.Box, nil
+}
+
+// Tap verifies the screen, matches the anchor, and taps a jittered point
+// inside the match's bounding box. It accepts no coordinates: invariant #3
+// (no blind taps) is enforced by this signature.
+func (c *Ctx) Tap(ctx context.Context, screen, anchorID string) error {
+	box, err := c.findAnchor(ctx, screen, anchorID)
+	if err != nil {
+		return err
+	}
+	return c.tr.Tap(ctx, c.jitterPoint(box))
+}
+
+// Sees reports whether an anchor is on screen, without acting on it.
+//
+// Tap was previously the only way to ask, which made every probe an action and
+// left a task unable to distinguish "the control is gone because the game
+// accepted my tap" from "the control is gone because it was never there". That
+// gap is what let `radar` wait four minutes for the reward of an execution
+// that a swallowed tap never started.
+//
+// It still verifies the screen first, so invariant #3 is unaffected: this
+// reads, and only ever reads.
+func (c *Ctx) Sees(ctx context.Context, screen, anchorID string) (bool, error) {
+	_, err := c.findAnchor(ctx, screen, anchorID)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, ErrAnchorNotFound):
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 // jitterPoint picks a point inside the central 60% of a matched box — never

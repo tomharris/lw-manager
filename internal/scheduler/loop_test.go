@@ -98,6 +98,101 @@ func newTestLoop(t *testing.T, st Store, ex Executor) *Loop {
 	return l
 }
 
+// accountOutsideWindow finds an account whose derived offline window does not
+// cover now, so a test about the weekday gate is not silently decided by the
+// window instead.
+func accountOutsideWindow(t *testing.T, now time.Time) int64 {
+	t.Helper()
+	for id := int64(1); id < 500; id++ {
+		if !inOfflineWindow(id, now) {
+			return id
+		}
+	}
+	t.Fatal("no account outside the offline window at this instant")
+	return 0
+}
+
+// Plan documents that now arrives "already in the operator's location", and
+// New is the only place that decides what that location is. Defaulting to UTC
+// silently satisfies the type and violates the contract, which is a defect no
+// test of Plan itself can catch — Plan is handed whatever it is handed.
+//
+// The M2 24-hour run is what this costs: the offline window landed 19:37-01:55
+// local, taking the device off through the operator's evening and running it
+// at 2-6am. For a detection-avoidance feature that is close to backwards.
+func TestNewDefaultsToTheOperatorLocationNotUTC(t *testing.T) {
+	l, err := New(Options{Store: &fakeStore{snaps: []Snapshot{dueSnapshot()}}, Executor: &recordExec{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.loc != time.Local {
+		t.Errorf("default location is %v, want time.Local — Plan's contract is the operator's day", l.loc)
+	}
+}
+
+// The weekday gate reads now.Weekday(), so the location now carries decides
+// which day it is. UTC and the operator's day diverge through the last hours
+// of every local evening — precisely when an evening task is scheduled.
+//
+// This is the second observed cost of the UTC default: radar is gated to
+// {1,3,5,6}, and in UTC its Monday ended at 20:00 EDT, so the run expected
+// near 22:07 EDT never fired.
+func TestTickOnceEvaluatesTheWeekdayGateInTheConfiguredLocation(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("no tzdata on this host: %v", err)
+	}
+	// 01:00 Tuesday UTC is 21:00 Monday in New York.
+	instant := time.Date(2026, 8, 11, 1, 0, 0, 0, time.UTC)
+	if got := instant.In(ny).Weekday(); got != time.Monday {
+		t.Fatalf("fixture drifted: local weekday is %v, want Monday", got)
+	}
+	if got := instant.UTC().Weekday(); got != time.Tuesday {
+		t.Fatalf("fixture drifted: UTC weekday is %v, want Tuesday", got)
+	}
+
+	acct := accountOutsideWindow(t, instant.In(ny))
+	snap := Snapshot{
+		Accounts: []Account{{ID: acct, Role: "alliance_data", Enabled: true}},
+		Tasks: []Task{{
+			Name:    "radar",
+			Cadence: time.Hour,
+			Roles:   []string{"alliance_data"},
+			Days:    []time.Weekday{time.Monday},
+			Enabled: true,
+		}},
+		Runs: map[RunKey]RunState{},
+	}
+
+	run := func(loc *time.Location) []Decision {
+		ex := &recordExec{}
+		l, err := New(Options{
+			Store:    &fakeStore{snaps: []Snapshot{snap}},
+			Executor: ex,
+			Serials:  []string{"s"},
+			Tick:     time.Millisecond,
+			Clock:    func() time.Time { return instant },
+			Location: loc,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := l.tickOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		return ex.calls
+	}
+
+	if calls := run(ny); len(calls) != 1 || calls[0].TaskName != "radar" {
+		t.Errorf("operator-local tick ran %+v, want one radar — it is Monday evening there", calls)
+	}
+	// The companion assertion: without it this test would pass against a
+	// location that is ignored entirely.
+	if calls := run(time.UTC); len(calls) != 0 {
+		t.Errorf("UTC tick ran %+v, want nothing — it is already Tuesday in UTC", calls)
+	}
+}
+
 func TestTickOnceRunsMostOverdueFirst(t *testing.T) {
 	ex := &recordExec{}
 	l := newTestLoop(t, &fakeStore{snaps: []Snapshot{dueSnapshot()}}, ex)

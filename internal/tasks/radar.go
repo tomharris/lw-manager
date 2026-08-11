@@ -9,21 +9,23 @@ import (
 	"github.com/tomharris/lw-manager/internal/vision"
 )
 
-// claimPollBudget and claimPollInterval bound the wait for Claim All, which
-// the game reveals well after an execution. Both are vars only so the
-// device-free suite can collapse them; see TestMain.
+// claimPollBudget and claimPollInterval bound the wait for the claim control
+// after a *confirmed* execution. Both are vars only so the device-free suite
+// can collapse them; see TestMain.
 //
-// The budget is wall clock, not an attempt count, and that distinction is the
-// whole point. It was eight *attempts*, which reads as a few seconds and was
-// worth 75-109s on a moto g play 2024, because every attempt costs a screencap
-// plus a full recognition pass — roughly 9s, a figure no reader of the
-// constant could see. Phase A measured the reveal at 90-125s after the execute
-// tap, so the budget fell just short on every run that had work to do: radar
-// scored 16/20, and each failure was a false negative, since claim-first
-// collected the banked reward on the very next run. An attempt count means
-// whatever the device's speed makes it mean; a duration means what it says.
+// The budget is wall clock rather than an attempt count, which is the honest
+// unit: the retired bound was eight attempts, and since every attempt costs a
+// screencap plus a full recognition pass — roughly 9s on a moto g play 2024 —
+// it silently meant whatever the handset's speed made it mean.
+//
+// Ninety seconds is generous against what was actually measured. In a burst
+// capture of a succeeding run the rewards and the collect tray were on screen
+// within 3s of the tap landing. The previous four minutes was fitted to a
+// phantom: runs were failing because the execute tap had been swallowed, so no
+// budget could ever have been long enough, and the only thing the extra time
+// bought was a slower failure that then blamed the wrong half of the task.
 var (
-	claimPollBudget   = 4 * time.Minute
+	claimPollBudget   = 90 * time.Second
 	claimPollInterval = 700 * time.Millisecond
 )
 
@@ -59,14 +61,79 @@ func radarPass(ctx context.Context, rt *runtime.Ctx) error {
 		return err
 	}
 
-	executed, err := tapIfPresent(ctx, rt, vision.ScreenRadar, "quick_execute_button")
+	started, err := startExecution(ctx, rt)
 	if err != nil {
 		return err
 	}
-	if !executed {
-		return nil // no targets
+	if !started {
+		return nil // no targets, or the stamina dialog was backed out of
 	}
 	return claimWhenReady(ctx, rt)
+}
+
+// executeTapAttempts bounds the retries of Quick Execute. Three is generous:
+// every attempt costs a screencap plus a full recognition pass either side of
+// it, so the game gets the better part of a minute to accept one of them.
+const executeTapAttempts = 3
+
+// executeSettle is how long to let the game react before asking whether it
+// accepted the tap. A var only so the device-free suite can collapse it.
+//
+// The observed transition is fast: in the burst capture of a succeeding run the
+// button was gone within 3s of the tap landing. The probe that follows costs a
+// screencap and a recognition pass on top, so a short settle is ample and the
+// window for tapping twice into one accepted execution stays small.
+var executeSettle = 1500 * time.Millisecond
+
+// startExecution taps Quick Execute and confirms the game actually started an
+// execution, reporting whether one is now underway.
+//
+// This exists because `Tap` succeeding means "I tapped", not "the game acted",
+// and radar spent three investigations conflating the two. Run 356 tapped, was
+// ignored, and then waited out the entire claim budget — 260s — for the reward
+// of an execution that never started, while stamina rose by one. The button
+// disappearing is the only local proof available that the tap was accepted, so
+// that is what is waited for, and a tap that is not accepted is retried rather
+// than assumed.
+//
+// The stamina dialog stays an ordinary outcome. That is what previously made a
+// retry loop unsafe — Quick Execute renders enabled while stating a cost the
+// account cannot pay, so a loop terminating on the button's absence would never
+// terminate — and it is why the prompt is checked on every pass rather than
+// only by the claim poll.
+func startExecution(ctx context.Context, rt *runtime.Ctx) (bool, error) {
+	tapped := false
+	for i := 0; i < executeTapAttempts; i++ {
+		present, err := rt.Sees(ctx, vision.ScreenRadar, "quick_execute_button")
+		if err != nil {
+			return false, err
+		}
+		if !present {
+			// Before any tap this means there was nothing to execute. After
+			// one it means the game took it.
+			return tapped, nil
+		}
+		if err := rt.Tap(ctx, vision.ScreenRadar, "quick_execute_button"); err != nil {
+			return false, err
+		}
+		tapped = true
+
+		if err := rt.Sleep(ctx, executeSettle, 2*executeSettle); err != nil {
+			return false, err
+		}
+		r, err := rt.CurrentScreen(ctx)
+		if err != nil {
+			return false, err
+		}
+		if r.Screen == vision.ScreenStaminaPrompt {
+			// Nothing in the dialog is ever tapped: it spends real currency.
+			// Leaving is the whole correct interaction, and stamina
+			// regenerates before the next run.
+			return false, rt.NavigateTo(ctx, vision.ScreenRadar)
+		}
+	}
+	return false, fmt.Errorf("tasks: Quick Execute tapped %d times and no execution started: %w",
+		executeTapAttempts, ErrExecuteIgnored)
 }
 
 // claimAndDismiss taps Claim All if it is showing and clears the celebration.

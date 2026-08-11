@@ -65,9 +65,13 @@ type Transport interface {
 	// AppRestart force-restarts the game. The panic route's last resort.
 	AppRestart(ctx context.Context) error
 	// Back presses the Android back button. Unlike Tap it needs no anchor:
-	// it is the panic route's first resort, used precisely when the current
-	// screen is unknown.
+	// used precisely when the current screen is unknown.
 	Back(ctx context.Context) error
+	// Wake turns the display on and clears any keyguard. Like Back it needs
+	// no anchor, and it is the panic route's *first* resort: a sleeping
+	// display makes screencap return an all-black frame that matches no
+	// anchor, and no amount of backing or restarting turns a screen on.
+	Wake(ctx context.Context) error
 	// Resolution reports the device screen size in pixels.
 	Resolution() image.Point
 	// Close releases any resources held by the transport.

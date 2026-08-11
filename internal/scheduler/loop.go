@@ -26,10 +26,15 @@ type Options struct {
 	Serials  []string
 	// Tick is the base sleep between planning ticks, jittered ±25%.
 	// Default 60s.
-	Tick     time.Duration
-	Rand     *rand.Rand
-	Clock    func() time.Time // default time.Now
-	Location *time.Location   // default time.UTC
+	Tick  time.Duration
+	Rand  *rand.Rand
+	Clock func() time.Time // default time.Now
+	// Location is the operator's timezone, which Plan requires and cannot
+	// check: it reads now.Weekday() and now's date, so whatever location now
+	// carries silently becomes the operator's day. Default time.Local — on a
+	// headless box that means setting TZ, and the resolved zone is logged at
+	// startup for exactly that reason.
+	Location *time.Location
 	Log      *slog.Logger
 }
 
@@ -73,13 +78,18 @@ func New(opts Options) (*Loop, error) {
 		l.clock = time.Now
 	}
 	if l.loc == nil {
-		l.loc = time.UTC
+		l.loc = time.Local
 	}
 	if l.log == nil {
 		l.log = slog.Default().With("component", "scheduler")
 	}
 	return l, nil
 }
+
+// Location reports the timezone the loop plans in. Exposed so startup logging
+// can name it: an offline window in the wrong zone looks identical to one in
+// the right zone until someone compares it against a wall clock a day later.
+func (l *Loop) Location() *time.Location { return l.loc }
 
 // Run loops until ctx is cancelled, then returns nil. Transient failures
 // (snapshot read, task execution) are logged and swallowed: a scheduler

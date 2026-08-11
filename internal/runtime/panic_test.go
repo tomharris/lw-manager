@@ -20,10 +20,43 @@ func countKind(acts []transport.Action, kind string) int {
 	return n
 }
 
-func TestPanicRouteRecoversWithBack(t *testing.T) {
-	// Frame 1 unrecognized triggers the route; frame 2 (after one back) is
-	// recognizable. CurrentScreen must succeed and report it.
+// The cheapest cause of total recognition failure is a display that went to
+// sleep: screencap returns an all-black frame, which matches no anchor, and
+// neither a back press nor an app restart turns a screen on. The M2 24-hour
+// run lost four hours to exactly this — ten incidents, every rung of the
+// ladder failing, 0 recoveries — and it reproduces on demand by letting the
+// handset doze.
+//
+// So waking is rung zero, tried before the back presses it would otherwise
+// render useless.
+func TestPanicRouteWakesTheDisplayBeforeAnythingElse(t *testing.T) {
+	// Frame 1 unrecognized triggers the route; frame 2 is recognizable, so a
+	// wake that works must recover without pressing back at all.
 	c, tr := newCtx(t, &runtimetest.FakeKill{}, "", "base")
+	r, err := c.CurrentScreen(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Screen != "base" {
+		t.Fatalf("recovered onto %q, want base", r.Screen)
+	}
+	acts := tr.Actions()
+	if len(acts) == 0 || acts[0].Kind != "wake" {
+		t.Fatalf("first recovery action was %+v, want a wake", acts)
+	}
+	if countKind(acts, "back") != 0 {
+		t.Errorf("pressed back %d times after waking sufficed", countKind(acts, "back"))
+	}
+	if countKind(acts, "restart") != 0 {
+		t.Error("restarted after waking sufficed")
+	}
+}
+
+func TestPanicRouteRecoversWithBack(t *testing.T) {
+	// Frame 1 unrecognized triggers the route, frame 2 is the wake's own
+	// check (still unrecognized), and frame 3 — after one back — is
+	// recognizable. CurrentScreen must succeed and report it.
+	c, tr := newCtx(t, &runtimetest.FakeKill{}, "", "", "base")
 	r, err := c.CurrentScreen(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -41,10 +74,10 @@ func TestPanicRouteRecoversWithBack(t *testing.T) {
 }
 
 func TestPanicRouteFallsBackToRestart(t *testing.T) {
-	// Four unrecognized frames absorb the trigger plus all three back
-	// attempts; the next frame is the entry screen, reachable only through
-	// restart.
-	c, tr := newCtx(t, &runtimetest.FakeKill{}, "", "", "", "", "base")
+	// Five unrecognized frames absorb the trigger, the wake check, and all
+	// three back attempts; the next frame is the entry screen, reachable only
+	// through restart.
+	c, tr := newCtx(t, &runtimetest.FakeKill{}, "", "", "", "", "", "base")
 	r, err := c.CurrentScreen(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -71,6 +104,82 @@ func TestPanicRouteGivesUpLost(t *testing.T) {
 	}
 	if countKind(tr.Actions(), "restart") != 1 {
 		t.Fatal("gave up without trying a restart")
+	}
+}
+
+// newLostCtx builds a Ctx whose frames never become recognizable, with a
+// capturer attached, so the route is forced all the way to ErrLost.
+func newLostCtx(t *testing.T, fc *fakeCapturer) *runtime.Ctx {
+	t.Helper()
+	tr, err := transport.NewReplayTransportFromImages(runtimetest.Frames("")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := runtimetest.Options(tr, &runtimetest.FakeKill{})
+	opts.Capture = fc
+	c, err := runtime.New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// The panic route is the one place that knows recognition has failed on a
+// real device, and it was throwing that frame away. The M2 24-hour run turned
+// on this: ten incidents over four hours, every rung of the ladder failing,
+// and the only surviving evidence was the error string — which cannot
+// distinguish a maintenance banner from an OS dialog from a locked screen.
+func TestPanicRouteBlobsTheFrameItGaveUpOn(t *testing.T) {
+	fc := &fakeCapturer{}
+	c := newLostCtx(t, fc)
+
+	if _, err := c.CurrentScreen(context.Background()); !errors.Is(err, runtime.ErrLost) {
+		t.Fatalf("got %v, want ErrLost", err)
+	}
+	if len(fc.calls) != 1 {
+		t.Fatalf("recorded %d frames, want exactly 1 — the frame it gave up on", len(fc.calls))
+	}
+	got := fc.calls[0]
+	if got.screenID == nil {
+		t.Fatal("recorded with a nil screen id; want a searchable sentinel, or these frames cannot be found later")
+	}
+	if *got.screenID != runtime.LostScreenID {
+		t.Errorf("screen id %q, want %q", *got.screenID, runtime.LostScreenID)
+	}
+}
+
+// Evidence is a side effect, never a substitute for the diagnosis. A blob
+// store outage during a recognition outage must not convert ErrLost — which
+// the runner records and the scheduler backs off on — into something else.
+func TestPanicRouteStillReportsLostWhenTheEvidenceCaptureFails(t *testing.T) {
+	fc := &fakeCapturer{err: errors.New("blob store down")}
+	c := newLostCtx(t, fc)
+
+	if _, err := c.CurrentScreen(context.Background()); !errors.Is(err, runtime.ErrLost) {
+		t.Fatalf("got %v, want ErrLost — a failed capture must not mask the real failure", err)
+	}
+}
+
+// A recovered route has its screen and needs no evidence; capturing there
+// would blob a frame on every transient popup the device throws.
+func TestPanicRouteDoesNotBlobWhenItRecovers(t *testing.T) {
+	fc := &fakeCapturer{}
+	tr, err := transport.NewReplayTransportFromImages(runtimetest.Frames("", "base")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := runtimetest.Options(tr, &runtimetest.FakeKill{})
+	opts.Capture = fc
+	c, err := runtime.New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := c.CurrentScreen(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fc.calls) != 0 {
+		t.Errorf("recorded %d frames on a successful recovery, want 0", len(fc.calls))
 	}
 }
 

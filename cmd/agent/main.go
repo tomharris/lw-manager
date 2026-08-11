@@ -458,6 +458,6 @@ func runScheduler(ctx context.Context, cfg config.Config, args []string) error {
 		return err
 	}
 
-	slog.Info("scheduler starting", "devices", serials, "tick", tick.String())
+	slog.Info("scheduler starting", "devices", serials, "tick", tick.String(), "location", loop.Location().String())
 	return loop.Run(ctx)
 }

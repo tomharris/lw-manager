@@ -153,7 +153,39 @@ func (t *ADBTransport) Resolution() image.Point { return t.size }
 
 func (t *ADBTransport) Close() error { return nil }
 
-// Back presses the hardware back button. The panic route's first move.
+// Wake turns the display on and clears the keyguard.
+//
+// All three steps were established by measurement on a moto g play 2024, and
+// the order matters. KEYCODE_WAKEUP alone lights the display but leaves the
+// keyguard up, and `screencap` over a keyguard returns an all-black frame even
+// while dumpsys reports mScreenState=ON — which is why a sleeping device looks
+// identical to a broken one, and why this is worth a dedicated primitive
+// rather than a back press.
+//
+// Only the wakeup is treated as required. The keyguard steps vary by OEM and
+// Android version, and a device configured without a keyguard needs neither,
+// so a failure there is logged and the caller still gets a lit screen: the
+// recognition attempt that follows is the real test of whether it worked.
+func (t *ADBTransport) Wake(ctx context.Context) error {
+	if _, err := t.run(ctx, "shell", "input", "keyevent", "KEYCODE_WAKEUP"); err != nil {
+		return fmt.Errorf("transport: waking display: %w", err)
+	}
+	// KEYCODE_MENU dismisses a swipe-only keyguard on older builds; on newer
+	// ones `wm dismiss-keyguard` is the supported path. Both are cheap and
+	// harmless once the device is already unlocked, and neither can dismiss a
+	// keyguard with real credentials — an automation handset must not have one.
+	for _, args := range [][]string{
+		{"shell", "input", "keyevent", "KEYCODE_MENU"},
+		{"shell", "wm", "dismiss-keyguard"},
+	} {
+		if _, err := t.run(ctx, args...); err != nil {
+			t.log.Warn("keyguard dismissal step failed", "args", args, "error", err)
+		}
+	}
+	return nil
+}
+
+// Back presses the hardware back button.
 func (t *ADBTransport) Back(ctx context.Context) error {
 	_, err := t.run(ctx, "shell", "input", "keyevent", "KEYCODE_BACK")
 	if err != nil {

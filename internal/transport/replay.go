@@ -196,6 +196,11 @@ func (t *ReplayTransport) Back(ctx context.Context) error {
 	return nil
 }
 
+func (t *ReplayTransport) Wake(ctx context.Context) error {
+	t.record(Action{Kind: "wake"})
+	return nil
+}
+
 func (t *ReplayTransport) Resolution() image.Point { return t.size }
 
 func (t *ReplayTransport) Close() error { return nil }
