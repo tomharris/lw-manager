@@ -20,10 +20,43 @@ func countKind(acts []transport.Action, kind string) int {
 	return n
 }
 
-func TestPanicRouteRecoversWithBack(t *testing.T) {
-	// Frame 1 unrecognized triggers the route; frame 2 (after one back) is
-	// recognizable. CurrentScreen must succeed and report it.
+// The cheapest cause of total recognition failure is a display that went to
+// sleep: screencap returns an all-black frame, which matches no anchor, and
+// neither a back press nor an app restart turns a screen on. The M2 24-hour
+// run lost four hours to exactly this — ten incidents, every rung of the
+// ladder failing, 0 recoveries — and it reproduces on demand by letting the
+// handset doze.
+//
+// So waking is rung zero, tried before the back presses it would otherwise
+// render useless.
+func TestPanicRouteWakesTheDisplayBeforeAnythingElse(t *testing.T) {
+	// Frame 1 unrecognized triggers the route; frame 2 is recognizable, so a
+	// wake that works must recover without pressing back at all.
 	c, tr := newCtx(t, &runtimetest.FakeKill{}, "", "base")
+	r, err := c.CurrentScreen(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Screen != "base" {
+		t.Fatalf("recovered onto %q, want base", r.Screen)
+	}
+	acts := tr.Actions()
+	if len(acts) == 0 || acts[0].Kind != "wake" {
+		t.Fatalf("first recovery action was %+v, want a wake", acts)
+	}
+	if countKind(acts, "back") != 0 {
+		t.Errorf("pressed back %d times after waking sufficed", countKind(acts, "back"))
+	}
+	if countKind(acts, "restart") != 0 {
+		t.Error("restarted after waking sufficed")
+	}
+}
+
+func TestPanicRouteRecoversWithBack(t *testing.T) {
+	// Frame 1 unrecognized triggers the route, frame 2 is the wake's own
+	// check (still unrecognized), and frame 3 — after one back — is
+	// recognizable. CurrentScreen must succeed and report it.
+	c, tr := newCtx(t, &runtimetest.FakeKill{}, "", "", "base")
 	r, err := c.CurrentScreen(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -41,10 +74,10 @@ func TestPanicRouteRecoversWithBack(t *testing.T) {
 }
 
 func TestPanicRouteFallsBackToRestart(t *testing.T) {
-	// Four unrecognized frames absorb the trigger plus all three back
-	// attempts; the next frame is the entry screen, reachable only through
-	// restart.
-	c, tr := newCtx(t, &runtimetest.FakeKill{}, "", "", "", "", "base")
+	// Five unrecognized frames absorb the trigger, the wake check, and all
+	// three back attempts; the next frame is the entry screen, reachable only
+	// through restart.
+	c, tr := newCtx(t, &runtimetest.FakeKill{}, "", "", "", "", "", "base")
 	r, err := c.CurrentScreen(context.Background())
 	if err != nil {
 		t.Fatal(err)

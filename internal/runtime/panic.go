@@ -26,6 +26,30 @@ const LostScreenID = "_lost"
 // every rung fails. The run is then marked failed and the agent stops
 // rather than flails.
 func (c *Ctx) panicRoute(ctx context.Context) (Recognition, error) {
+	// Rung zero: the display may simply be asleep. That is the cheapest cause
+	// of total recognition failure and the only one the rungs below cannot
+	// touch — a black frame matches no anchor, and neither a back press nor an
+	// app restart turns a screen on. Trying it first also keeps a doze from
+	// spending three blind back presses on a screen nobody can see.
+	if err := c.ks.Check(ctx); err != nil {
+		return Recognition{}, err
+	}
+	c.log.Warn("panic route: waking the display")
+	if err := c.tr.Wake(ctx); err != nil {
+		return Recognition{}, fmt.Errorf("runtime: panic route wake: %w", err)
+	}
+	if err := c.Sleep(ctx, c.poll, 2*c.poll); err != nil {
+		return Recognition{}, err
+	}
+	r, _, err := c.recognize(ctx)
+	if err == nil {
+		c.log.Info("panic route: recovered by waking the display", "screen", r.Screen)
+		return r, nil
+	}
+	if !errors.Is(err, vision.ErrNoScreenRecognized) {
+		return Recognition{}, err
+	}
+
 	for i := 1; i <= panicBackAttempts; i++ {
 		if err := c.ks.Check(ctx); err != nil {
 			return Recognition{}, err
