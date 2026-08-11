@@ -26,9 +26,9 @@ type Options struct {
 	Serials  []string
 	// Tick is the base sleep between planning ticks, jittered ±25%.
 	// Default 60s.
-	Tick     time.Duration
-	Rand     *rand.Rand
-	Clock    func() time.Time // default time.Now
+	Tick  time.Duration
+	Rand  *rand.Rand
+	Clock func() time.Time // default time.Now
 	// Location is the operator's timezone, which Plan requires and cannot
 	// check: it reads now.Weekday() and now's date, so whatever location now
 	// carries silently becomes the operator's day. Default time.Local — on a

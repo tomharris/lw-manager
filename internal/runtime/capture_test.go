@@ -12,14 +12,25 @@ import (
 	"github.com/tomharris/lw-manager/internal/transport"
 )
 
+type capturedFrame struct {
+	accountID int64
+	screenID  *string
+}
+
 type fakeCapturer struct {
 	nextID   int64
 	screenID *string
+	calls    []capturedFrame
+	err      error
 }
 
 func (f *fakeCapturer) Record(ctx context.Context, accountID int64, img image.Image, screenID *string) (capture.Result, error) {
+	if f.err != nil {
+		return capture.Result{}, f.err
+	}
 	f.nextID++
 	f.screenID = screenID
+	f.calls = append(f.calls, capturedFrame{accountID: accountID, screenID: screenID})
 	return capture.Result{ScreenshotID: f.nextID, AccountID: accountID}, nil
 }
 
