@@ -32,8 +32,9 @@ type querier interface {
 }
 
 // SeedAccount inserts the device, app instance and account rows an analytics
-// test needs, and returns the account id. Integration tests truncate freely,
-// so this is called per test rather than once.
+// test needs, and returns the account id. Every call mints a unique
+// serial/nickname so repeated calls, including across test runs against a
+// database that is never dropped, never collide.
 func SeedAccount(ctx context.Context, t *testing.T, pool querier) int64 {
 	t.Helper()
 	suffix := uniqueSuffix()
