@@ -15,6 +15,7 @@ func TestParsePower(t *testing.T) {
 		{"Power: 1.5B", 1_500_000_000},
 		{"Power: 987.6K", 987_600},
 		{"Power: 232.2M", 232_200_000},
+		{"2162M", 2_162_000_000}, // no decimal, legitimately shaped
 	}
 	for _, c := range cases {
 		got, err := ParsePower(c.in)
@@ -29,7 +30,14 @@ func TestParsePower(t *testing.T) {
 }
 
 func TestParsePowerRejectsGarbage(t *testing.T) {
-	for _, in := range []string{"", "Power:", "Power: M", "banana"} {
+	for _, in := range []string{
+		"",            // empty
+		"Power:",      // no value
+		"Power: M",    // no numeric part
+		"banana",      // no suffix
+		"216. 2M",     // interior space (malformed)
+		"216.2M junk", // trailing characters
+	} {
 		if _, err := ParsePower(in); !errors.Is(err, ErrUnparseable) {
 			t.Errorf("ParsePower(%q) = %v, want ErrUnparseable", in, err)
 		}
@@ -37,14 +45,36 @@ func TestParsePowerRejectsGarbage(t *testing.T) {
 }
 
 func TestParseLevel(t *testing.T) {
-	for in, want := range map[string]int{"Lv.35": 35, "Lv.4": 4, "35": 35} {
-		got, err := ParseLevel(in)
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"Lv.35", 35},
+		{"Lv.4", 4},
+		{"Lv 35", 35},
+		{"lv.35", 35},
+		{"LV.35", 35},
+		{"lv35", 35},
+	}
+	for _, c := range cases {
+		got, err := ParseLevel(c.in)
 		if err != nil {
-			t.Errorf("ParseLevel(%q): %v", in, err)
+			t.Errorf("ParseLevel(%q): %v", c.in, err)
 			continue
 		}
-		if got != want {
-			t.Errorf("ParseLevel(%q) = %d, want %d", in, got, want)
+		if got != c.want {
+			t.Errorf("ParseLevel(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestParseLevelRejectsGarbage(t *testing.T) {
+	for _, in := range []string{
+		"35",                    // bare number without Lv prefix
+		"Power: 216.2M Lv.35",   // grabs power digits instead of level
+	} {
+		if _, err := ParseLevel(in); !errors.Is(err, ErrUnparseable) {
+			t.Errorf("ParseLevel(%q) = %v, want ErrUnparseable", in, err)
 		}
 	}
 }
@@ -92,7 +122,14 @@ func TestParsePoints(t *testing.T) {
 }
 
 func TestParsePointsRejectsGarbage(t *testing.T) {
-	for _, in := range []string{"", ",", "abc"} {
+	for _, in := range []string{
+		"",                  // empty
+		",",                 // just comma
+		"abc",               // non-numeric
+		"45,048,150 #3",     // rank badge concatenated
+		"45.048.150",        // periods instead of commas
+		"-45",               // negative sign
+	} {
 		if _, err := ParsePoints(in); !errors.Is(err, ErrUnparseable) {
 			t.Errorf("ParsePoints(%q) = %v, want ErrUnparseable", in, err)
 		}
