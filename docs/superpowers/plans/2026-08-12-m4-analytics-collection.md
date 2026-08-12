@@ -2088,6 +2088,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"time"
 
 	"github.com/tomharris/lw-manager/internal/runtime"
@@ -2385,6 +2386,9 @@ func init() { Register("roster_capture", rosterCapture) }
 // reconciliation is per group rather than global — a shortfall localizes
 // instead of leaving one number to explain.
 func rosterCapture(ctx context.Context, rt *runtime.Ctx) error {
+	var all []ScrolledFrame
+	allComplete := true
+
 	if err := rt.NavigateTo(ctx, vision.ScreenAlliance); err != nil {
 		return fmt.Errorf("tasks: navigating to alliance: %w", err)
 	}
@@ -2416,14 +2420,21 @@ func rosterCapture(ctx context.Context, rt *runtime.Ctx) error {
 		if err != nil {
 			return fmt.Errorf("tasks: capturing rank group %s: %w", group, err)
 		}
-		if err := recordFrames(ctx, rt, "roster", group, frames, complete); err != nil {
-			return err
+		// One capture row per run, not per group. Every frame carries its
+		// group in GroupKey, which is what lets ingest reconcile each group
+		// against its own header total and then sum those against the member
+		// count from the alliance frame -- both checks inside one capture.
+		all = append(all, frames...)
+		if !complete {
+			allComplete = false
 		}
 		if err := collapseGroup(ctx, rt, group); err != nil {
 			return err
 		}
 	}
-	return nil
+	// A run is complete only if every group proved its own bottom. One short
+	// group makes the whole roster short, and reconciliation must see that.
+	return recordFrames(ctx, rt, "roster", all, allComplete)
 }
 
 // expandGroup taps a group header and confirms it opened. The chevron flips
@@ -2468,18 +2479,37 @@ func collapseGroup(ctx context.Context, rt *runtime.Ctx, group string) error {
 }
 ```
 
-`recordFrames` is shared with Task 9 and is written there; write a minimal version here and have Task 9 extend it, or write it here in full:
+`recordFrames` is shared with Task 9. Write it here in full:
 
 ```go
-// recordFrames persists one scrolled list as a capture plus its frames. Each
-// frame keeps the offset that reached it, so ingest never has to re-measure —
+// recordFrames persists one route run as a capture plus its frames. Each frame
+// keeps the offset that reached it, so ingest never has to re-measure —
 // re-measurement under a changed ScrollOffset would re-segment historical
-// captures into different rows.
-func recordFrames(ctx context.Context, rt *runtime.Ctx, route, group string, frames []ScrolledFrame, complete bool) error {
-	// Implemented against the CaptureStore interface added in Task 10.
-	return rt.RecordCapture(ctx, route, group, frames, complete)
+// captures into different rows and make old facts unreproducible.
+//
+// There is one capture per run, not per rank group. The group travels on each
+// frame instead, which is what lets ingest reconcile a group against its own
+// header total and then sum those against the alliance member count without
+// needing a notion of a capture set.
+func recordFrames(ctx context.Context, rt *runtime.Ctx, route string, frames []ScrolledFrame, complete bool) error {
+	refs := make([]runtime.CaptureFrameRef, 0, len(frames))
+	for _, f := range frames {
+		refs = append(refs, runtime.CaptureFrameRef{
+			ScreenshotID: f.ScreenshotID,
+			Seq:          f.Seq,
+			OffsetPx:     f.OffsetPx,
+			GroupKey:     f.GroupKey,
+		})
+	}
+	return rt.RecordCapture(ctx, route, refs, complete)
 }
 ```
+
+Note the `Seq` values: `scrollCapture` numbers frames from zero within each
+group, so across four groups the sequence repeats. `capture_frames` has
+`UNIQUE (capture_id, seq)`, which that violates. **Renumber `Seq` sequentially
+across the whole run** as the refs are built, and keep the group in `GroupKey`
+where it belongs.
 
 - [ ] **Step 4: Add the group-header anchors**
 
@@ -2629,12 +2659,12 @@ func vsCapture(ctx context.Context, rt *runtime.Ctx) error {
 		// A capture that failed mid-scroll is still worth persisting: its
 		// frames are evidence, and marking it partial is what stops ingest
 		// reading absence as a zero.
-		if rerr := recordFrames(ctx, rt, "vs_ranking", "", frames, false); rerr != nil {
+		if rerr := recordFrames(ctx, rt, "vs_ranking", frames, false); rerr != nil {
 			return fmt.Errorf("tasks: capturing the ranking (%v) and recording it: %w", err, rerr)
 		}
 		return fmt.Errorf("tasks: capturing the ranking: %w", err)
 	}
-	return recordFrames(ctx, rt, "vs_ranking", "", frames, complete)
+	return recordFrames(ctx, rt, "vs_ranking", frames, complete)
 }
 
 // applyAllianceFilter checks Your Alliance and confirms the checkmark, which
@@ -2673,9 +2703,14 @@ Expected: PASS
 
 - [ ] **Step 5: Register both routes in the scheduler catalogue**
 
-Add rows to `internal/db/migrations/00005_analytics.sql`? No — tasks are seeded through the `tasks` table. Check how `00003_tasks.sql` seeds and follow it, adding `roster_capture` and `vs_capture` with `enabled_for_roles = {alliance_data}` and a daily cadence.
+Tasks are seeded as rows in the `tasks` table. Read the existing seeding first:
 
 Run: `sed -n '1,40p' internal/db/migrations/00003_tasks.sql`
+
+Then follow that pattern to add `roster_capture` and `vs_capture`, with
+`enabled_for_roles = {alliance_data}` and a daily cadence. Put the inserts in a
+new migration rather than editing `00005_analytics.sql`, which by then has
+already been applied.
 
 - [ ] **Step 6: Commit**
 
@@ -2757,11 +2792,22 @@ func TestRecordCapturePassesFramesAndCompleteness(t *testing.T) {
 	}
 }
 
-func TestRecordCaptureWithNoRecorderIsAnError() {
+func TestRecordCaptureWithNoRecorderIsAnError(t *testing.T) {
+	c := newTestCtx(t) // built without withRecorder
+
+	err := c.RecordCapture(context.Background(), "roster", []CaptureFrameRef{{ScreenshotID: 1}}, true)
+	if err == nil {
+		t.Fatal("want an error when Ctx has no recorder, got nil")
+	}
+	if !strings.Contains(err.Error(), "recorder") {
+		t.Errorf("error should name the missing recorder, got %q", err)
+	}
 }
 ```
 
-Complete the second test to assert a clear error when `Ctx` was built without a recorder, mirroring how `Capture` behaves when `cap` is nil.
+This mirrors how `Capture` already behaves when `cap` is nil — read
+`internal/runtime/capture.go` and follow that shape, including its error text
+style.
 
 - [ ] **Step 2: Run to verify it fails**
 
