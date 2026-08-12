@@ -43,6 +43,14 @@ const (
 // found that fling roughly doubles a swipe — a 700px gesture moved ~1504px
 // against a ~990px viewport — so a capture that trusts its gesture skips rows
 // while every frame still looks valid.
+//
+// The return value is a raw pixel count across the frames' native resolution,
+// not a normalized coordinate. This is safe because a scroll delta is a
+// distance measured within one image and consumed only alongside those same
+// frames — it never addresses a screen location (which is where the
+// normalized-coordinates invariant applies). The tradeoff: a persisted offset
+// stops being self-describing if a device with different resolution joins the
+// fleet, so offsets are meaningful only in the context of their source frames.
 func ScrollOffset(prev, cur image.Image, region transport.Rect) (int, error) {
 	if !region.Valid() {
 		return 0, fmt.Errorf("vision: scroll region %+v is not a valid unit-square rect", region)
@@ -93,9 +101,7 @@ func ScrollOffset(prev, cur image.Image, region transport.Rect) (int, error) {
 // bestProbeStrip picks the highest-variance candidate strip from cur, and
 // refuses to return one flat enough to match anywhere.
 func bestProbeStrip(cur image.Image, region transport.Rect, regionTop, regionH, stripH int) (image.Image, int, error) {
-	w := cur.Bounds().Dx()
-	x0 := int(region.X1 * float64(w))
-	x1 := int(region.X2 * float64(w))
+	h := cur.Bounds().Dy()
 
 	type candidate struct {
 		img image.Image
@@ -105,12 +111,13 @@ func bestProbeStrip(cur image.Image, region transport.Rect, regionTop, regionH, 
 	var best candidate
 	for i := 0; i < offsetProbes; i++ {
 		y := regionTop + (i+1)*stripH
-		sub := image.NewRGBA(image.Rect(0, 0, x1-x0, stripH))
-		for yy := 0; yy < stripH; yy++ {
-			for xx := 0; xx < x1-x0; xx++ {
-				sub.Set(xx, yy, cur.At(cur.Bounds().Min.X+x0+xx, cur.Bounds().Min.Y+y+yy))
-			}
+		stripRect := transport.Rect{
+			X1: region.X1,
+			Y1: float64(y) / float64(h),
+			X2: region.X2,
+			Y2: float64(y+stripH) / float64(h),
 		}
+		sub := Crop(cur, stripRect)
 		v := variance(sub)
 		if v > best.v {
 			best = candidate{img: sub, y: y, v: v}
