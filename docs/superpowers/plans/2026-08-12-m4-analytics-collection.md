@@ -716,7 +716,11 @@ func TestParsePowerRejectsGarbage(t *testing.T) {
 }
 
 func TestParseLevel(t *testing.T) {
-	for in, want := range map[string]int{"Lv.35": 35, "Lv.4": 4, "35": 35} {
+	// A bare "35" is deliberately NOT accepted. Without the Lv prefix there is
+	// nothing distinguishing a level from any other number that bled into the
+	// crop, and ParseLevel("Power: 216.2M Lv.35") returning 216 is exactly the
+	// silent wrong answer the anchoring exists to prevent.
+	for in, want := range map[string]int{"Lv.35": 35, "Lv.4": 4, "LV 35": 35, "lv35": 35} {
 		got, err := ParseLevel(in)
 		if err != nil {
 			t.Errorf("ParseLevel(%q): %v", in, err)
@@ -804,10 +808,24 @@ import (
 // rather than guessing a value.
 var ErrUnparseable = errors.New("ingest: field could not be parsed")
 
+// Every pattern is anchored, and that is the whole point. An unanchored
+// pattern extracts characters rather than validating shape, which cannot tell
+// "the field I expected" from "some digits that happened to be nearby" — and
+// the failure is silent, producing a confident wrong number.
+//
+// That defeats invariant #5 in a way confidence cannot catch. The invariant
+// keeps bad numbers off leaderboards via OCR confidence, but a parse error
+// happens *after* OCR: tesseract can report 0.98 on a crisp "2162M" it read
+// perfectly, and an unanchored parser then returns 2,162,000,000 — ten times
+// the truth, carrying that high confidence with it. A field that does not
+// match its expected shape must return ErrUnparseable so the row goes to
+// review, which is where an unreadable number belongs.
 var (
-	powerRe = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*([KMB])`)
-	levelRe = regexp.MustCompile(`([0-9]+)`)
-	agoRe   = regexp.MustCompile(`([0-9]+)\s*([hmd])`)
+	powerRe = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)([KMB])$`)
+	levelRe = regexp.MustCompile(`(?i)^LV\.?\s*([0-9]+)$`)
+	pointsRe = regexp.MustCompile(`^(?:[0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)$`)
+	agoRe   = regexp.MustCompile(`^([0-9]+)\s*([hmd])`)
+	powerLabelRe = regexp.MustCompile(`(?i)^\s*POWER\s*:?\s*`)
 )
 
 // ParsePower reads the abbreviated power the member list shows, e.g.
