@@ -15,9 +15,9 @@ import (
 var ErrUnparseable = errors.New("ingest: field could not be parsed")
 
 var (
-	powerRe = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?[KMB]$`)
-	levelRe = regexp.MustCompile(`^(?:lv\.?|lv\s)?\s*([0-9]+)\s*$`)
-	agoRe   = regexp.MustCompile(`([0-9]+)\s*([hmd])`)
+	powerRe  = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?[KMB]$`)
+	levelRe  = regexp.MustCompile(`^(?:lv\.?|lv\s)?\s*([0-9]+)\s*$`)
+	agoRe    = regexp.MustCompile(`^([0-9]+)\s*([hmd])\s*(ago)?$`)
 	pointsRe = regexp.MustCompile(`^(?:[0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)$`)
 )
 
@@ -102,6 +102,9 @@ func ParseLevel(s string) (int, error) {
 // Hours-ago is stored rather than a derived timestamp so the fact stays equal
 // to what the screenshot shows, which is what makes it checkable against that
 // screenshot later. Resolution is about an hour.
+//
+// An unparseable field returns ErrUnparseable so the row routes to review
+// instead of contributing a confident wrong number to a leaderboard.
 func ParseLastActiveHours(s string) (float64, error) {
 	t := strings.TrimSpace(strings.ToLower(s))
 	if strings.HasPrefix(t, "online") {

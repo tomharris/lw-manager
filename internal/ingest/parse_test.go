@@ -70,8 +70,8 @@ func TestParseLevel(t *testing.T) {
 
 func TestParseLevelRejectsGarbage(t *testing.T) {
 	for _, in := range []string{
-		"35",                    // bare number without Lv prefix
-		"Power: 216.2M Lv.35",   // grabs power digits instead of level
+		"35",                  // bare number without Lv prefix
+		"Power: 216.2M Lv.35", // grabs power digits instead of level
 	} {
 		if _, err := ParseLevel(in); !errors.Is(err, ErrUnparseable) {
 			t.Errorf("ParseLevel(%q) = %v, want ErrUnparseable", in, err)
@@ -103,6 +103,18 @@ func TestParseLastActiveHours(t *testing.T) {
 	}
 }
 
+func TestParseLastActiveHoursRejectsGarbage(t *testing.T) {
+	for _, in := range []string{
+		"Power: 216.2M", // lowercase m suffix matches as minutes
+		"216.2M",        // same issue: 2m ago
+		"Lv.35",         // unanchored regex would match "5"
+	} {
+		if _, err := ParseLastActiveHours(in); !errors.Is(err, ErrUnparseable) {
+			t.Errorf("ParseLastActiveHours(%q) = %v, want ErrUnparseable", in, err)
+		}
+	}
+}
+
 func TestParsePoints(t *testing.T) {
 	for in, want := range map[string]int64{
 		"45,048,150": 45_048_150,
@@ -123,12 +135,12 @@ func TestParsePoints(t *testing.T) {
 
 func TestParsePointsRejectsGarbage(t *testing.T) {
 	for _, in := range []string{
-		"",                  // empty
-		",",                 // just comma
-		"abc",               // non-numeric
-		"45,048,150 #3",     // rank badge concatenated
-		"45.048.150",        // periods instead of commas
-		"-45",               // negative sign
+		"",              // empty
+		",",             // just comma
+		"abc",           // non-numeric
+		"45,048,150 #3", // rank badge concatenated
+		"45.048.150",    // periods instead of commas
+		"-45",           // negative sign
 	} {
 		if _, err := ParsePoints(in); !errors.Is(err, ErrUnparseable) {
 			t.Errorf("ParsePoints(%q) = %v, want ErrUnparseable", in, err)
