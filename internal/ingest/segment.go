@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"sort"
 
 	"github.com/tomharris/lw-manager/internal/transport"
 	"github.com/tomharris/lw-manager/internal/vision"
@@ -100,37 +101,36 @@ func SegmentRows(img image.Image, region transport.Rect, pitch int) ([]RowBand, 
 		bands = append(bands, RowBand{Y0: start, Y1: bot})
 	}
 
+	if len(bands) == 0 {
+		return nil, nil
+	}
+
+	// Measure the observed pitch as the median band height. We use the measured
+	// value as the yardstick for judging slivers, not the expected pitch, because
+	// the expected pitch is the value under test — if it is wrong, it cannot also
+	// be the yardstick. A 60% error in pitch would make every real band look like
+	// a sliver, allowing the mistake to pass silently.
+	heights := make([]int, len(bands))
+	for i, b := range bands {
+		heights[i] = b.Height()
+	}
+	sort.Ints(heights)
+	observedPitch := heights[len(heights)/2]
+
+	// Compare observed against expected: if the layout moved, fail loudly.
+	delta := float64(observedPitch-pitch) / float64(pitch)
+	if delta > pitchTolerance || delta < -pitchTolerance {
+		return nil, fmt.Errorf("ingest: rows measure %d px against an expected pitch of %d: %w", observedPitch, pitch, ErrPitchMismatch)
+	}
+
 	// Drop slivers: partial rows clipped by the region edge are not parseable
 	// and must not be handed downstream as if they were whole.
+	minHeight := float64(observedPitch) * (1 - pitchTolerance)
 	whole := bands[:0]
-	var droppedBands []RowBand
 	for _, band := range bands {
-		if float64(band.Height()) >= float64(pitch)*(1-pitchTolerance) {
+		if float64(band.Height()) >= minHeight {
 			whole = append(whole, band)
-		} else {
-			droppedBands = append(droppedBands, band)
 		}
 	}
-	bands = whole
-
-	// If all bands were dropped as slivers, check if it's due to pitch mismatch.
-	// Slivers clipped by the region edge have inconsistent sizes; a pitch
-	// mismatch means all detected bands are consistently far from the expected
-	// pitch, which is a layout change, not a clipping artifact.
-	if len(bands) == 0 && len(droppedBands) > 0 {
-		for _, band := range droppedBands {
-			delta := float64(band.Height()-pitch) / float64(pitch)
-			if delta > pitchTolerance || delta < -pitchTolerance {
-				return nil, fmt.Errorf("ingest: band %+v is %d px against an expected pitch of %d: %w", band, band.Height(), pitch, ErrPitchMismatch)
-			}
-		}
-	}
-
-	for _, band := range bands {
-		delta := float64(band.Height()-pitch) / float64(pitch)
-		if delta > pitchTolerance || delta < -pitchTolerance {
-			return nil, fmt.Errorf("ingest: band %+v is %d px against an expected pitch of %d: %w", band, band.Height(), pitch, ErrPitchMismatch)
-		}
-	}
-	return bands, nil
+	return whole, nil
 }
