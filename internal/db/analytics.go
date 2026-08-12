@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"time"
 
+	// roster stays data-in: it takes members and aliases as plain values and
+	// must never import internal/db. Storage is allowed to depend on domain
+	// logic; the reverse would make a db <-> roster cycle possible the moment
+	// roster is given a query of its own.
 	"github.com/tomharris/lw-manager/internal/roster"
 )
 
