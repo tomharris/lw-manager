@@ -16,7 +16,11 @@
 Every task's requirements implicitly include this section.
 
 - **`CGO_ENABLED=0`, always.** Enforced by the Makefile and `make verify-nocgo`. No gocv, no gosseract, no onnxruntime.
-- **No absolute pixel coordinates outside a `Transport` implementation.** Everything upstream speaks `transport.Norm` / `transport.Rect`, both components in `[0,1]`. `Norm.Pixels` is the only sanctioned denormalization point. *Exception, and it is narrow:* `internal/vision` and `internal/ingest` work on decoded images and may compute in pixels internally, but every value that crosses a package boundary as a coordinate is normalized.
+- **No absolute pixel coordinates outside a `Transport` implementation.** Everything upstream speaks `transport.Norm` / `transport.Rect`, both components in `[0,1]`. `Norm.Pixels` is the only sanctioned denormalization point. *Exception, and it is narrow:* `internal/vision` and `internal/ingest` work on decoded images and may compute in pixels internally, but every value that crosses a package boundary as a **coordinate** is normalized.
+
+  A **distance measured within an image is not a coordinate** and may cross in pixels: `ScrollOffset`'s return and `capture_frames.offset_px` are scroll deltas, measured from one frame pair and only ever consumed alongside those same frames. The invariant exists to stop code hardcoding *where to tap* on a screen whose resolution varies; it is not a ban on integer image arithmetic. Anything that addresses a screen location — a tap target, an anchor box, a search region — is normalized without exception.
+
+  The known cost, accepted: a persisted `offset_px` is meaningful only against the frames it was measured from, so it stops being self-describing if a second device with a different resolution joins the fleet. Revisit at that point, not before.
 - **`context.Context` is the first parameter of anything that does I/O.**
 - **Wrap errors with `%w`** and enough context to locate the failure without a stack trace: which device, which account, which key.
 - **All logs go through `log/slog` to stderr. CLI results go to stdout** so they stay pipeable.
