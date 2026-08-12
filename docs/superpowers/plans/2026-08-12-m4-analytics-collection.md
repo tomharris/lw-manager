@@ -503,6 +503,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"sort"
 
 	"github.com/tomharris/lw-manager/internal/transport"
 	"github.com/tomharris/lw-manager/internal/vision"
@@ -595,23 +596,38 @@ func SegmentRows(img image.Image, region transport.Rect, pitch int) ([]RowBand, 
 		bands = append(bands, RowBand{Y0: start, Y1: bot})
 	}
 
-	// Drop slivers: partial rows clipped by the region edge are not parseable
-	// and must not be handed downstream as if they were whole.
+	if len(bands) == 0 {
+		return nil, nil
+	}
+
+	// Measure the observed pitch before judging anything by the expected one.
+	// The expected pitch is the value under suspicion here, so it cannot also
+	// be the yardstick: deciding slivers by it means that when the expectation
+	// is wrong every band looks like a partial row, the list empties, and a
+	// layout change is reported as "no rows found" instead of as the mismatch
+	// it is.
+	heights := make([]int, len(bands))
+	for i, band := range bands {
+		heights[i] = band.Height()
+	}
+	sort.Ints(heights)
+	observed := heights[len(heights)/2]
+
+	if delta := float64(observed-pitch) / float64(pitch); delta > pitchTolerance || delta < -pitchTolerance {
+		return nil, fmt.Errorf("ingest: rows measure %d px against an expected pitch of %d: %w", observed, pitch, ErrPitchMismatch)
+	}
+
+	// Now drop slivers, judged against the observed pitch. A partial row
+	// clipped by the region edge is short relative to its neighbours, which is
+	// what "sliver" actually means, and the region edge is exactly how the
+	// sticky group header and the pinned self row get excluded.
 	whole := bands[:0]
 	for _, band := range bands {
-		if float64(band.Height()) >= float64(pitch)*(1-pitchTolerance) {
+		if float64(band.Height()) >= float64(observed)*(1-pitchTolerance) {
 			whole = append(whole, band)
 		}
 	}
-	bands = whole
-
-	for _, band := range bands {
-		delta := float64(band.Height()-pitch) / float64(pitch)
-		if delta > pitchTolerance || delta < -pitchTolerance {
-			return nil, fmt.Errorf("ingest: band %+v is %d px against an expected pitch of %d: %w", band, band.Height(), pitch, ErrPitchMismatch)
-		}
-	}
-	return bands, nil
+	return whole, nil
 }
 ```
 
