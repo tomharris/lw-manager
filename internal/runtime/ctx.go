@@ -207,3 +207,34 @@ func (c *Ctx) Sleep(ctx context.Context, min, max time.Duration) error {
 		return nil
 	}
 }
+
+// Resolution reports the device's screen size in pixels. It is a fixed
+// device property rather than an action, so unlike every other primitive on
+// Ctx it does not check the kill switch — reading it cannot touch the
+// device. Task code needs it to reason about a region in absolute pixels,
+// such as the scroll capture helper's usable-height calculation.
+func (c *Ctx) Resolution() image.Point { return c.tr.Resolution() }
+
+// Screenshot captures the current frame without recognizing or verifying it
+// against any screen. It exists for callers that need to compare raw pixels
+// across two points in time — such as measuring how far a list scrolled —
+// where a full recognition pass would cost time without adding information.
+// Most task code wants CurrentScreen or Capture instead; this is for the
+// narrow case of a bare pixel comparison.
+func (c *Ctx) Screenshot(ctx context.Context) (image.Image, error) {
+	if err := c.ks.Check(ctx); err != nil {
+		return nil, err
+	}
+	frame, err := c.tr.Screenshot(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: screenshotting for account %d: %w", c.accountID, err)
+	}
+	return frame, nil
+}
+
+// CheckKillSwitch exposes the kill-switch check directly, for task code that
+// needs to bail out of a multi-step loop between steps that otherwise never
+// touch Ctx (invariant #8: checked between every task step).
+func (c *Ctx) CheckKillSwitch(ctx context.Context) error {
+	return c.ks.Check(ctx)
+}

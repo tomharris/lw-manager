@@ -92,6 +92,60 @@ func TestSleepRespectsContextCancel(t *testing.T) {
 	}
 }
 
+func TestResolutionReportsTransportSize(t *testing.T) {
+	c, tr := newCtx(t, &runtimetest.FakeKill{}, "base")
+	if got, want := c.Resolution(), tr.Resolution(); got != want {
+		t.Fatalf("Resolution() = %v, want %v", got, want)
+	}
+}
+
+func TestResolutionIgnoresThePausedKillSwitch(t *testing.T) {
+	// Reading a fixed device property is not an action, so it must work even
+	// while paused — unlike every primitive that touches the device.
+	ks := &runtimetest.FakeKill{}
+	ks.Set(runtime.ErrPaused)
+	c, tr := newCtx(t, ks, "base")
+	if got, want := c.Resolution(), tr.Resolution(); got != want {
+		t.Fatalf("Resolution() = %v, want %v", got, want)
+	}
+}
+
+func TestScreenshotReturnsTheRawFrame(t *testing.T) {
+	c, tr := newCtx(t, &runtimetest.FakeKill{}, "base")
+	img, err := c.Screenshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	size := tr.Resolution()
+	if b := img.Bounds(); b.Dx() != size.X || b.Dy() != size.Y {
+		t.Fatalf("Screenshot() bounds = %v, want a frame sized %v", b, size)
+	}
+}
+
+func TestScreenshotChecksKillSwitchFirst(t *testing.T) {
+	ks := &runtimetest.FakeKill{}
+	ks.Set(runtime.ErrPaused)
+	c, tr := newCtx(t, ks, "base")
+	if _, err := c.Screenshot(context.Background()); !errors.Is(err, runtime.ErrPaused) {
+		t.Fatalf("Screenshot: got %v, want ErrPaused", err)
+	}
+	if len(tr.Actions()) != 0 {
+		t.Fatalf("paused ctx touched the device: %+v", tr.Actions())
+	}
+}
+
+func TestCheckKillSwitchReportsTheCurrentState(t *testing.T) {
+	ks := &runtimetest.FakeKill{}
+	c, _ := newCtx(t, ks, "base")
+	if err := c.CheckKillSwitch(context.Background()); err != nil {
+		t.Fatalf("CheckKillSwitch: got %v, want nil", err)
+	}
+	ks.Set(runtime.ErrPaused)
+	if err := c.CheckKillSwitch(context.Background()); !errors.Is(err, runtime.ErrPaused) {
+		t.Fatalf("CheckKillSwitch: got %v, want ErrPaused", err)
+	}
+}
+
 func TestUnrecognizedScreenSurfacesLost(t *testing.T) {
 	// A permanently unrecognized screen must surface ErrLost after failed
 	// recovery — never vision.ErrNoScreenRecognized, which task code is not
