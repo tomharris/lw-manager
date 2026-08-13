@@ -11,10 +11,10 @@ const (
 	ScreenAllianceTech       = "alliance_tech"
 	ScreenAllianceTechDonate = "alliance_tech_donate"
 	ScreenAllianceMembers    = "alliance_members"
+	ScreenAllianceDuel       = "alliance_duel"
 	ScreenVS                 = "vs"
 	ScreenVSRanking          = "vs_ranking"
 	ScreenVSRankingWeekly    = "vs_ranking_weekly"
-	ScreenVSRankingAlliance  = "vs_ranking_alliance"
 	ScreenMail               = "mail"
 	ScreenMailAlliance       = "mail_alliance"
 	ScreenMailEvent          = "mail_event"
@@ -55,11 +55,21 @@ const (
 // down into its own screen carrying the message list and the claim-all button.
 // Only the three mailboxes we act on are modelled.
 //
-// VS ranking: base -> vs -> vs_ranking -> "weekly ranking" tab -> select your
-// alliance. It is NOT reachable from Alliance; docs that describe the route as
-// "Alliance -> Members -> VS Ranking" are wrong. vs_ranking_alliance is the
-// screen M4 parses; the three above it exist because the task has to tap its
-// way down and confirm each landing.
+// VS ranking: base -> alliance_duel -> vs_ranking -> "weekly ranking" tab.
+// base's VS button lands on Alliance Duel, not on a ranking screen, so the
+// screen the button actually opens gets its own name rather than being
+// folded into the tree it merely leads to. It is NOT reachable from Alliance;
+// docs that describe the route as "Alliance -> Members -> VS Ranking" are
+// wrong.
+//
+// The filtered and unfiltered weekly views are one screen, vs_ranking_weekly,
+// not two. They used to be modelled separately, but they differ only by
+// whether a checkbox is ticked, and template matching cannot express the
+// absence of something: a crop of the empty checkbox correlates with any
+// smooth region, so it is not an identifying anchor, it is a threshold that
+// happens to pass. The filter is a state within the screen, confirmed by
+// querying for the your_alliance_checked anchor after tapping the filter
+// button, not a screen a task navigates to.
 //
 // alliance_tech_donate is the dialog reached from the recommended tech.
 // stamina_prompt is the buy/refill dialog Quick Execute raises when stamina is
@@ -78,10 +88,10 @@ var ScreenNames = []string{
 	ScreenAllianceTech,
 	ScreenAllianceTechDonate,
 	ScreenAllianceMembers,
+	ScreenAllianceDuel,
 	ScreenVS,
 	ScreenVSRanking,
 	ScreenVSRankingWeekly,
-	ScreenVSRankingAlliance,
 	ScreenMail,
 	ScreenMailAlliance,
 	ScreenMailEvent,

@@ -57,12 +57,16 @@ const (
 // It must cover every screen and anchor runtime.DefaultGraph() names, since
 // Graph below returns that graph and Ctx validates it against Registry.
 var layout = map[string][]string{
-	vision.ScreenBase:               {idAnchor, "help_all_button", "collect_bubble", "alliance_button", "mail_button", "radar_button", "world_map_button"},
+	vision.ScreenBase:               {idAnchor, "help_all_button", "collect_bubble", "alliance_button", "mail_button", "radar_button", "world_map_button", "vs_button"},
 	vision.ScreenStaminaPrompt:      {idAnchor},
 	vision.ScreenWorldMap:           {idAnchor, "base_button"},
-	vision.ScreenAlliance:           {idAnchor, "tech_button"},
+	vision.ScreenAlliance:           {idAnchor, "tech_button", "members_button"},
 	vision.ScreenAllianceTech:       {idAnchor, "tech_recommended_badge", "tab_recommended_badge"},
 	vision.ScreenAllianceTechDonate: {idAnchor, "donate_button"},
+	vision.ScreenAllianceMembers:    {idAnchor},
+	vision.ScreenAllianceDuel:       {idAnchor, "ranking_button"},
+	vision.ScreenVSRanking:          {idAnchor, "weekly_tab"},
+	vision.ScreenVSRankingWeekly:    {idAnchor},
 	vision.ScreenMail:               {idAnchor, "mail_alliance_button", "mail_event_button", "mail_system_button"},
 	vision.ScreenMailAlliance:       {idAnchor, "claim_all_button", "rewards_banner"},
 	vision.ScreenMailEvent:          {idAnchor, "claim_all_button", "rewards_banner"},
