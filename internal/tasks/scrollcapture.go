@@ -78,8 +78,11 @@ func scrollCapture(ctx context.Context, rt *runtime.Ctx, spec ScrollSpec) ([]Scr
 	}
 
 	var frames []ScrolledFrame
-	prev, err := captureFrame(ctx, rt, spec, 0, 0, &frames)
+	prev, err := rt.Screenshot(ctx)
 	if err != nil {
+		return nil, false, fmt.Errorf("tasks: capturing scroll frame 0: %w", err)
+	}
+	if err := captureFrame(ctx, rt, spec, 0, 0, prev, &frames); err != nil {
 		return nil, false, err
 	}
 
@@ -114,7 +117,13 @@ func scrollCapture(ctx context.Context, rt *runtime.Ctx, spec ScrollSpec) ([]Scr
 		}
 		zeroes = 0
 
-		if _, err := captureFrame(ctx, rt, spec, seq, offset, &frames); err != nil {
+		// cur is exactly the frame the offset above was measured against —
+		// captureFrame verifies and stores that same image, not a fresh one,
+		// so the ScreenshotID it records and the pixels OffsetPx describes
+		// are never two different captures of a screen that is not static
+		// (the ranking header's scrolling banner, the roster's live "Online"
+		// badges).
+		if err := captureFrame(ctx, rt, spec, seq, offset, cur, &frames); err != nil {
 			return frames, false, err
 		}
 		prev = cur
@@ -149,19 +158,30 @@ func swipeOnce(ctx context.Context, rt *runtime.Ctx, spec ScrollSpec) error {
 	return rt.Sleep(ctx, swipeSettleMin, swipeSettleMax)
 }
 
-// captureFrame verifies the screen and stores one frame.
-func captureFrame(ctx context.Context, rt *runtime.Ctx, spec ScrollSpec, seq, offset int, out *[]ScrolledFrame) (image.Image, error) {
-	rec, err := rt.CurrentScreen(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("tasks: recognizing before scroll frame %d: %w", seq, err)
+// captureFrame verifies img shows spec.Screen and stores that exact image —
+// never a second, separately-taken screenshot.
+//
+// The first implementation of this helper took three screenshots to do this
+// job (a CurrentScreen check, Capture's own internal re-verification, and a
+// trailing Screenshot to hand back as the next prev), and the loop above took
+// a fourth and fifth of its own to perform the actual offset measurement. On
+// a genuinely static screen the five would all show identical pixels, but
+// neither of this route's two target screens is static — the ranking screen
+// carries a scrolling announcement banner in its header, and the roster
+// carries live "Online" badges — so the frame that earned a ScreenshotID
+// could differ from the one OffsetPx was measured against by however much
+// moved in the gap between captures. rt.VerifyFrame and rt.StoreFrame both
+// operate on the one image the caller already holds, so there is only ever
+// one screenshot per captured frame, and it is provably the same one the
+// offset describes.
+func captureFrame(ctx context.Context, rt *runtime.Ctx, spec ScrollSpec, seq, offset int, img image.Image, out *[]ScrolledFrame) error {
+	if err := rt.VerifyFrame(ctx, spec.Screen, img); err != nil {
+		return fmt.Errorf("tasks: verifying scroll frame %d: %w", seq, err)
 	}
-	if rec.Screen != spec.Screen {
-		return nil, fmt.Errorf("tasks: expected %s at scroll frame %d, found %s", spec.Screen, seq, rec.Screen)
-	}
-	id, err := rt.Capture(ctx, spec.Screen)
+	id, err := rt.StoreFrame(ctx, spec.Screen, img)
 	if err != nil {
-		return nil, fmt.Errorf("tasks: storing scroll frame %d: %w", seq, err)
+		return fmt.Errorf("tasks: storing scroll frame %d: %w", seq, err)
 	}
 	*out = append(*out, ScrolledFrame{ScreenshotID: id, Seq: seq, OffsetPx: offset, GroupKey: spec.GroupKey})
-	return rt.Screenshot(ctx)
+	return nil
 }

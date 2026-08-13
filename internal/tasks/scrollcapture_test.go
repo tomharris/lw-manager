@@ -120,11 +120,25 @@ func scrollRegistry() *vision.Registry {
 	}
 }
 
-// scrollTransport adds a swipe count to *transport.ReplayTransport, which
-// cannot itself gain a method from this package.
+// scrollTransport adds a swipe count and a raw-screenshot count to
+// *transport.ReplayTransport, which cannot itself gain a method from this
+// package. Screenshot is overridden — not just read off Actions(), which
+// ReplayTransport never records a screenshot into — specifically so
+// TestScrollCaptureTakesOneScreenshotPerStoredFrame can assert on the exact
+// number of Screenshot() calls scrollCapture makes: that count is the whole
+// point of this fix round, and a future regression back to captureFrame's
+// three-pass shape should fail this test loudly, not just run slower.
 type scrollTransport struct {
 	*transport.ReplayTransport
+	screenshots int
 }
+
+func (s *scrollTransport) Screenshot(ctx context.Context) (image.Image, error) {
+	s.screenshots++
+	return s.ReplayTransport.Screenshot(ctx)
+}
+
+func (s *scrollTransport) ScreenshotCount() int { return s.screenshots }
 
 func (s *scrollTransport) SwipeCount() int {
 	n := 0
@@ -162,25 +176,21 @@ var scrollTestUsable = int((scrollTestRegion.Y2-scrollTestRegion.Y1)*float64(scr
 // expandScrollScript turns a script of logical swipe attempts into the exact
 // sequence of raw frames scrollCapture will pull from the transport.
 //
-// One frameScript entry is not one Screenshot() call: captureFrame alone
-// takes three (CurrentScreen's recognize, Capture's own re-verify, and the
-// frame it hands back as the next prev — see the package doc comment on
-// captureFrame), and the main loop takes a fourth to verify pre-swipe and a
-// fifth to measure post-swipe, so a single moved frame costs five raw reads
-// and a swallowed one costs two. Understaffing the transport at any of those
-// points would desync every offset measured afterward, so this function
-// walks scrollCapture's own control flow — measuring with the real
+// One frameScript entry is not one Screenshot() call: swipeOnce's rt.Swipe
+// verifies the pre-swipe screen (invariant #3, unconditional on every Swipe
+// call — not something scrollCapture controls or should bypass), and the
+// loop then takes a second screenshot to measure the post-swipe position.
+// That second screenshot is the one captureFrame now verifies and stores
+// directly — no third capture — so a moved frame costs exactly two raw reads
+// and a swallowed or overshot one also costs two (the decision not to store
+// is made from the same pair). Understaffing the transport at any point would
+// desync every offset measured afterward, so this function walks
+// scrollCapture's own control flow — measuring with the real
 // vision.ScrollOffset — rather than assuming a fixed shape.
 func expandScrollScript(script []frameScript) []image.Image {
 	pos := 0
 	cur := scrollFrame(pos)
-	var imgs []image.Image
-	pushCaptureFrame := func(img image.Image) {
-		// CurrentScreen, Capture's verifyScreen, and the trailing Screenshot:
-		// three reads of the same, unmoving frame.
-		imgs = append(imgs, img, img, img)
-	}
-	pushCaptureFrame(cur) // the frame-0 capture before the loop
+	imgs := []image.Image{cur} // the one screenshot behind the frame-0 capture
 
 	zeroes := 0
 	for seq := 1; seq < maxScrollFrames; seq++ {
@@ -192,7 +202,7 @@ func expandScrollScript(script []frameScript) []image.Image {
 		pos += script[i].shift
 		cur = scrollFrame(pos)
 		imgs = append(imgs, prev) // swipeOnce's pre-swipe verify
-		imgs = append(imgs, cur)  // the post-swipe measurement frame
+		imgs = append(imgs, cur)  // the post-swipe frame: measured, and — if kept — stored
 
 		offset, err := vision.ScrollOffset(prev, cur, scrollTestRegion)
 		if err != nil {
@@ -210,7 +220,6 @@ func expandScrollScript(script []frameScript) []image.Image {
 			return imgs // scrollCapture returns ErrScrollOvershot without capturing
 		}
 		zeroes = 0
-		pushCaptureFrame(cur)
 	}
 	return imgs
 }
@@ -222,10 +231,11 @@ func expandScrollScript(script []frameScript) []image.Image {
 func newScrollHarness(t *testing.T, script []frameScript) (*runtime.Ctx, *scrollTransport) {
 	t.Helper()
 	frames := expandScrollScript(script)
-	tr, err := transport.NewReplayTransportFromImages(frames...)
+	replay, err := transport.NewReplayTransportFromImages(frames...)
 	if err != nil {
 		t.Fatal(err)
 	}
+	tr := &scrollTransport{ReplayTransport: replay}
 
 	c, err := runtime.New(runtime.Options{
 		Transport:      tr,
@@ -242,7 +252,7 @@ func newScrollHarness(t *testing.T, script []frameScript) (*runtime.Ctx, *scroll
 	if err != nil {
 		t.Fatal(err)
 	}
-	return c, &scrollTransport{tr}
+	return c, tr
 }
 
 // The list bottom must be proven, not assumed. A swallowed swipe and a real
@@ -314,5 +324,51 @@ func TestScrollCaptureStopsAtMaxFrames(t *testing.T) {
 	}
 	if len(frames) > maxScrollFrames {
 		t.Errorf("got %d frames, want at most %d", len(frames), maxScrollFrames)
+	}
+}
+
+// The first implementation of captureFrame took three screenshots to verify
+// and store one frame; this pins the fix down to a hard number so a
+// regression back to that shape fails this test rather than only costing
+// time.
+//
+// This reuses TestScrollCaptureStopsAtMaxFrames' script (more entries than
+// the loop can ever consume) rather than a short, exact-length one: a script
+// that runs out mid-test hits ReplayTransport's hold-last-frame behaviour,
+// which replays the same image and therefore measures a genuine zero offset
+// — indistinguishable from the list settling at the bottom — and the run
+// would end on a zero streak instead of the clean, swipe-bounded stop this
+// test wants to isolate. Bounding by maxScrollFrames instead gives a fixed,
+// script-independent iteration count: one screenshot for the frame-0
+// capture, plus two per swipe — rt.Swipe's own unconditional pre-swipe
+// verification (invariant #3, not something this task touches or should
+// bypass) and the post-swipe frame that is both measured and, once
+// captureFrame accepts it, stored directly with no further capture.
+func TestScrollCaptureTakesOneScreenshotPerStoredFrame(t *testing.T) {
+	steps := maxScrollFrames - 1
+	script := make([]frameScript, 0, maxScrollFrames+10)
+	for i := 0; i < maxScrollFrames+10; i++ {
+		script = append(script, frameScript{shift: 40})
+	}
+	rt, tr := newScrollHarness(t, script)
+
+	frames, complete, err := scrollCapture(context.Background(), rt, ScrollSpec{
+		Screen: "vs_ranking_alliance",
+		Region: transport.Rect{X1: 0, Y1: 0.2, X2: 1, Y2: 0.8},
+		Pitch:  128,
+	})
+	if err != nil {
+		t.Fatalf("scrollCapture: %v", err)
+	}
+	if complete {
+		t.Error("stopping at the frame cap is not a zero streak; want complete = false")
+	}
+	if len(frames) != maxScrollFrames {
+		t.Fatalf("got %d stored frames, want %d (frame 0 plus %d swipes)", len(frames), maxScrollFrames, steps)
+	}
+
+	want := 1 + 2*steps
+	if got := tr.ScreenshotCount(); got != want {
+		t.Errorf("got %d Screenshot() calls, want exactly %d (1 initial + 2 per swipe: rt.Swipe's own pre-verify, then the measure-and-store frame)", got, want)
 	}
 }
