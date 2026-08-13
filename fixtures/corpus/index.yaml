@@ -1043,7 +1043,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 3afb1bdaefd1e054565ad02794ce6b4411b8a261e90abdb03c7ae80d00cbb725
-      label: _none
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-26T19:05:23.868982447Z
@@ -1099,7 +1099,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 40d218c789bd4c8ea5d62ee9f52cd7e88f77359b827272bccb5b170ee28e23db
-      label: _none
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
