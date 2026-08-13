@@ -173,6 +173,77 @@ func (p *Pool) CaptureFrames(ctx context.Context, captureID int64) ([]CaptureFra
 	return out, rows.Err()
 }
 
+// CaptureFrameInput is one frame to persist as part of RecordCapture, before
+// the capture row it belongs to exists — RecordCapture fills in that linkage
+// itself once the row is inserted. It mirrors CaptureFrame's writable columns
+// minus the capture linkage and the row's own id.
+type CaptureFrameInput struct {
+	ScreenshotID int64
+	Seq          int
+	OffsetPx     int
+	GroupKey     string
+}
+
+// RecordCapture persists a capture and every one of its frames in a single
+// transaction, so a killed process never leaves capture_frames rows pointing
+// at a capture that does not exist. CreateCapture/AddCaptureFrame/
+// FinishCapture above each hit the pool directly and were not meant to be
+// composed for this: calling them in sequence would commit the capture row
+// before its frames exist, which is exactly the partially-written state a
+// kill must not produce.
+//
+// Status is derived here rather than accepted as free text: only a capture
+// whose scroll proved the list bottom is 'complete'; anything else is
+// 'partial'. That distinction is load-bearing downstream — the weekly VS
+// ranking lists only members with a nonzero score, so ingest reads an absent
+// member as a zero score only on a complete capture. Marking a capture
+// complete when it did not prove the bottom would silently zero real scores.
+//
+// Frames are written with whatever Seq the caller supplies, unchanged.
+// Multi-pass routes like roster_capture already renumber Seq sequentially
+// across a whole run before calling this, so renumbering again here would
+// silently discard the caller's ordering. offset_px is likewise stored
+// exactly as given, never recomputed: a later change to vision.ScrollOffset
+// must not re-segment a historical capture into different rows.
+//
+// parsed_rows and error are left NULL: this call records what was captured,
+// not what OCR later makes of it, and that stage has not run yet.
+func (p *Pool) RecordCapture(ctx context.Context, accountID int64, route string, frames []CaptureFrameInput, complete bool) error {
+	status := "partial"
+	if complete {
+		status = "complete"
+	}
+
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("db: beginning capture %s for account %d: %w", route, accountID, err)
+	}
+	defer tx.Rollback(ctx)
+
+	var captureID int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO captures (account_id, route, status, ended_at)
+		VALUES ($1, $2, $3, now())
+		RETURNING id`,
+		accountID, route, status).Scan(&captureID); err != nil {
+		return fmt.Errorf("db: inserting capture %s for account %d: %w", route, accountID, err)
+	}
+
+	for _, f := range frames {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO capture_frames (capture_id, seq, screenshot_id, offset_px, group_key)
+			VALUES ($1, $2, $3, $4, $5)`,
+			captureID, f.Seq, f.ScreenshotID, f.OffsetPx, nullString(f.GroupKey)); err != nil {
+			return fmt.Errorf("db: inserting frame seq %d of %s capture for account %d: %w", f.Seq, route, accountID, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("db: committing %s capture for account %d: %w", route, accountID, err)
+	}
+	return nil
+}
+
 // ListMembers returns every active member of an alliance.
 func (p *Pool) ListMembers(ctx context.Context, allianceID int64) ([]Member, error) {
 	rows, err := p.Query(ctx, `

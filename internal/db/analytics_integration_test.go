@@ -124,6 +124,124 @@ func TestCaptureFramesCascadeWithTheirCapture(t *testing.T) {
 	}
 }
 
+// RecordCapture is the transactional writer Task 10 adds: the capture row
+// and every frame must commit together, with status derived from complete
+// rather than accepted as free text, and frames stored exactly as given —
+// not renumbered, not recomputed.
+func TestRecordCaptureCommitsCaptureAndFramesTogether(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	accountID := dbtest.SeedAccount(ctx, t, pool)
+	shot0 := dbtest.SeedScreenshot(ctx, t, pool, accountID)
+	shot1 := dbtest.SeedScreenshot(ctx, t, pool, accountID)
+
+	// Deliberately out of Seq order in the input slice: RecordCapture must
+	// not assume or impose per-call ordering, only store what it is given.
+	frames := []CaptureFrameInput{
+		{ScreenshotID: shot1, Seq: 1, OffsetPx: 512, GroupKey: "R3"},
+		{ScreenshotID: shot0, Seq: 0, OffsetPx: 0, GroupKey: "R3"},
+	}
+	if err := pool.RecordCapture(ctx, accountID, "roster", frames, true); err != nil {
+		t.Fatalf("RecordCapture: %v", err)
+	}
+
+	var status string
+	var captureID int64
+	if err := pool.QueryRow(ctx,
+		`SELECT id, status FROM captures WHERE account_id = $1 AND route = 'roster'`, accountID,
+	).Scan(&captureID, &status); err != nil {
+		t.Fatalf("reading capture row: %v", err)
+	}
+	if status != "complete" {
+		t.Fatalf("status = %q, want %q", status, "complete")
+	}
+
+	got, err := pool.CaptureFrames(ctx, captureID)
+	if err != nil {
+		t.Fatalf("CaptureFrames: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d frames, want 2: %+v", len(got), got)
+	}
+	// CaptureFrames orders by seq, so index 0 must be the seq-0 frame
+	// regardless of the order RecordCapture received them in.
+	if got[0].Seq != 0 || got[0].ScreenshotID != shot0 || got[0].OffsetPx != 0 || got[0].GroupKey != "R3" {
+		t.Fatalf("frame[0] = %+v, want seq 0 screenshot %d offset 0 group R3", got[0], shot0)
+	}
+	if got[1].Seq != 1 || got[1].ScreenshotID != shot1 || got[1].OffsetPx != 512 || got[1].GroupKey != "R3" {
+		t.Fatalf("frame[1] = %+v, want seq 1 screenshot %d offset 512 group R3", got[1], shot1)
+	}
+}
+
+// complete=false must map to 'partial', never to 'running' or anything else
+// the CHECK constraint would reject — and the distinction is load-bearing:
+// ingest reads an absent member as a zero score only on a complete capture.
+func TestRecordCaptureIncompleteMapsToPartial(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	accountID := dbtest.SeedAccount(ctx, t, pool)
+	shot := dbtest.SeedScreenshot(ctx, t, pool, accountID)
+
+	if err := pool.RecordCapture(ctx, accountID, "vs_ranking",
+		[]CaptureFrameInput{{ScreenshotID: shot, Seq: 0}}, false); err != nil {
+		t.Fatalf("RecordCapture: %v", err)
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM captures WHERE account_id = $1 AND route = 'vs_ranking'`, accountID,
+	).Scan(&status); err != nil {
+		t.Fatalf("reading capture row: %v", err)
+	}
+	if status != "partial" {
+		t.Fatalf("status = %q, want %q", status, "partial")
+	}
+}
+
+// A mid-write failure (here, a duplicate Seq colliding with capture_frames'
+// UNIQUE (capture_id, seq) constraint) must roll back the whole write. A
+// killed process — or, as here, a rejected write — must never leave the
+// capture row committed with some but not all of its frames, or committed
+// with none at all while still visible.
+func TestRecordCaptureMidWriteFailureLeavesNoOrphanRows(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	accountID := dbtest.SeedAccount(ctx, t, pool)
+	shot0 := dbtest.SeedScreenshot(ctx, t, pool, accountID)
+	shot1 := dbtest.SeedScreenshot(ctx, t, pool, accountID)
+
+	frames := []CaptureFrameInput{
+		{ScreenshotID: shot0, Seq: 0},
+		{ScreenshotID: shot1, Seq: 0}, // duplicate Seq: violates the UNIQUE constraint
+	}
+	if err := pool.RecordCapture(ctx, accountID, "roster", frames, true); err == nil {
+		t.Fatal("RecordCapture: want an error from the duplicate Seq, got nil")
+	}
+
+	var captureCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM captures WHERE account_id = $1`, accountID,
+	).Scan(&captureCount); err != nil {
+		t.Fatalf("counting captures: %v", err)
+	}
+	if captureCount != 0 {
+		t.Fatalf("captures for account %d = %d, want 0 — the failed write must not leave a capture row behind", accountID, captureCount)
+	}
+
+	var frameCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM capture_frames cf JOIN captures c ON c.id = cf.capture_id WHERE c.account_id = $1`, accountID,
+	).Scan(&frameCount); err != nil {
+		t.Fatalf("counting frames: %v", err)
+	}
+	if frameCount != 0 {
+		t.Fatalf("capture_frames for account %d = %d, want 0", accountID, frameCount)
+	}
+}
+
 // AddAlias must store exactly the form roster.Normalize would compute, not
 // some independent lowercase-only approximation: if the two drift apart,
 // alias lookup at match time silently stops finding rows a human already
