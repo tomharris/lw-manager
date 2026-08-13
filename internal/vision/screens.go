@@ -37,10 +37,12 @@ const (
 // the gate, and the gate simply stops checking the screen you just added.
 //
 // A screen belongs here when the recognizer must name it, which is not the
-// same as the graph navigating to it. alliance_members and vs_ranking have no
-// DefaultGraph edges and are still listed: they are labeled in the corpus for
-// M4, and a labeled screen with no identifying anchor is scored wrong on every
-// run, forever. Recognition and navigation are separate concerns.
+// same as the graph navigating to it. stamina_prompt and alliance_tech_donate
+// appear in DefaultGraph with out-edges only — entered by tapping something
+// whose effect the graph cannot predict, never routed to — and are listed
+// here regardless: a labeled screen with no identifying anchor is scored
+// wrong on every run, forever. Recognition and navigation are separate
+// concerns.
 //
 // Two of these are trees rather than single screens, and both are modelled the
 // same way: one screen per state a task must act *from*. Invariant #3 requires
