@@ -285,6 +285,48 @@ just the six `DefaultGraph()` navigates. `alliance_members` and `vs_ranking`
 are in the corpus for M4; without anchors they would be wrong on every
 scoring run forever. Recognition and navigation are separate concerns.
 
+### The screen vocabulary changed twice, for two different reasons
+
+Both collapses are in git history, but the reasoning is worth keeping
+somewhere durable, because the two failures don't look alike.
+
+`vs_ranking_alliance` merged into `vs_ranking_weekly` for the reason directly
+above: the two were the same screen, differing only by whether the "Your
+Alliance" checkbox was ticked, and NCC has no way to score the *absence* of
+something. Filter state moved out of screen identity entirely and into a
+`Ctx.Sees` anchor query.
+
+`vs` merged into `alliance_duel` for an unrelated reason. `vs` was a
+provisional label taken from the *button* that opens the screen — base's VS
+button — rather than from anything the screen itself says, and it had been
+wrong since 2026-07-27. It went undetected for three weeks because **a single
+mislabelled screen is perfectly self-consistent**: every `vs` frame matched
+the `vs` anchors, because the anchors were cropped from that same screen, so
+nothing in the corpus ever contradicted it. It only became visible once a
+second label — `alliance_duel`, taken from the "ALLIANCE DUEL" header the
+screen actually carries — was added and started competing for the same
+pixels. A corpus with one label per screen has no way to catch a mislabel,
+because a wrong label with nothing to disagree with looks exactly like a
+right one.
+
+### Action anchors were never in the gate
+
+The M1 gate and the separation report above cover **identifying anchors
+only** — `recognizer.go` skips every anchor whose `IdentifiesScreen` is
+false, so no observation was ever produced for a tap target: 20 anchors
+measured against the gate, 38 invisible to it. The gate proved the bot knew
+where it was standing and nothing proved it could hit what it aimed at.
+
+`agent score --actions [--screen X]` now measures them, reusing
+`Separations` so the same worst-in/best-out/gap reading applies. Its known
+limitation: it reports an anchor's **worst** in-screen score and never its
+best, so for a *state* anchor — one legitimately absent from some frames,
+like `chevron_collapsed` on a fully-expanded roster — a single minimum
+cannot express the bimodality that would distinguish "correctly absent" from
+"too weak to match when it is present." A RECROP verdict on an anchor like
+that is not conclusive either way; it takes the per-frame view, not the
+aggregate, to settle.
+
 ## Layout
 
 ```
@@ -298,6 +340,8 @@ internal/capture    screenshot -> blob -> db
 internal/runtime    task runtime: Ctx primitives, screen graph, panic route, kill switch
 internal/tasks      Tier 1 task skeletons; self-registering catalogue
 internal/scheduler  cadence-driven planner + loop; decides what runs when
+internal/ingest     capture frames -> facts; OCR, segmentation, reconciliation
+internal/roster     name normalization and fuzzy matching to known members
 fixtures/       recorded screenshots for device-free tests
 ```
 
@@ -310,6 +354,33 @@ fixtures/       recorded screenshots for device-free tests
 - Identical screenshot bytes deduplicate to **one blob but still write a
   separate `screenshots` row**. Each capture is a distinct observation;
   collapsing rows would silently under-report participation.
+- A FLAG_SECURE surface returns a **zero-byte capture**, not a black frame.
+  On the PIN entry screen `adb exec-out screencap -p` returns 0 bytes;
+  backing out returns a full frame again. This fails at PNG decode rather
+  than at recognition, which is a different error path from a sleeping
+  display and needs its own handling rather than falling through to
+  "no screen recognized."
+- A black frame is not proof of a sleeping display. A frame captured
+  mid-transition is also solid black while `mWakefulness=Awake`,
+  `mScreenState=ON` and `mStayOn=true` all report healthy. This weakens the
+  blanket reading, not the M2 Phase B diagnosis specifically: Phase B's black
+  frame deduplicated onto an object first written days earlier and coincided
+  with a device the panic route could show was unresponsive to anything short
+  of `Wake`, which is evidence a mid-transition frame doesn't have. The
+  conclusion was correct for that evidence; it just no longer generalizes to
+  "black frame implies asleep" on its own.
+- **Rank groups have no fixed identity.** Group names are user-editable, the
+  group set itself varies — there was no R4 group three weeks before there
+  was one — and the rank badges differ from one another by a single digit,
+  so nothing about a group is safe to key on. `roster_capture` therefore
+  never asks which group it is looking at: it opens whichever
+  `chevron_collapsed` anchor `Match` finds next and stops once none remain,
+  and rank attribution happens at ingest, from OCR of each frame's own
+  sticky header, rather than a label the task would otherwise have to
+  assert. This is the clearest case in the project of something a single
+  capture session cannot reveal — one session shows a self-consistent world,
+  and only two sessions weeks apart show what actually moves, which is the
+  entire reason this project exists.
 
 ## Operational reality
 
@@ -319,7 +390,7 @@ Run alts, not a main. Humanize timing. Keep the kill switch working.
 ### The handset must not sleep, and must not have a keyguard
 
 ```bash
-adb shell svc power stayon true              # the load-bearing one
+adb shell svc power stayon true              # necessary, not sufficient — see below
 adb shell dumpsys power | grep -o 'mStayOn=[a-z]*'   # verify: want true
 ```
 
@@ -334,9 +405,22 @@ cannot help.
 `Transport.Wake` is the panic route's rung zero and does recover a dozing
 display — confirmed on the handset: `panic route: recovered by waking the
 display screen=base`, the first successful recovery this route has ever
-recorded. **`stayon` still matters**, because the display re-sleeps during the
-90s restart wait, and because a device that never sleeps never reaches the
-keyguard below.
+recorded.
+
+**`stayon` is necessary but not sufficient on this handset, and the mechanism
+of the gap is unknown.** M4 found the phone dozing behind a keyguard with
+`mStayOn=true`, `stay_on_while_plugged_in=15` on all four sources, USB
+powered, battery status FULL at 100%, thirteen days of uptime with no reboot,
+and `RUNNING_UNLOCKED` — a re-lock, not a lock left over from a boot `stayon`
+never reached. It then dozed twice more over the course of the milestone,
+each time with `mStayOn=true` still reporting healthy. Per the discipline the
+radar fix established, the response to that cannot wait on understanding why:
+`Wake` turns the display on and lands directly on the keyguard, where a
+capture doesn't come back black, it comes back **zero bytes** (see Gotchas) —
+so **clearing the keyguard credential is mandatory, not advisory**. `stayon`
+is not a substitute for that on this device, only a reduction in how often the
+gap gets exercised, since the display still re-sleeps during the 90s restart
+wait.
 
 **A keyguard defeats all of it, and adb cannot clear a secured one.**
 `locksettings set-disabled true` reports success and changes nothing when a PIN
@@ -350,7 +434,10 @@ adb shell input text <pin>
 adb shell input keyevent KEYCODE_ENTER
 ```
 
-Which an unattended run cannot do. So either clear the PIN on the automation
-handset (`locksettings clear --old <pin>`) or rely on `stayon` keeping it from
-ever locking. Check `mStayOn` before starting any unattended run — discovering
-this four hours in costs the run.
+Which an unattended run cannot do. So the PIN is cleared on the automation
+handset (`locksettings clear --old <pin>`) before any unattended run — not
+offered as a fallback to `stayon`, since `stayon` reporting `true` has already
+been observed next to a locked screen. Check `mStayOn` anyway before starting
+an unattended run: a dozing-but-unlocked display is still a real failure mode
+and `Wake` still recovers it — discovering either one four hours in costs the
+run.

@@ -59,7 +59,8 @@ control ingest
   └─ reconcile → captures.status = complete | partial
 
 agent studio → /review
-  └─ resolve → writes member_aliases, then the fact
+  └─ resolve → writes member_aliases only; the fact arrives on the next
+     `control ingest` pass over the same capture, matched via that alias
 ```
 
 ### Why capture and ingest are separate processes
@@ -296,7 +297,25 @@ leaderboard (invariant #5).
 which is the whole reason it is a served UI rather than a CLI: the box is
 headless, and a review without the pixels is not a review. Studio already
 serves `GET /frame/{hash}` and already solved browser-over-SSH for corpus
-labeling. Resolving writes the alias, then the fact.
+labeling.
+
+Resolving cannot write the fact directly, only the alias. By the time a name
+fails to resolve, ingest has already read that row's numeric fields, scored
+them, and discarded them — matching happens before a row has anywhere to put
+a value, not after. So resolving a review row writes a `member_aliases` row
+and nothing else; the fact itself arrives the next time `control ingest` runs
+over the same capture, which now matches that row via the alias just written
+and stamps it with the capture's own `period_key` and `observed_at`, the same
+as any row that resolved the first time.
+
+The alternative — storing the parsed value on the `review_queue` row so
+resolution could write the fact immediately — was rejected. It would leave a
+second copy of the number living outside `participation_facts`, with the
+eventual fact built from that copy rather than re-derived from the pixels on
+re-ingest. That is weaker provenance than every other fact in the system
+carries, and provenance is the property invariant #4 exists to protect: every
+number traces back to a screenshot, not to a value cached the last time
+someone looked at one.
 
 This grows studio a database dependency it does not currently have. Accepted:
 the alternative is a second server that duplicates its auth, templates and
