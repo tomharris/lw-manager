@@ -22,5 +22,6 @@ func TestMain(m *testing.M) {
 	swipeSettleMin = time.Millisecond
 	swipeSettleMax = 2 * time.Millisecond
 	chevronSettle = time.Millisecond
+	rankingButtonSettle = time.Millisecond
 	os.Exit(m.Run())
 }
