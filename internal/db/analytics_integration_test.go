@@ -475,6 +475,9 @@ func TestCaptureReadsBackOneRun(t *testing.T) {
 		t.Fatalf("Capture = %+v, want id=%d account=%d route=roster status=complete expected=96 parsed=94",
 			got, id, accountID)
 	}
+	if got.StartedAt.IsZero() {
+		t.Error("Capture.StartedAt is zero, want the captures.started_at default")
+	}
 }
 
 func TestCaptureUnknownIDReturnsErrNotFound(t *testing.T) {

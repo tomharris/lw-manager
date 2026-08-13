@@ -33,6 +33,7 @@ func usage() {
 commands:
   migrate   apply database migrations
   serve     run the control-plane HTTP server
+  ingest    run the analytics ingest pass for one capture
   pause     set the global kill switch
   resume    clear the global kill switch
 `)
@@ -62,6 +63,8 @@ func run() error {
 		return nil
 	case "serve":
 		return runServe(ctx, cfg, os.Args[2:])
+	case "ingest":
+		return runIngestCmd(ctx, cfg, os.Args[2:])
 	case "pause":
 		return runPause(ctx, cfg, os.Args[2:])
 	case "resume":

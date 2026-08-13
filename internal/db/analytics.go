@@ -37,11 +37,15 @@ type Member struct {
 }
 
 // Capture is one run of a collection route (e.g. vs_ranking, alliance
-// roster) against one account.
+// roster) against one account. StartedAt is the collection timestamp ingest
+// derives a replay-stable default period key from — never wall-clock now,
+// so re-running ingest against an old capture months later reproduces the
+// same period key it would have produced the day it was taken.
 type Capture struct {
 	ID           int64
 	AccountID    int64
 	Route        string
+	StartedAt    time.Time
 	Status       string
 	ExpectedRows int
 	ParsedRows   int
@@ -130,9 +134,9 @@ func (p *Pool) CurrentAllianceID(ctx context.Context) (int64, error) {
 func (p *Pool) Capture(ctx context.Context, id int64) (Capture, error) {
 	var c Capture
 	err := p.QueryRow(ctx, `
-		SELECT id, account_id, route, status, coalesce(expected_rows, 0), coalesce(parsed_rows, 0), coalesce(error, '')
+		SELECT id, account_id, route, started_at, status, coalesce(expected_rows, 0), coalesce(parsed_rows, 0), coalesce(error, '')
 		FROM captures WHERE id = $1`, id).Scan(
-		&c.ID, &c.AccountID, &c.Route, &c.Status, &c.ExpectedRows, &c.ParsedRows, &c.Error)
+		&c.ID, &c.AccountID, &c.Route, &c.StartedAt, &c.Status, &c.ExpectedRows, &c.ParsedRows, &c.Error)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Capture{}, fmt.Errorf("db: capture %d: %w", id, ErrNotFound)
 	}
