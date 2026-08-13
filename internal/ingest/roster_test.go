@@ -207,6 +207,11 @@ type rosterFixture struct {
 	// unparseablePower appends one row whose power field is not
 	// shape-valid, so ParsePower returns ErrUnparseable.
 	unparseablePower bool
+	// lowConfidencePower appends one row whose power field parses fine but
+	// whose OCR confidence (0.5) blends below factConfidenceGate even
+	// against a fresh (matchNorm 1.0) member -- for the write-time
+	// confidence gate, distinct from unparseablePower's shape failure.
+	lowConfidencePower bool
 }
 
 type rowScript struct {
@@ -257,6 +262,12 @@ func newRosterIngestHarness(t *testing.T, fx rosterFixture) *rosterIngestHarness
 		rows = append(rows, rowScript{
 			name: "GenericName", power: "???", level: "Lv.30", lastActive: "Online",
 			nameConf: 0.9, powerConf: 0.3, levelConf: 0.9, lastConf: 0.9,
+		})
+	}
+	if fx.lowConfidencePower {
+		rows = append(rows, rowScript{
+			name: "LowConfName", power: "Power: 200.0M", level: "Lv.30", lastActive: "Online",
+			nameConf: 0.9, powerConf: 0.5, levelConf: 0.9, lastConf: 0.9,
 		})
 	}
 	if fx.parsedRows > 0 && len(rows) == 0 {
@@ -380,10 +391,12 @@ func TestIngestRosterWritesFactsWithScreenshotProvenance(t *testing.T) {
 	}
 }
 
-// A field that does not have the shape its parser expects sends the whole
-// row to review rather than guessing a number or silently dropping it — and
-// it must not create a member off the parts of the row that did read fine.
-func TestIngestRosterQueuesAnUnparseableFieldRatherThanGuessing(t *testing.T) {
+// Finding 1 (M4 task-11 follow-up): an unparseable field must not cost the
+// whole row. The row's name and its other two numeric fields all read fine,
+// so the member is still resolved and two of its three facts still land —
+// only the field that failed to parse is queued for review, carrying that
+// field's own OCR text, not the row's.
+func TestIngestRosterWritesTheFieldsThatParsedWhenOneDoesNot(t *testing.T) {
 	h := newRosterIngestHarness(t, rosterFixture{
 		group: "R1", groupTotal: 5, unparseablePower: true,
 	})
@@ -392,11 +405,92 @@ func TestIngestRosterQueuesAnUnparseableFieldRatherThanGuessing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IngestRoster: %v", err)
 	}
-	if res.Queued == 0 {
-		t.Error("an unparseable field must reach review, never a leaderboard")
+	if res.Created != 1 {
+		t.Errorf("created %d members, want 1 — the name and the two good fields must still resolve the row", res.Created)
 	}
-	if res.Created != 0 {
-		t.Errorf("created %d members from a row with an unparseable field, want 0", res.Created)
+	if res.Queued != 1 {
+		t.Errorf("queued %d for review, want 1 (only the unparseable field)", res.Queued)
+	}
+	if len(h.store.Facts) != 2 {
+		t.Fatalf("wrote %d facts, want 2 (level and last_active_hours; power failed to parse)", len(h.store.Facts))
+	}
+	for _, f := range h.store.Facts {
+		if f.Metric == "power" {
+			t.Errorf("a power fact was written despite an unparseable power field: %+v", f)
+		}
+	}
+	if len(h.store.Reviews) != 1 {
+		t.Fatalf("queued %d review rows, want 1", len(h.store.Reviews))
+	}
+	if got := h.store.Reviews[0].RawText; got != "???" {
+		t.Errorf("review raw_text = %q, want the power field's own OCR text %q, not the row's name", got, "???")
+	}
+}
+
+// The second consequence of field-level review: a row that produced some
+// facts must not be counted as a failed row for reconciliation. Group tally
+// counts rows segmented against the header's stated total, independent of
+// how many of a row's fields resolved to facts — reconciliation exists to
+// catch rows that were never photographed at all, and a per-field OCR
+// failure further downstream must not be confused with that (see
+// GroupTally's own doc comment).
+func TestIngestRosterCountsAPartiallyParsedRowTowardReconciliation(t *testing.T) {
+	h := newRosterIngestHarness(t, rosterFixture{
+		group: "R1", groupTotal: 1, unparseablePower: true,
+	})
+
+	res, err := h.IngestRoster(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Status != "complete" {
+		t.Errorf("status = %q, want complete — the row was parsed, just incompletely", res.Status)
+	}
+	if got := res.PerGroup["R1"]; got.Parsed != 1 || got.Expected != 1 {
+		t.Errorf("R1 tally = %+v, want {1 1}", got)
+	}
+}
+
+// Finding 2 (M4 task-11 follow-up): CLAUDE.md invariant #5 says a
+// low-confidence read goes to the review queue, never to a leaderboard.
+// Facts are what a leaderboard reads, so a blended confidence below 0.80
+// must not produce a fact at all. The negative is asserted directly — a
+// fact quietly appearing alongside the review row is the failure mode a
+// check of the review row alone would not catch.
+func TestIngestRosterNeverWritesAFactBelowTheConfidenceGate(t *testing.T) {
+	h := newRosterIngestHarness(t, rosterFixture{
+		group: "R1", groupTotal: 5, lowConfidencePower: true,
+	})
+
+	res, err := h.IngestRoster(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	for _, f := range h.store.Facts {
+		if f.Metric == "power" {
+			t.Fatalf("a power fact was written at a sub-gate confidence: %+v", f)
+		}
+	}
+	if len(h.store.Facts) != 2 {
+		t.Errorf("wrote %d facts, want 2 (level and last_active_hours; power was below the confidence gate)", len(h.store.Facts))
+	}
+	var found bool
+	for _, r := range h.store.Reviews {
+		if r.Reason == "low_confidence_power" {
+			found = true
+			if r.Confidence <= 0 || r.Confidence >= factConfidenceGate {
+				t.Errorf("review confidence = %v, want in (0, %v)", r.Confidence, factConfidenceGate)
+			}
+			if r.RawText != "Power: 200.0M" {
+				t.Errorf("review raw_text = %q, want the power field's own OCR text", r.RawText)
+			}
+		}
+	}
+	if !found {
+		t.Error("no low_confidence_power review row queued")
+	}
+	if res.Queued == 0 {
+		t.Error("a sub-gate confidence must reach review, never a leaderboard")
 	}
 }
 

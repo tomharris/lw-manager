@@ -74,8 +74,12 @@ type Fact struct {
 	Confidence   float64
 }
 
-// ReviewItem is one row an OCR read could not confidently resolve into a
-// member, queued for a human to confirm rather than guessed at.
+// ReviewItem is one row, header, or single field an OCR read could not
+// confidently resolve (or write as a fact), queued for a human to confirm
+// rather than guessed at. Confidence is the blended score that failed to
+// clear the write-time gate — zero when the reason carries no such score
+// (an unparseable field, an ambiguous name match, a full group), which is
+// stored as SQL NULL rather than a claimed zero-confidence read.
 type ReviewItem struct {
 	ID           int64
 	CaptureID    int64
@@ -84,6 +88,7 @@ type ReviewItem struct {
 	RawText      string
 	Candidates   any
 	Reason       string
+	Confidence   float64
 }
 
 // UpsertAlliance creates or refreshes the observed alliance. Idempotent on
@@ -446,9 +451,9 @@ func (p *Pool) QueueReview(ctx context.Context, r ReviewItem) (int64, error) {
 	var id int64
 	err = p.QueryRow(ctx, `
 		INSERT INTO review_queue
-		  (capture_id, screenshot_id, row_y0, row_y1, raw_text, candidates_json, reason)
-		VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-		nullInt64(r.CaptureID), r.ScreenshotID, r.RowY0, r.RowY1, r.RawText, blob, r.Reason).Scan(&id)
+		  (capture_id, screenshot_id, row_y0, row_y1, raw_text, candidates_json, reason, confidence)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+		nullInt64(r.CaptureID), r.ScreenshotID, r.RowY0, r.RowY1, r.RawText, blob, r.Reason, nullFloat64(r.Confidence)).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("db: queueing review for screenshot %d: %w", r.ScreenshotID, err)
 	}
@@ -471,4 +476,14 @@ func nullInt64(id int64) any {
 		return nil
 	}
 	return id
+}
+
+// nullFloat64 converts a zero confidence to SQL NULL: 0 means "no blended
+// score applies to this review reason" (an unparseable field, an ambiguous
+// name, a full group), never a claimed zero-confidence read.
+func nullFloat64(f float64) any {
+	if f == 0 {
+		return nil
+	}
+	return f
 }

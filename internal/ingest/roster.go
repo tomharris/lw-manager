@@ -200,7 +200,7 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64) (RosterRes
 		if herr != nil {
 			hy0 := int(groupHeaderRegion.Y1 * float64(img.Bounds().Dy()))
 			hy1 := int(groupHeaderRegion.Y2 * float64(img.Bounds().Dy()))
-			if err := run.queueReview(ctx, i, frame.ScreenshotID, RowBand{Y0: hy0, Y1: hy1}, headerRes.Text, nil, "unparseable_group_header"); err != nil {
+			if err := run.queueReview(ctx, i, frame.ScreenshotID, RowBand{Y0: hy0, Y1: hy1}, headerRes.Text, nil, "unparseable_group_header", 0); err != nil {
 				return RosterResult{}, err
 			}
 			continue
@@ -269,10 +269,18 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64) (RosterRes
 // processRow crops and reads one row's four fields, then routes it to a
 // match, a creation, or the review queue.
 //
-// All four fields are read and the three numeric ones parsed before any
-// matching happens: an unparseable field sends the whole row to review, not
-// just that field, because a row this pipeline cannot fully read is a row it
-// must not partially guess (design doc's ordering, not a per-field split).
+// Name resolution and numeric-field parsing are independent: a row's three
+// numeric fields are parsed but not gated on one another, and matching the
+// name proceeds regardless of what happened to power/level/last-active.
+// Facts are per-metric (the M4 amendment on this task), so an unparseable
+// power field must not cost a row its perfectly good level and
+// last_active_hours — only that one field is queued for review, and
+// writeFacts is what makes that split per-field rather than per-row.
+//
+// The one thing numeric parsing cannot survive is a name that fails to
+// resolve to a member at all: without a memberID no fact has anywhere to
+// attach, so an ambiguous or unmatched-and-group-full name still sends the
+// whole row to review, same as before.
 func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Image, band RowBand, screenshotID int64, groupKey string) error {
 	nameRes, err := i.readField(ctx, img, fieldRect(band, img, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1), nameSpec)
 	if err != nil {
@@ -291,24 +299,15 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 		return err
 	}
 
-	row := RosterRow{
-		Name: nameRes.Text, NameConf: nameRes.Confidence,
-		ScreenshotID: screenshotID, Band: band, GroupKey: groupKey,
-	}
-
 	power, perr := ParsePower(powerRes.Text)
 	level, lerr := ParseLevel(levelRes.Text)
 	lastActive, aerr := ParseLastActiveHours(lastRes.Text)
 
-	switch {
-	case perr != nil:
-		return run.queueReview(ctx, i, screenshotID, band, powerRes.Text, nil, "unparseable_power")
-	case lerr != nil:
-		return run.queueReview(ctx, i, screenshotID, band, levelRes.Text, nil, "unparseable_level")
-	case aerr != nil:
-		return run.queueReview(ctx, i, screenshotID, band, lastRes.Text, nil, "unparseable_last_active")
+	row := RosterRow{
+		Name: nameRes.Text, NameConf: nameRes.Confidence,
+		Power: power, Level: level, LastActiveHours: lastActive,
+		ScreenshotID: screenshotID, Band: band, GroupKey: groupKey,
 	}
-	row.Power, row.Level, row.LastActiveHours = power, level, lastActive
 
 	candidates := roster.Rank(row.Name, run.members)
 	switch {
@@ -316,10 +315,11 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 		gt := run.groups[groupKey]
 		gt.matchedOrCreated++
 		run.res.Matched++
-		return run.writeFacts(ctx, i, row, candidates[0].MemberID, candidates[0].Score, powerRes.Confidence, levelRes.Confidence, lastRes.Confidence)
+		matchNorm := float64(candidates[0].Score) / 100.0
+		return run.writeFacts(ctx, i, screenshotID, band, candidates[0].MemberID, matchNorm, fieldReads(row, powerRes, levelRes, lastRes, perr, lerr, aerr))
 
 	case len(candidates) > 0 && candidates[0].Score >= roster.ReviewFloor:
-		return run.queueReview(ctx, i, screenshotID, band, row.Name, candidates, "ambiguous_name_match")
+		return run.queueReview(ctx, i, screenshotID, band, row.Name, candidates, "ambiguous_name_match", 0)
 
 	default:
 		gt := run.groups[groupKey]
@@ -338,44 +338,81 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 			run.res.Created++
 			// A newly created member has no candidate to score against, so
 			// its match component is 1.0: the row is definitionally this
-			// member. Only the field's own OCR confidence gates the fact
+			// member. Only each field's own OCR confidence gates its fact
 			// from here.
-			return run.writeFacts(ctx, i, row, memberID, 100, powerRes.Confidence, levelRes.Confidence, lastRes.Confidence)
+			return run.writeFacts(ctx, i, screenshotID, band, memberID, 1.0, fieldReads(row, powerRes, levelRes, lastRes, perr, lerr, aerr))
 		}
 		// The group's own header says it is already full. A 12th "new
 		// member" against an 11-member group is an OCR artifact, not a
 		// person — the recon's structural guard, not a tuned threshold.
-		return run.queueReview(ctx, i, screenshotID, band, row.Name, candidates, "no_confident_match_group_full")
+		return run.queueReview(ctx, i, screenshotID, band, row.Name, candidates, "no_confident_match_group_full", 0)
 	}
 }
 
-// writeFacts inserts one fact per numeric field, each confidence the minimum
-// of the name match (normalized to [0,1]) and that field's own OCR
-// confidence — the same member matched confidently can still carry a
-// low-confidence power reading, and the two must not be conflated (design
-// doc §4, "Confidence": "a power read at 0.6 is not a 0.95 fact"). The 0.80
-// gate that number is judged against downstream is not enforced here as a
-// write-time branch: a row only reaches this method after clearing the
-// name-match and field-parse gates in processRow, and at that point its true
-// blended confidence is stored, whatever it is, for a later query to filter
-// on — "not a 0.95 fact" is not the same claim as "not written at all".
-func (run *rosterRun) writeFacts(ctx context.Context, i *Ingester, row RosterRow, memberID int64, matchScore int, powerConf, levelConf, lastConf float64) error {
-	matchNorm := float64(matchScore) / 100.0
-	facts := [3]struct {
-		metric string
-		value  float64
-		conf   float64
-	}{
-		{"power", float64(row.Power), min(matchNorm, powerConf)},
-		{"level", float64(row.Level), min(matchNorm, levelConf)},
-		{"last_active_hours", row.LastActiveHours, min(matchNorm, lastConf)},
+// fieldRead is one numeric field's OCR read, parse outcome, and the label
+// used to name it in a review row's reason ("power", "level",
+// "last_active") — kept distinct from Fact.Metric ("last_active_hours")
+// so a reviewer sees the same word the field crop is named after.
+type fieldRead struct {
+	metric, label string
+	value, conf   float64
+	raw           string
+	err           error
+}
+
+// fieldReads assembles the three numeric fields' reads for writeFacts, in a
+// fixed order so a partially-failed row always reports power, then level,
+// then last-active, regardless of which one failed.
+func fieldReads(row RosterRow, powerRes, levelRes, lastRes ocr.Result, perr, lerr, aerr error) [3]fieldRead {
+	return [3]fieldRead{
+		{metric: "power", label: "power", value: float64(row.Power), conf: powerRes.Confidence, raw: powerRes.Text, err: perr},
+		{metric: "level", label: "level", value: float64(row.Level), conf: levelRes.Confidence, raw: levelRes.Text, err: lerr},
+		{metric: "last_active_hours", label: "last_active", value: row.LastActiveHours, conf: lastRes.Confidence, raw: lastRes.Text, err: aerr},
 	}
-	for _, f := range facts {
+}
+
+// factConfidenceGate is the floor CLAUDE.md invariant #5 sets: "low-confidence
+// reads go to the review queue, never to a leaderboard." Facts are exactly
+// what a leaderboard reads, so the gate is enforced here, at write time, not
+// as a filter a later query is trusted to remember — the first query that
+// forgets would otherwise put an unverifiable number in front of a real
+// alliance.
+const factConfidenceGate = 0.80
+
+// writeFacts resolves each of a row's three numeric fields independently:
+// one that failed to parse, or one whose own OCR text a matched member's row
+// carries, is queued for review rather than dropped — but that verdict is
+// per field, not per row, so a garbled power reading does not cost the row
+// its perfectly good level and last_active_hours.
+//
+// A field's confidence is the minimum of the name match (normalized to
+// [0,1]) and that field's own OCR confidence — the same member matched
+// confidently can still carry a low-confidence power reading, and the two
+// must not be conflated (design doc §4, "Confidence": "a power read at 0.6
+// is not a 0.95 fact"). Below factConfidenceGate that confidence is not "a
+// 0.95 fact" — CLAUDE.md's invariant #5 makes it not a fact at all, so the
+// field is queued for review instead, carrying its own blended confidence so
+// a human can see how bad the read was.
+func (run *rosterRun) writeFacts(ctx context.Context, i *Ingester, screenshotID int64, band RowBand, memberID int64, matchNorm float64, fields [3]fieldRead) error {
+	for _, f := range fields {
+		if f.err != nil {
+			if err := run.queueReview(ctx, i, screenshotID, band, f.raw, nil, "unparseable_"+f.label, 0); err != nil {
+				return err
+			}
+			continue
+		}
+		conf := min(matchNorm, f.conf)
+		if conf < factConfidenceGate {
+			if err := run.queueReview(ctx, i, screenshotID, band, f.raw, nil, "low_confidence_"+f.label, conf); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, err := i.store.InsertFact(ctx, db.Fact{
 			MemberID: memberID, Metric: f.metric, Value: f.value,
 			ObservedAt: run.observedAt, PeriodKey: run.periodKey,
-			Source: "ocr:alliance_members", ScreenshotID: row.ScreenshotID,
-			Confidence: f.conf,
+			Source: "ocr:alliance_members", ScreenshotID: screenshotID,
+			Confidence: conf,
 		}); err != nil {
 			return fmt.Errorf("ingest: writing %s fact for member %d: %w", f.metric, memberID, err)
 		}
@@ -383,14 +420,17 @@ func (run *rosterRun) writeFacts(ctx context.Context, i *Ingester, row RosterRow
 	return nil
 }
 
-// queueReview records a row (or a whole-frame header) that could not be
-// confidently resolved, and counts it. Never called for a row that was
-// matched or created.
-func (run *rosterRun) queueReview(ctx context.Context, i *Ingester, screenshotID int64, band RowBand, rawText string, candidates []roster.Candidate, reason string) error {
+// queueReview records a row, a whole-frame header, or a single field that
+// could not be confidently resolved (or cleared to write), and counts it.
+// confidence is 0 when the reason carries no meaningful blended score (an
+// unparseable field, an ambiguous name, a full group) — QueueReview stores
+// that as SQL NULL, not as a claimed zero-confidence read.
+func (run *rosterRun) queueReview(ctx context.Context, i *Ingester, screenshotID int64, band RowBand, rawText string, candidates []roster.Candidate, reason string, confidence float64) error {
 	if _, err := i.store.QueueReview(ctx, db.ReviewItem{
 		CaptureID: run.captureID, ScreenshotID: screenshotID,
 		RowY0: band.Y0, RowY1: band.Y1,
 		RawText: rawText, Candidates: candidates, Reason: reason,
+		Confidence: confidence,
 	}); err != nil {
 		return fmt.Errorf("ingest: queueing review (%s): %w", reason, err)
 	}
