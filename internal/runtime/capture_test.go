@@ -136,3 +136,73 @@ func TestStoreFrameWithoutCapturerErrors(t *testing.T) {
 		t.Fatal("StoreFrame with no capturer configured must error")
 	}
 }
+
+type recordedRun struct {
+	accountID int64
+	route     string
+	frames    []runtime.CaptureFrameRef
+	complete  bool
+}
+
+type fakeCaptureRecorder struct {
+	calls []recordedRun
+	err   error
+}
+
+func (f *fakeCaptureRecorder) RecordCapture(ctx context.Context, accountID int64, route string, frames []runtime.CaptureFrameRef, complete bool) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.calls = append(f.calls, recordedRun{accountID: accountID, route: route, frames: frames, complete: complete})
+	return nil
+}
+
+func TestRecordCaptureDelegatesToTheConfiguredRecorder(t *testing.T) {
+	// newCtx (used elsewhere in this file) wires runtimetest.Options with no
+	// CaptureRecorder; RecordCapture needs one, so build against Options
+	// directly rather than through that helper.
+	fr := &fakeCaptureRecorder{}
+	tr, _ := transport.NewReplayTransportFromImages(runtimetest.Frame("base"))
+	opts := runtimetest.Options(tr, &runtimetest.FakeKill{})
+	opts.CaptureRecorder = fr
+	c, err := runtime.New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	frames := []runtime.CaptureFrameRef{{ScreenshotID: 1, Seq: 0, OffsetPx: 12, GroupKey: ""}}
+	if err := c.RecordCapture(context.Background(), "roster", frames, true); err != nil {
+		t.Fatalf("RecordCapture: %v", err)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("got %d RecordCapture calls, want 1", len(fr.calls))
+	}
+	got := fr.calls[0]
+	if got.accountID != 1 || got.route != "roster" || !got.complete || len(got.frames) != 1 {
+		t.Fatalf("RecordCapture call = %+v", got)
+	}
+}
+
+func TestRecordCaptureChecksKillSwitchFirst(t *testing.T) {
+	ks := &runtimetest.FakeKill{}
+	ks.Set(runtime.ErrPaused)
+	tr, _ := transport.NewReplayTransportFromImages(runtimetest.Frame("base"))
+	fr := &fakeCaptureRecorder{}
+	opts := runtimetest.Options(tr, ks)
+	opts.CaptureRecorder = fr
+	c, _ := runtime.New(opts)
+
+	if err := c.RecordCapture(context.Background(), "roster", nil, true); !errors.Is(err, runtime.ErrPaused) {
+		t.Fatalf("RecordCapture: got %v, want ErrPaused", err)
+	}
+	if len(fr.calls) != 0 {
+		t.Fatal("a paused ctx must not record")
+	}
+}
+
+func TestRecordCaptureWithoutRecorderErrors(t *testing.T) {
+	c, _ := newCtx(t, &runtimetest.FakeKill{}, "base")
+	if err := c.RecordCapture(context.Background(), "roster", nil, true); err == nil {
+		t.Fatal("RecordCapture with no recorder configured must error")
+	}
+}
