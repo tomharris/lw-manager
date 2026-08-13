@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -79,6 +80,44 @@ var (
 	lastActiveSpec  = ocr.Spec{Charset: "0123456789hmdagoOnline ", MinConf: 0.6}
 )
 
+// allianceMemberCountRegion is the band on the alliance screen (not
+// alliance_members) carrying "Members: 96/100" — recon frame 01
+// (docs/superpowers/specs/evidence/m4-recon-2026-08-12/01-alliance-members-96-of-100.png).
+// Unverified pending a device session, same caveat as groupHeaderRegion and
+// the field fractions below: no unit test depends on its accuracy, since
+// ocr.FakeEngine ignores the pixels it is handed.
+var allianceMemberCountRegion = transport.Rect{X1: 0.03, Y1: 0.19, X2: 0.60, Y2: 0.27}
+
+// See roster.go's Spec-value doc comment above groupHeaderSpec: advisory,
+// not enforced — factConfidenceGate is not applied to this read at all,
+// since it never becomes a Fact; a failed read just degrades the
+// alliance-total check (see readAllianceMemberCount).
+var allianceMemberCountSpec = ocr.Spec{MinConf: 0.5}
+
+// allianceMemberCountRe pulls the alliance's current member count out of the
+// alliance screen's "Members: 96/100" line. Only the first number is the
+// roster's reconciliation ground truth — the second is the alliance's
+// capacity, not a headcount (recon: "R5 1 + R4 9 + R3 64 + R2 11 + R1 11 =
+// 96 = Members: 96/100").
+var allianceMemberCountRe = regexp.MustCompile(`Members:\s*(\d+)\s*/\s*\d+`)
+
+// parseAllianceMemberCount extracts the alliance's current member count from
+// the alliance frame's raw OCR text. An unparseable read means the
+// alliance-total check cannot run this pass, not that the alliance has zero
+// members — callers must treat the returned error as "unavailable", never
+// substitute a zero (see readAllianceMemberCount).
+func parseAllianceMemberCount(raw string) (int, error) {
+	m := allianceMemberCountRe.FindStringSubmatch(strings.TrimSpace(raw))
+	if m == nil {
+		return 0, fmt.Errorf("ingest: alliance member count %q: %w", raw, ErrUnparseable)
+	}
+	count, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, fmt.Errorf("ingest: alliance member count %q: %w", raw, ErrUnparseable)
+	}
+	return count, nil
+}
+
 // groupHeaderRe pulls the rank badge and the "online/total" pair out of a
 // sticky header read like "R3 Footloose 8/64". The group's display name
 // (here "Footloose") is user-editable and not captured — only the rank
@@ -128,6 +167,19 @@ type RosterResult struct {
 	Matched, Created, Queued int
 	PerGroup                 map[string]GroupTally
 	Status                   string
+
+	// AllianceMemberCount is the "96" read from the alliance frame's
+	// "Members: 96/100" line — the same number written to
+	// alliances.member_count. Zero when AllianceTotalChecked is false.
+	AllianceMemberCount int
+	// AllianceTotalChecked reports whether the sum of every group's parsed
+	// row count was reconciled against AllianceMemberCount this run. False
+	// means the alliance frame was missing from the capture, or present but
+	// unreadable — the alliance-total check is simply unavailable in that
+	// case, and Status reflects per-group reconciliation alone, exactly as
+	// it did before this check existed. Losing a whole roster capture to one
+	// frame's bad OCR would cost more than the check being unavailable.
+	AllianceTotalChecked bool
 }
 
 // rosterRun carries the state one IngestRoster call accumulates across
@@ -157,11 +209,19 @@ type groupTracker struct {
 // IngestRoster turns one roster capture's frames into members and facts.
 //
 // Rank is not supplied by roster_capture — capture_frames.group_key arrives
-// empty, deliberately (see the M4 task amendments): group names are
-// user-edited and the group set varies, so the capture task cannot assert
-// which group it is looking at. Every frame carries its own evidence
-// instead, in its sticky group header, which this function OCRs on every
-// frame rather than trusting a label asserted elsewhere.
+// empty on every member-list frame, deliberately (see the M4 task
+// amendments): group names are user-edited and the group set varies, so the
+// capture task cannot assert which group it is looking at. Every frame
+// carries its own evidence instead, in its sticky group header, which this
+// function OCRs on every frame rather than trusting a label asserted
+// elsewhere.
+//
+// One frame is the deliberate exception: the alliance screen's summary
+// frame, tagged vision.AllianceSummaryGroupKey by roster_capture, is not a
+// list frame at all. It is pulled out before the member-list loop below,
+// read for its own "Members: 96/100" total (readAllianceMemberCount), and
+// never handed to SegmentRows — running row segmentation over it would
+// produce garbage bands.
 //
 // periodKey is supplied by the caller rather than computed here, matching
 // IngestVS's shape — both routes take it as an explicit argument so the
@@ -205,11 +265,37 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		res:        RosterResult{PerGroup: map[string]GroupTally{}},
 	}
 
+	// The alliance frame (vision.AllianceSummaryGroupKey) is not a list
+	// screen and must never reach row segmentation — pull it out before the
+	// main loop rather than let the loop special-case it inline, so the
+	// newGroup/prevGroupKey bookkeeping below, which assumes every frame it
+	// sees is a scrolled member-list frame, never has to know this one
+	// exists. It is expected to be missing from captures recorded before
+	// this check existed, and IngestRoster must still ingest those exactly
+	// as before.
+	var allianceFrame *db.CaptureFrame
+	listFrames := make([]db.CaptureFrame, 0, len(frames))
+	for idx := range frames {
+		if frames[idx].GroupKey == vision.AllianceSummaryGroupKey {
+			f := frames[idx]
+			allianceFrame = &f
+			continue
+		}
+		listFrames = append(listFrames, frames[idx])
+	}
+
+	if allianceFrame != nil {
+		if count, ok := run.readAllianceMemberCount(ctx, i, *allianceFrame); ok {
+			run.res.AllianceMemberCount = count
+			run.res.AllianceTotalChecked = true
+		}
+	}
+
 	var prevGroupKey string
 	havePrev := false
 	var totalParsed int
 
-	for _, frame := range frames {
+	for _, frame := range listFrames {
 		img, err := i.loadFrame(ctx, frame.ScreenshotID)
 		if err != nil {
 			return RosterResult{}, fmt.Errorf("ingest: loading screenshot %d: %w", frame.ScreenshotID, err)
@@ -296,12 +382,66 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 			break
 		}
 	}
+
+	// The alliance-total check is additional to per-group reconciliation
+	// above, not a replacement for it: it catches what per-group checks
+	// structurally cannot, since it sums what was actually parsed rather
+	// than depending on every group having been seen at all. A group whose
+	// frames never made it into this capture leaves no PerGroup entry to
+	// fall short — the loop above would call that "complete" — but the sum
+	// of every group that *was* seen still falls short of the alliance's own
+	// count, and only this check catches it.
+	if run.res.AllianceTotalChecked && totalParsed != run.res.AllianceMemberCount {
+		status = "partial"
+		slog.WarnContext(ctx, "ingest: roster alliance-total reconciliation found a mismatch",
+			"capture_id", captureID, "parsed_total", totalParsed, "alliance_member_count", run.res.AllianceMemberCount)
+	}
 	run.res.Status = status
+
+	// Recorded whenever the read succeeded, independent of whether it
+	// reconciled — the alliance screen's own count is worth keeping even
+	// when the parsed rows do not add up to it, per the M4 task-11b brief
+	// ("populate alliances.member_count from the same read").
+	if run.res.AllianceTotalChecked {
+		if err := i.store.SetAllianceMemberCount(ctx, allianceID, run.res.AllianceMemberCount); err != nil {
+			return RosterResult{}, fmt.Errorf("ingest: recording alliance %d member count: %w", allianceID, err)
+		}
+	}
 
 	if err := i.store.FinishCapture(ctx, captureID, status, totalParsed, ""); err != nil {
 		return RosterResult{}, fmt.Errorf("ingest: finishing capture %d: %w", captureID, err)
 	}
 	return run.res, nil
+}
+
+// readAllianceMemberCount OCRs and parses the alliance frame's
+// "Members: 96/100" line. Any failure — the blob missing, the OCR engine
+// erroring, or the text not matching the expected shape — degrades to
+// "unavailable" (ok == false) rather than propagating: per the M4 task-11b
+// brief, losing an entire otherwise-good roster capture to one frame's bad
+// OCR would cost more than the alliance-total check simply not running this
+// pass. IngestRoster falls back to per-group reconciliation alone in that
+// case, exactly as it did before this check existed.
+func (run *rosterRun) readAllianceMemberCount(ctx context.Context, i *Ingester, frame db.CaptureFrame) (int, bool) {
+	img, err := i.loadFrame(ctx, frame.ScreenshotID)
+	if err != nil {
+		slog.WarnContext(ctx, "ingest: could not load the alliance frame; alliance-total reconciliation unavailable this run",
+			"capture_id", run.captureID, "screenshot_id", frame.ScreenshotID, "error", err)
+		return 0, false
+	}
+	res, err := i.readField(ctx, img, allianceMemberCountRegion, allianceMemberCountSpec)
+	if err != nil {
+		slog.WarnContext(ctx, "ingest: could not OCR the alliance frame's member count; alliance-total reconciliation unavailable this run",
+			"capture_id", run.captureID, "screenshot_id", frame.ScreenshotID, "error", err)
+		return 0, false
+	}
+	count, err := parseAllianceMemberCount(res.Text)
+	if err != nil {
+		slog.WarnContext(ctx, "ingest: could not parse the alliance frame's member count; alliance-total reconciliation unavailable this run",
+			"capture_id", run.captureID, "screenshot_id", frame.ScreenshotID, "raw_text", res.Text)
+		return 0, false
+	}
+	return count, true
 }
 
 // processRow crops and reads one row's four fields, then routes it to a

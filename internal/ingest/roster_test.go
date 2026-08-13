@@ -14,6 +14,7 @@ import (
 	"github.com/tomharris/lw-manager/internal/db"
 	"github.com/tomharris/lw-manager/internal/ocr"
 	"github.com/tomharris/lw-manager/internal/roster"
+	"github.com/tomharris/lw-manager/internal/vision"
 )
 
 // testPeriodKey is the periodKey most tests in this file pass to
@@ -41,6 +42,12 @@ type fakeIngestStore struct {
 	MembersCreated int
 	FinishedStatus string
 	FinishedParsed int
+
+	// MemberCountSet and MemberCountSetCalls record every
+	// SetAllianceMemberCount call, so a test can assert both the final
+	// value and (via the call count) that it was written at all.
+	MemberCountSet      int
+	MemberCountSetCalls int
 }
 
 func (s *fakeIngestStore) Capture(ctx context.Context, id int64) (db.Capture, error) {
@@ -95,6 +102,12 @@ func (s *fakeIngestStore) CurrentAllianceID(ctx context.Context) (int64, error) 
 	return s.allianceID, nil
 }
 
+func (s *fakeIngestStore) SetAllianceMemberCount(ctx context.Context, allianceID int64, count int) error {
+	s.MemberCountSet = count
+	s.MemberCountSetCalls++
+	return nil
+}
+
 // fakeBlobs is an in-memory blob.Store.
 type fakeBlobs struct {
 	objects map[string][]byte
@@ -135,6 +148,12 @@ type rosterIngestHarness struct {
 	blobs            *fakeBlobs
 	engine           *ocr.FakeEngine
 	nextScreenshotID int64
+
+	// allianceFrameID is the screenshot id of the alliance-summary frame
+	// addAllianceFrame (or newRosterIngestHarness's allianceMemberCountText
+	// fixture field) added, or 0 if none was added — a test can use it to
+	// confirm that frame never appears attributed to a fact or review row.
+	allianceFrameID int64
 }
 
 func newHarness(t *testing.T) *rosterIngestHarness {
@@ -174,6 +193,25 @@ func (h *rosterIngestHarness) addFrame(img image.Image, offsetPx int) int64 {
 	h.store.frames = append(h.store.frames, db.CaptureFrame{
 		ID: id, CaptureID: 1, Seq: len(h.store.frames), ScreenshotID: id, OffsetPx: offsetPx,
 	})
+	return id
+}
+
+// addAllianceFrame appends the alliance screen's summary frame, tagged
+// vision.AllianceSummaryGroupKey exactly as roster_capture.go tags it, so it
+// exercises the same "not a list frame, must never be segmented" path
+// IngestRoster gives that tag in production. The image content is
+// irrelevant -- ocr.FakeEngine never looks at the pixels, only SegmentRows
+// does, and this frame must never reach SegmentRows at all.
+//
+// It must be called before the frame(s) it should precede: IngestRoster
+// reads the alliance frame before it reads any group header, so its OCR
+// result must be scripted first too (see newRosterIngestHarness's
+// allianceMemberCountText handling).
+func (h *rosterIngestHarness) addAllianceFrame() int64 {
+	h.t.Helper()
+	id := h.addFrame(rosterFrame(0), 0)
+	h.store.frames[len(h.store.frames)-1].GroupKey = vision.AllianceSummaryGroupKey
+	h.allianceFrameID = id
 	return id
 }
 
@@ -220,6 +258,15 @@ type rosterFixture struct {
 	// against a fresh (matchNorm 1.0) member -- for the write-time
 	// confidence gate, distinct from unparseablePower's shape failure.
 	lowConfidencePower bool
+
+	// allianceMemberCountText, when non-empty, prepends an alliance-summary
+	// frame (vision.AllianceSummaryGroupKey) scripted with this raw
+	// "Members: X/Y" OCR text, ahead of the group frame -- exercising the
+	// alliance-total reconciliation path. Empty (the default, and every
+	// fixture that predates this field) means no alliance frame at all,
+	// matching a capture recorded before this check existed and exercising
+	// IngestRoster's missing-frame fallback.
+	allianceMemberCountText string
 }
 
 type rowScript struct {
@@ -292,9 +339,18 @@ func newRosterIngestHarness(t *testing.T, fx rosterFixture) *rosterIngestHarness
 		}
 	}
 
+	var results []ocr.Result
+	if fx.allianceMemberCountText != "" {
+		// Added, and scripted, ahead of the group frame: IngestRoster reads
+		// the alliance frame (readAllianceMemberCount) before it reads any
+		// group header.
+		h.addAllianceFrame()
+		results = append(results, ocr.Result{Text: fx.allianceMemberCountText, Confidence: 0.9})
+	}
+
 	h.addFrame(rosterFrame(len(rows)), 0)
 
-	results := []ocr.Result{{Text: fmt.Sprintf("%s Group %d/%d", group, fx.groupTotal, fx.groupTotal), Confidence: 0.9}}
+	results = append(results, ocr.Result{Text: fmt.Sprintf("%s Group %d/%d", group, fx.groupTotal, fx.groupTotal), Confidence: 0.9})
 	for _, r := range rows {
 		results = append(results,
 			ocr.Result{Text: r.name, Confidence: r.nameConf},
@@ -569,6 +625,178 @@ func TestIngestRosterStampsFactsWithTheCapturesStartedAtNotWallClockNow(t *testi
 		}
 		if f.PeriodKey != replayPeriodKey {
 			t.Errorf("fact %+v PeriodKey = %q, want the derived replay period %q, not today's", f, f.PeriodKey, replayPeriodKey)
+		}
+	}
+}
+
+// --- M4 task-11b: the alliance-total reconciliation gap ------------------
+
+// The whole point of the alliance-total check: a per-group loop can only
+// judge groups it actually saw a frame for. A rank group whose frames never
+// made it into the capture at all leaves no PerGroup entry to fall short of
+// -- the per-group loop above finds nothing wrong -- but the sum of every
+// group that *was* parsed still falls short of the alliance's own
+// "Members: X/Y" count, and only the total check catches that.
+func TestIngestRosterAllianceTotalCatchesAWholeMissingGroup(t *testing.T) {
+	h := newRosterIngestHarness(t, rosterFixture{
+		group: "R1", groupTotal: 2, parsedRows: 2,
+		// The alliance says 5 members total; R1 alone (fully, internally
+		// consistent at 2/2) accounts for only 2. The other 3 belong to a
+		// group whose frames were never captured at all.
+		allianceMemberCountText: "Members: 5/100",
+	})
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if got := res.PerGroup["R1"]; got.Expected != got.Parsed {
+		t.Fatalf("R1 tally = %+v, want a fully self-consistent group -- that is the point of this test", got)
+	}
+	if res.Status != "partial" {
+		t.Errorf("status = %q, want partial -- the alliance frame says 5 members but only 2 were parsed across the one group this capture saw", res.Status)
+	}
+	if !res.AllianceTotalChecked {
+		t.Error("AllianceTotalChecked = false, want true -- the alliance frame was present and readable")
+	}
+	if res.AllianceMemberCount != 5 {
+		t.Errorf("AllianceMemberCount = %d, want 5", res.AllianceMemberCount)
+	}
+}
+
+// The alliance frame is not a list frame. It must never reach SegmentRows,
+// so it must contribute no facts, no review rows, and no members -- only
+// the group frame's own rows may.
+func TestIngestRosterDoesNotSegmentTheAllianceFrame(t *testing.T) {
+	h := newRosterIngestHarness(t, rosterFixture{
+		group: "R1", groupTotal: 2, parsedRows: 2,
+		allianceMemberCountText: "Members: 2/100",
+	})
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if h.allianceFrameID == 0 {
+		t.Fatal("test setup error: no alliance frame was recorded")
+	}
+	if res.Created != 2 {
+		t.Errorf("created %d members, want exactly 2 -- the group's own rows; the alliance frame must not have contributed any", res.Created)
+	}
+	if res.Queued != 0 {
+		t.Errorf("queued %d for review, want 0", res.Queued)
+	}
+	for _, f := range h.store.Facts {
+		if f.ScreenshotID == h.allianceFrameID {
+			t.Errorf("fact %+v was attributed to the alliance frame, which is not a list frame and must never be segmented", f)
+		}
+	}
+	for _, r := range h.store.Reviews {
+		if r.ScreenshotID == h.allianceFrameID {
+			t.Errorf("review %+v was attributed to the alliance frame, which is not a list frame and must never be segmented", r)
+		}
+	}
+}
+
+// A capture recorded before this check existed has no alliance frame at
+// all. That must not be treated as a failure -- IngestRoster falls back to
+// per-group reconciliation alone, exactly as it did before AllianceSummary
+// frames existed.
+func TestIngestRosterFallsBackToPerGroupWhenNoAllianceFrame(t *testing.T) {
+	h := newRosterIngestHarness(t, rosterFixture{group: "R1", groupTotal: 2, parsedRows: 2})
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.AllianceTotalChecked {
+		t.Error("AllianceTotalChecked = true, want false -- no alliance frame was ever captured")
+	}
+	if res.Status != "complete" {
+		t.Errorf("status = %q, want complete -- per-group reconciliation alone is consistent", res.Status)
+	}
+	if h.store.MemberCountSetCalls != 0 {
+		t.Errorf("SetAllianceMemberCount called %d times, want 0 -- no member count was ever read", h.store.MemberCountSetCalls)
+	}
+}
+
+// An alliance frame that is present but whose OCR text does not parse must
+// degrade the same way a missing frame does -- not fail the whole capture.
+// Losing an otherwise-good roster capture to one frame's bad OCR would cost
+// more than the alliance-total check simply being unavailable this run.
+func TestIngestRosterFallsBackToPerGroupWhenTheAllianceFrameIsUnreadable(t *testing.T) {
+	h := newRosterIngestHarness(t, rosterFixture{
+		group: "R1", groupTotal: 2, parsedRows: 2,
+		allianceMemberCountText: "totally garbled, no digits here",
+	})
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v (an unreadable alliance frame must degrade, never fail the whole capture)", err)
+	}
+	if res.AllianceTotalChecked {
+		t.Error("AllianceTotalChecked = true, want false -- the alliance frame's text did not parse")
+	}
+	if res.Status != "complete" {
+		t.Errorf("status = %q, want complete -- per-group reconciliation alone is consistent, and an unreadable alliance frame must not turn that into partial", res.Status)
+	}
+	if h.store.MemberCountSetCalls != 0 {
+		t.Errorf("SetAllianceMemberCount called %d times, want 0 -- nothing valid was ever read", h.store.MemberCountSetCalls)
+	}
+}
+
+// The read alliance member count must persist to alliances.member_count, not
+// only inform this run's reconciliation.
+func TestIngestRosterWritesAllianceMemberCount(t *testing.T) {
+	h := newRosterIngestHarness(t, rosterFixture{
+		group: "R1", groupTotal: 2, parsedRows: 2,
+		allianceMemberCountText: "Members: 2/100",
+	})
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Status != "complete" {
+		t.Errorf("status = %q, want complete -- 2 parsed rows against an alliance count of 2", res.Status)
+	}
+	if h.store.MemberCountSetCalls != 1 {
+		t.Fatalf("SetAllianceMemberCount called %d times, want exactly 1", h.store.MemberCountSetCalls)
+	}
+	if h.store.MemberCountSet != 2 {
+		t.Errorf("alliance member count set to %d, want 2", h.store.MemberCountSet)
+	}
+}
+
+// parseAllianceMemberCount reads the first number in "Members: X/Y" (the
+// alliance's current headcount) and rejects text it cannot find that shape
+// in -- an unparseable read must be distinguishable from a genuine zero.
+func TestParseAllianceMemberCount(t *testing.T) {
+	cases := []struct {
+		raw     string
+		want    int
+		wantErr bool
+	}{
+		{raw: "Members: 96/100", want: 96},
+		{raw: "  Members: 5/50  ", want: 5},
+		{raw: "Members: 0/100", want: 0},
+		{raw: "garbled nonsense", wantErr: true},
+		{raw: "", wantErr: true},
+	}
+	for _, tc := range cases {
+		got, err := parseAllianceMemberCount(tc.raw)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("parseAllianceMemberCount(%q) = %d, nil, want an error", tc.raw, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseAllianceMemberCount(%q): %v", tc.raw, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("parseAllianceMemberCount(%q) = %d, want %d", tc.raw, got, tc.want)
 		}
 	}
 }

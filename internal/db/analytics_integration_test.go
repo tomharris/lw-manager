@@ -100,6 +100,44 @@ func TestUpsertAllianceIsIdempotent(t *testing.T) {
 	}
 }
 
+// SetAllianceMemberCount is the roster route's write-back of a fresh
+// "Members: 96/100" read (see internal/ingest/roster.go). Unlike
+// UpsertAlliance it updates by id rather than by (tag, name), since by the
+// time ingest calls it the alliances row is already known to exist.
+func TestSetAllianceMemberCountUpdatesTheExistingRow(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	suffix := testSuffix()
+	allianceID, err := pool.UpsertAlliance(ctx, Alliance{Tag: "SMC-" + suffix, Name: "Set Count " + suffix, MemberCount: 1})
+	if err != nil {
+		t.Fatalf("UpsertAlliance: %v", err)
+	}
+
+	if err := pool.SetAllianceMemberCount(ctx, allianceID, 42); err != nil {
+		t.Fatalf("SetAllianceMemberCount: %v", err)
+	}
+
+	var got int
+	if err := pool.QueryRow(ctx, `SELECT member_count FROM alliances WHERE id = $1`, allianceID).Scan(&got); err != nil {
+		t.Fatalf("reading back member_count: %v", err)
+	}
+	if got != 42 {
+		t.Errorf("member_count = %d, want 42", got)
+	}
+}
+
+func TestSetAllianceMemberCountOnUnknownAllianceReturnsErrNotFound(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	// No alliance with this id will ever exist: ids are a bigserial
+	// starting at 1, so negative is never a real row to collide with.
+	if err := pool.SetAllianceMemberCount(ctx, -1, 5); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err)
+	}
+}
+
 func TestCaptureFramesCascadeWithTheirCapture(t *testing.T) {
 	ctx := context.Background()
 	pool := testPool(t)

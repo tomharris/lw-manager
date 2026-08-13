@@ -113,6 +113,25 @@ func (p *Pool) UpsertAlliance(ctx context.Context, a Alliance) (int64, error) {
 	return id, nil
 }
 
+// SetAllianceMemberCount records the alliance's member_count from a fresh
+// read of the alliance screen's own "Members: 96/100" line — the roster
+// route's reconciliation ground truth (see Alliance's doc comment) — so the
+// value persists rather than being used only transiently within one ingest
+// run. It updates by id rather than going through UpsertAlliance's (tag,
+// name) upsert: by the time ingest has an allianceID (from
+// CurrentAllianceID), the alliances row already exists, and this call must
+// not require re-supplying its tag and name just to refresh one column.
+func (p *Pool) SetAllianceMemberCount(ctx context.Context, allianceID int64, count int) error {
+	tag, err := p.Exec(ctx, `UPDATE alliances SET member_count = $2 WHERE id = $1`, allianceID, count)
+	if err != nil {
+		return fmt.Errorf("db: setting alliance %d member count: %w", allianceID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("db: alliance %d: %w", allianceID, ErrNotFound)
+	}
+	return nil
+}
+
 // CurrentAllianceID returns the id of the alliance most recently observed —
 // this bot tracks exactly one alliance, so "most recently observed" is
 // "the" alliance rather than a real disambiguation. Returns ErrNotFound

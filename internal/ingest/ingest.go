@@ -28,6 +28,7 @@ type Store interface {
 	QueueReview(ctx context.Context, r db.ReviewItem) (int64, error)
 	FinishCapture(ctx context.Context, id int64, status string, parsed int, errMsg string) error
 	CurrentAllianceID(ctx context.Context) (int64, error)
+	SetAllianceMemberCount(ctx context.Context, allianceID int64, count int) error
 }
 
 // Ingester turns stored capture frames into members and facts. It never

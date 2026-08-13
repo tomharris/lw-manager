@@ -259,10 +259,10 @@ func TestRosterCaptureVisitsEveryGroupThenStops(t *testing.T) {
 	}
 }
 
-// One capture per run: recordFrames is called exactly once with every
-// group's frames concatenated and Seq renumbered sequentially across the
-// whole run, since scrollCapture numbers each call from zero and
-// capture_frames has UNIQUE (capture_id, seq).
+// One capture per run: recordFrames is called exactly once with the alliance
+// frame plus every group's frames concatenated, and Seq renumbered
+// sequentially across the whole run, since scrollCapture numbers each call
+// from zero and capture_frames has UNIQUE (capture_id, seq).
 func TestRosterCaptureRecordsOneCaptureWithRenumberedSeq(t *testing.T) {
 	rt, _, _, rec := newRosterHarness(t, threeGroupFrames())
 
@@ -284,12 +284,20 @@ func TestRosterCaptureRecordsOneCaptureWithRenumberedSeq(t *testing.T) {
 	if !call.complete {
 		t.Error("want complete = true — every group proved its bottom")
 	}
-	if len(call.frames) != 3 {
-		t.Fatalf("got %d frames, want 3 (one per group)", len(call.frames))
+	if len(call.frames) != 4 {
+		t.Fatalf("got %d frames, want 4 (the alliance frame, then one per group)", len(call.frames))
 	}
 	for i, f := range call.frames {
 		if f.Seq != i {
 			t.Errorf("frame %d has Seq %d, want %d — Seq must be renumbered across the whole run, not left at scrollCapture's own per-call zero", i, f.Seq, i)
+		}
+	}
+	if call.frames[0].GroupKey != vision.AllianceSummaryGroupKey {
+		t.Errorf("frame 0 GroupKey = %q, want %q — the alliance frame must be recorded first and tagged so ingest can find it and skip segmenting it", call.frames[0].GroupKey, vision.AllianceSummaryGroupKey)
+	}
+	for i, f := range call.frames[1:] {
+		if f.GroupKey != "" {
+			t.Errorf("group frame %d GroupKey = %q, want empty — rank is read from each frame's own sticky header at ingest, not asserted here", i, f.GroupKey)
 		}
 	}
 }

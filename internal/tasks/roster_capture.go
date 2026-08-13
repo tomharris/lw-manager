@@ -69,15 +69,22 @@ func rosterCapture(ctx context.Context, rt *runtime.Ctx) error {
 	}
 	// The alliance frame carries the roster's reconciliation ground truth
 	// ("Members: 96/100"), the tag, name, and leader — captured once, not
-	// per group.
-	if _, err := rt.Capture(ctx, vision.ScreenAlliance); err != nil {
+	// per group. It is recorded as this capture's own frame, tagged with
+	// vision.AllianceSummaryGroupKey rather than left to sit only in the
+	// generic screenshots/task_runs tables (the M4 task-11 gap this closes):
+	// ingest reads that tag to find it and, just as importantly, to skip it
+	// when segmenting rows — it is not a list screen.
+	allianceScreenshotID, err := rt.Capture(ctx, vision.ScreenAlliance)
+	if err != nil {
 		return err
 	}
 	if err := rt.NavigateTo(ctx, vision.ScreenAllianceMembers); err != nil {
 		return err
 	}
 
-	var all []ScrolledFrame
+	all := []ScrolledFrame{
+		{ScreenshotID: allianceScreenshotID, GroupKey: vision.AllianceSummaryGroupKey},
+	}
 	allComplete := true
 	for i := 0; i < maxRankGroups; i++ {
 		if err := rt.CheckKillSwitch(ctx); err != nil {

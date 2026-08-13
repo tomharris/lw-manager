@@ -162,6 +162,17 @@ func printRosterSummary(out io.Writer, captureID int64, periodKey string, res in
 	fmt.Fprintf(out, "capture=%d route=roster period=%s matched=%d created=%d queued=%d status=%s\n",
 		captureID, periodKey, res.Matched, res.Created, res.Queued, res.Status)
 
+	// alliance_checked=false means the alliance frame was missing from the
+	// capture or its "Members: X/Y" read failed — the roster still ingested
+	// on per-group reconciliation alone (see internal/ingest/roster.go), and
+	// alliance_members is meaningless in that case, so it is omitted rather
+	// than printed as a misleading 0.
+	if res.AllianceTotalChecked {
+		fmt.Fprintf(out, "  alliance_members=%d alliance_checked=true\n", res.AllianceMemberCount)
+	} else {
+		fmt.Fprintln(out, "  alliance_checked=false")
+	}
+
 	keys := make([]string, 0, len(res.PerGroup))
 	for k := range res.PerGroup {
 		keys = append(keys, k)
