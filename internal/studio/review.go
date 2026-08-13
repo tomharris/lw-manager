@@ -121,10 +121,16 @@ func resolveNotice(q url.Values) string {
 }
 
 // handleReviewCrop serves the row crop: the screenshot the review item came
-// from, cut to [row_y0, row_y1) at full width. It reuses handleCrop's own
-// decode-then-vision.Crop path rather than a new one -- the only difference
-// is where the bytes come from, the production blob store resolved via
-// ScreenshotObjectKey, not the corpus's content-addressed local directory.
+// from, cut to [row_y0, row_y1) at full width. Note that despite the name
+// resemblance, it does not share code with handlers.go's handleCrop --
+// handleCrop never serves a PNG body at all; it decodes a frame to cut a
+// template that vision.WriteAnchor saves into the manifest, then redirects.
+// What genuinely carries over from that path is vision.Crop itself (the same
+// cropping math, applied here to a pixel-row band converted to a normalized
+// Rect instead of an operator-dragged one) and the general decode-then-crop
+// shape. The bytes come from a different place too: the production blob
+// store, resolved via ScreenshotObjectKey, not the corpus's content-
+// addressed local directory that handleFrame and handleCrop both read from.
 func (s *Server) handleReviewCrop(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {

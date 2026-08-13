@@ -300,14 +300,15 @@ func TestReviewCropServesTheStoredRowBand(t *testing.T) {
 // never dispatch into the review handlers at all (they would nil-pointer on
 // s.review otherwise).
 //
-// "/review" itself is not asserted as a 404: Go's ServeMux treats a
-// registered "GET /" as a catch-all subtree, so with no more specific
-// "GET /review" pattern registered, the request falls through to
-// handleUnsorted, the same as any other unmatched GET path in this app
-// (e.g. "/nope" in studio_test.go's own routing tests) -- which is exactly
-// the "simply not registered" the brief asks for, just visible as a fallback
-// to the corpus page rather than a 404. A POST, which has no such
-// GET-registered fallback of its own method, surfaces the absence as 405.
+// GET /review is asserted as a 404, not a fallback to the corpus page. An
+// earlier version of this test accepted a 200 there, reasoning that Go's
+// ServeMux would route it through the "GET /" catch-all into handleUnsorted
+// the same as any other unmatched path (e.g. "/nope" in studio_test.go's own
+// routing tests) -- true of an arbitrary path, but /review is this task's
+// own advertised interface: an operator hitting it expecting the review
+// queue and silently getting the corpus page instead has no signal that
+// review is off. Handler() now registers "GET /review" explicitly in the
+// no-store case too, ahead of the catch-all, to return 404 with a reason.
 func TestStudioWithoutAReviewStoreStillServesCorpusRoutesAndOmitsReview(t *testing.T) {
 	store := corpus.New(t.TempDir())
 	f, _, err := store.Add(corpus.Unsorted, []byte("frame-bytes"))
@@ -337,8 +338,11 @@ func TestStudioWithoutAReviewStoreStillServesCorpusRoutesAndOmitsReview(t *testi
 
 	rec = httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, authed(httptest.NewRequest(http.MethodGet, "/review", nil)))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "unsorted") {
-		t.Fatalf("GET /review with no review store: status = %d, body = %q; want the corpus catch-all's unsorted page", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /review with no review store: status = %d, want 404", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "review unavailable") {
+		t.Fatalf("GET /review 404 body = %q, want it to name the reason", rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()

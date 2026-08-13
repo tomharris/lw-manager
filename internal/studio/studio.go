@@ -151,11 +151,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /crop", s.handleCrop)
 	// Task 14: the review routes register only when a review store is
 	// configured, so corpus-only use of studio (no database) is unaffected.
+	// GET /review itself still gets a registered pattern either way: without
+	// one, Go's ServeMux would route it through the "GET /" catch-all above
+	// into handleUnsorted, returning 200 with the corpus page and no signal
+	// that review is off -- fine for an arbitrary unmatched path, wrong for
+	// this task's own advertised interface. An operator hitting it expecting
+	// the review queue deserves a 404 that says why, not a page that quietly
+	// isn't what they asked for.
 	if s.review != nil {
 		mux.HandleFunc("GET /review", s.handleReviewList)
 		mux.HandleFunc("GET /review/{id}/crop", s.handleReviewCrop)
 		mux.HandleFunc("POST /review/{id}/resolve", s.handleReviewResolve)
 		mux.HandleFunc("POST /review/{id}/reject", s.handleReviewReject)
+	} else {
+		mux.HandleFunc("GET /review", func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "review unavailable: no review store configured; serving corpus routes only", http.StatusNotFound)
+		})
 	}
 	return s.authenticate(mux)
 }
