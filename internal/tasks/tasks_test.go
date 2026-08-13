@@ -15,7 +15,7 @@ import (
 // per task, against explicit present-and-absent frames, rather than by a
 // shared script that could only assert "some tap happened".
 func TestOnlyTheMergedRadarTaskIsRegistered(t *testing.T) {
-	want := []string{"daily_gather", "help_all", "mail_collect", "radar", "tech_donate"}
+	want := []string{"daily_gather", "help_all", "mail_collect", "radar", "roster_capture", "tech_donate"}
 	if got := Names(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Names: got %v, want %v", got, want)
 	}

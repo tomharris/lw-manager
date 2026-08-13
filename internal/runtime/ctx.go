@@ -28,8 +28,12 @@ type Options struct {
 	Kill      KillSwitch
 	// Capture persists frames for analytics tasks. Nil is allowed: Ctx
 	// works without one, and Capture() then errors.
-	Capture   Capturer
-	AccountID int64
+	Capture Capturer
+	// CaptureRecorder persists multi-frame capture runs (roster, VS
+	// ranking). Nil is allowed: Ctx works without one, and RecordCapture()
+	// then errors.
+	CaptureRecorder CaptureRecorder
+	AccountID       int64
 
 	// Rand drives all jitter. Nil means time-seeded; tests inject a seeded
 	// source for determinism.
@@ -54,7 +58,8 @@ type Ctx struct {
 	rec            *vision.Recognizer
 	graph          *Graph
 	ks             KillSwitch
-	cap            Capturer // nil ⇒ Capture unavailable
+	cap            Capturer        // nil ⇒ Capture unavailable
+	capRec         CaptureRecorder // nil ⇒ RecordCapture unavailable
 	accountID      int64
 	rand           *rand.Rand
 	poll           time.Duration
@@ -84,6 +89,7 @@ func New(opts Options) (*Ctx, error) {
 		graph:          opts.Graph,
 		ks:             opts.Kill,
 		cap:            opts.Capture,
+		capRec:         opts.CaptureRecorder,
 		accountID:      opts.AccountID,
 		rand:           r,
 		poll:           opts.PollInterval,
