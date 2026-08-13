@@ -156,6 +156,7 @@ var cropTmpl = template.Must(template.New("crop").Parse(layout + `
 // beyond "not any of these, or unusable".
 var reviewTmpl = template.Must(template.New("review").Parse(layout + `
 <h1>review <span class="count">({{len .Items}})</span></h1>
+{{if .Notice}}<p style="background:#243;border-radius:4px;padding:.6rem .8rem">{{.Notice}}</p>{{end}}
 <div class="grid">
 {{range .Items}}
  <div class="card">

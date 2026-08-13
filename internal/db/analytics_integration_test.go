@@ -591,18 +591,22 @@ func TestMemberAliasesScopesToAllianceAndActive(t *testing.T) {
 // seedPendingReview queues one review item with a unique raw_text (so a
 // database that is never dropped between `make test-integration` runs can
 // never confuse this run's row with a previous one) and returns its id.
-func seedPendingReview(ctx context.Context, t *testing.T, pool *Pool, accountID int64, candidates []roster.Candidate) (id int64, rawText string) {
+func seedPendingReview(ctx context.Context, t *testing.T, pool *Pool, accountID int64, candidates []roster.Candidate) (id, captureID int64, rawText string) {
 	t.Helper()
+	captureID, err := pool.CreateCapture(ctx, Capture{AccountID: accountID, Route: "vs_ranking"})
+	if err != nil {
+		t.Fatalf("CreateCapture: %v", err)
+	}
 	shotID := dbtest.SeedScreenshot(ctx, t, pool, accountID)
 	rawText = "kaln445-" + testSuffix()
-	id, err := pool.QueueReview(ctx, ReviewItem{
-		ScreenshotID: shotID, RowY0: 100, RowY1: 140,
+	id, err = pool.QueueReview(ctx, ReviewItem{
+		CaptureID: captureID, ScreenshotID: shotID, RowY0: 100, RowY1: 140,
 		RawText: rawText, Candidates: candidates, Reason: "ambiguous_name_match",
 	})
 	if err != nil {
 		t.Fatalf("QueueReview: %v", err)
 	}
-	return id, rawText
+	return id, captureID, rawText
 }
 
 func TestPendingReviewsListsAQueuedItemAndReviewFetchesItByID(t *testing.T) {
@@ -611,7 +615,7 @@ func TestPendingReviewsListsAQueuedItemAndReviewFetchesItByID(t *testing.T) {
 
 	accountID := dbtest.SeedAccount(ctx, t, pool)
 	candidates := []roster.Candidate{{MemberID: 1, Name: "Kain445", Score: 86}}
-	id, rawText := seedPendingReview(ctx, t, pool, accountID, candidates)
+	id, _, rawText := seedPendingReview(ctx, t, pool, accountID, candidates)
 
 	pending, err := pool.PendingReviews(ctx)
 	if err != nil {
@@ -677,10 +681,18 @@ func TestResolveReviewWritesAnAliasAndIsNotDoubleApplied(t *testing.T) {
 		t.Fatalf("CreateMember: %v", err)
 	}
 	accountID := dbtest.SeedAccount(ctx, t, pool)
-	id, rawText := seedPendingReview(ctx, t, pool, accountID, []roster.Candidate{{MemberID: memberID, Name: memberName, Score: 86}})
+	id, captureID, rawText := seedPendingReview(ctx, t, pool, accountID, []roster.Candidate{{MemberID: memberID, Name: memberName, Score: 86}})
 
-	if err := pool.ResolveReview(ctx, id, memberID, "reviewer@test"); err != nil {
+	// The returned item is what handleReviewResolve uses to tell a reviewer
+	// which capture to re-ingest, per the project owner's ruling: resolving
+	// writes the alias only, and the fact arrives by re-running ingest over
+	// this same capture.
+	resolved, err := pool.ResolveReview(ctx, id, memberID, "reviewer@test")
+	if err != nil {
 		t.Fatalf("ResolveReview: %v", err)
+	}
+	if resolved.CaptureID != captureID {
+		t.Errorf("ResolveReview CaptureID = %d, want %d", resolved.CaptureID, captureID)
 	}
 
 	aliases, err := pool.MemberAliases(ctx, allianceID)
@@ -704,7 +716,7 @@ func TestResolveReviewWritesAnAliasAndIsNotDoubleApplied(t *testing.T) {
 	// The guard the "WHERE status = 'pending'" clause exists for: resolving
 	// the same item again (a duplicate form submit) must not write a second
 	// alias, and must report ErrNotFound rather than silently succeeding.
-	if err := pool.ResolveReview(ctx, id, memberID, "reviewer@test"); !errors.Is(err, ErrNotFound) {
+	if _, err := pool.ResolveReview(ctx, id, memberID, "reviewer@test"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second ResolveReview: err = %v, want ErrNotFound", err)
 	}
 	aliases, err = pool.MemberAliases(ctx, allianceID)
@@ -716,15 +728,14 @@ func TestResolveReviewWritesAnAliasAndIsNotDoubleApplied(t *testing.T) {
 	}
 }
 
-// A review item this UI ever shows carries only a raw name and its ranked
-// candidates -- the numeric value a fact would need (points, power, ...) was
-// already read by OCR at ingest time but never carried into review_queue
-// (see internal/ingest/roster.go's processRow and vs.go's equivalent: a name
-// that fails to resolve sends the whole row to review with no memberID to
-// hang a fact off, and the row's other already-parsed fields are discarded
-// right there). So ResolveReview must not fabricate a participation fact --
-// there is no value in the row to give it. This is the gap flagged in the
-// task-14 report, verified here directly rather than left as a documented
+// Per the project owner's ruling on the task-14 defect report: a fact
+// arrives by re-running ingest over the review item's capture, never by
+// resolving the review item itself. Storing the row's already-OCR'd value on
+// review_queue so a resolve could write the fact directly was considered and
+// rejected -- it would be a second copy of the number living outside
+// participation_facts, and the fact would be built from that copy rather
+// than re-derived from the pixels, weaker provenance than every other fact
+// in the system. Verified here directly rather than left as a documented
 // assumption.
 func TestResolveReviewWritesNoParticipationFact(t *testing.T) {
 	ctx := context.Background()
@@ -744,13 +755,13 @@ func TestResolveReviewWritesNoParticipationFact(t *testing.T) {
 		t.Fatalf("CreateMember: %v", err)
 	}
 	accountID := dbtest.SeedAccount(ctx, t, pool)
-	id, _ := seedPendingReview(ctx, t, pool, accountID, []roster.Candidate{{MemberID: memberID, Name: memberName, Score: 86}})
+	id, _, _ := seedPendingReview(ctx, t, pool, accountID, []roster.Candidate{{MemberID: memberID, Name: memberName, Score: 86}})
 
 	var before int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM participation_facts WHERE member_id = $1`, memberID).Scan(&before); err != nil {
 		t.Fatalf("counting facts before resolve: %v", err)
 	}
-	if err := pool.ResolveReview(ctx, id, memberID, "reviewer@test"); err != nil {
+	if _, err := pool.ResolveReview(ctx, id, memberID, "reviewer@test"); err != nil {
 		t.Fatalf("ResolveReview: %v", err)
 	}
 	var after int
@@ -770,7 +781,7 @@ func TestRejectReviewMarksRejectedAndWritesNoAlias(t *testing.T) {
 	pool := testPool(t)
 
 	accountID := dbtest.SeedAccount(ctx, t, pool)
-	id, _ := seedPendingReview(ctx, t, pool, accountID, nil)
+	id, _, _ := seedPendingReview(ctx, t, pool, accountID, nil)
 
 	if err := pool.RejectReview(ctx, id, "reviewer@test"); err != nil {
 		t.Fatalf("RejectReview: %v", err)

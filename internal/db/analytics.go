@@ -528,61 +528,67 @@ func scanReviewItems(rows pgx.Rows) ([]ReviewItem, error) {
 // ResolveReview marks a review item resolved and records the human's
 // confirmation as a member alias -- the mechanism that makes matching
 // compound, per CLAUDE.md: tomorrow's identical misread matches directly
-// instead of queueing again.
+// instead of queueing again. It returns the resolved item (mainly for its
+// CaptureID) so a caller can point the reviewer at the right re-ingest
+// command without a second lookup.
 //
-// It deliberately does not also write a participation fact, despite that
-// being task-14's stated requirement. Every review item this UI shows
-// carries only a raw_text/candidates pair -- an ambiguous or unmatched
-// *name* -- because internal/ingest/roster.go and vs.go's processRow send a
-// name that fails to resolve to a member straight to review with no
-// memberID, and, critically, without the row's other already-OCR'd fields
-// (power/level/last_active_hours, or vs_points): those values are read
-// (see roster.go's processRow, which parses power/level/last-active *before*
-// checking candidates) but then simply discarded when the name branch is
-// "ambiguous_name_match" or "no_confident_match" rather than a clean match,
-// per roster.go's own comment at the top of processRow ("without a memberID
-// no fact has anywhere to attach"). So even now that a human has supplied
-// the missing memberID, there is no value left to attach it to: nothing
-// downstream of review_queue kept one. Writing a fact here would mean
-// inventing its value, which invariants #4 and #5 rule out. Flagged in the
-// task-14 report as a gap in what ingest persists to review_queue, not
-// something patched over here.
+// It deliberately does not also write a participation fact, even though an
+// early draft of this task's brief asked for exactly that. The project
+// owner's ruling on the resulting defect report: the fact arrives by
+// re-running ingest over the same capture. Resolving writes the alias;
+// `control ingest --capture <id>` then matches that name directly (now that
+// the alias exists) and writes the fact with the capture's own period_key
+// and observed_at -- not today's, which a fact written here instead would
+// get wrong. That replay property was repaired in Task 13 specifically so
+// this works.
+//
+// Storing the row's already-OCR'd numeric value on review_queue, so a
+// resolve here could write the fact immediately, was considered and
+// rejected: it would put a second copy of the number outside
+// participation_facts, and the fact would then be built from that stored
+// copy rather than re-derived from the pixels on re-ingest -- weaker
+// provenance than every other fact in the system, which invariant #5 ties
+// to a screenshot, not to a cached intermediate value. So this method's
+// contract is exactly two writes: the alias, and the status transition.
+// Nothing else.
 //
 // The UPDATE's own "WHERE status = 'pending'" is the concurrency guard: a
 // second resolve of the same id (a duplicate form submit, a slow response
 // resubmitted) touches zero rows and reports ErrNotFound rather than writing
 // a second alias.
-func (p *Pool) ResolveReview(ctx context.Context, id, memberID int64, resolvedBy string) error {
+func (p *Pool) ResolveReview(ctx context.Context, id, memberID int64, resolvedBy string) (ReviewItem, error) {
 	tx, err := p.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("db: resolving review %d: %w", id, err)
+		return ReviewItem{}, fmt.Errorf("db: resolving review %d: %w", id, err)
 	}
 	defer tx.Rollback(ctx)
 
-	var rawText string
+	item := ReviewItem{ID: id}
 	err = tx.QueryRow(ctx, `
 		UPDATE review_queue SET status = 'resolved', resolved_by = $2, resolved_at = now()
 		WHERE id = $1 AND status = 'pending'
-		RETURNING raw_text`, id, resolvedBy).Scan(&rawText)
+		RETURNING coalesce(capture_id, 0), screenshot_id, row_y0, row_y1, raw_text, reason, coalesce(confidence, 0)`,
+		id, resolvedBy).Scan(&item.CaptureID, &item.ScreenshotID, &item.RowY0, &item.RowY1,
+		&item.RawText, &item.Reason, &item.Confidence)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("db: review %d: %w", id, ErrNotFound)
+		return ReviewItem{}, fmt.Errorf("db: review %d: %w", id, ErrNotFound)
 	}
 	if err != nil {
-		return fmt.Errorf("db: marking review %d resolved: %w", id, err)
+		return ReviewItem{}, fmt.Errorf("db: marking review %d resolved: %w", id, err)
 	}
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO member_aliases (member_id, alias, alias_normalized, source)
 		VALUES ($1, $2, $3, 'review')
 		ON CONFLICT (member_id, alias_normalized) DO NOTHING`,
-		memberID, rawText, roster.Normalize(rawText)); err != nil {
-		return fmt.Errorf("db: aliasing %q to member %d for review %d: %w", rawText, memberID, id, err)
+		memberID, item.RawText, roster.Normalize(item.RawText)); err != nil {
+		return ReviewItem{}, fmt.Errorf("db: aliasing %q to member %d for review %d: %w", item.RawText, memberID, id, err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("db: committing resolution of review %d: %w", id, err)
+		return ReviewItem{}, fmt.Errorf("db: committing resolution of review %d: %w", id, err)
 	}
-	return nil
+	return item, nil
 }
 
 // RejectReview marks a review item rejected: not any known member, or the

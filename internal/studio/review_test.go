@@ -17,28 +17,24 @@ import (
 	"github.com/tomharris/lw-manager/internal/db"
 )
 
-// fakeReviewStore is a bare wiring double: it proves the studio HTTP layer
-// calls ReviewStore correctly (which method, with what arguments, in what
-// order), not that a resolve produces a real participation fact. The real
-// (Postgres-backed) *db.Pool.ResolveReview never writes one at all -- see
-// its doc comment in internal/db/analytics.go for why -- so this fake's
-// unconditional Facts append is a wiring-contract check only, disconnected
-// from that production behaviour by design.
+// fakeReviewStore is a wiring double: it proves the studio HTTP layer calls
+// ReviewStore correctly (which method, with what arguments, in what order,
+// and what it does with the returned item). It matches the real
+// (Postgres-backed) *db.Pool.ResolveReview's contract exactly: resolving
+// records an alias and returns the item (for its CaptureID), and nothing in
+// this interface, real or fake, ever writes a participation fact -- that
+// capability does not exist here at all. See ResolveReview's doc comment in
+// internal/db/analytics.go for the project owner's ruling on why: the fact
+// arrives later, by re-running ingest over the same capture.
 type fakeReviewStore struct {
 	Items       []pendingItem
 	Screenshots map[int64]string
 
 	Aliases  []fakeAlias
-	Facts    []fakeFact
 	Rejected []int64
 }
 
 type fakeAlias struct {
-	ReviewID int64
-	MemberID int64
-}
-
-type fakeFact struct {
 	ReviewID int64
 	MemberID int64
 }
@@ -67,15 +63,19 @@ func (f *fakeReviewStore) ScreenshotObjectKey(ctx context.Context, screenshotID 
 	return "", fmt.Errorf("fakeReviewStore: screenshot %d: %w", screenshotID, db.ErrNotFound)
 }
 
-// ResolveReview is the interface's single resolve call. This fake always
-// records both an alias and a fact, in that order, regardless of whether id
-// was ever seeded -- it exists to verify the studio handler invokes the
-// store with the right id/memberID and reaches the 303 redirect, not to
-// model real review-item data.
-func (f *fakeReviewStore) ResolveReview(ctx context.Context, id, memberID int64, resolvedBy string) error {
+// ResolveReview records the alias and returns the resolved item, whether or
+// not id was seeded in Items -- some tests exercise the handler against a
+// store with nothing seeded at all, purely to check the id/memberID reach
+// the store and the redirect follows. It never touches anything resembling
+// a fact: there is no such call for it to make.
+func (f *fakeReviewStore) ResolveReview(ctx context.Context, id, memberID int64, resolvedBy string) (db.ReviewItem, error) {
 	f.Aliases = append(f.Aliases, fakeAlias{ReviewID: id, MemberID: memberID})
-	f.Facts = append(f.Facts, fakeFact{ReviewID: id, MemberID: memberID})
-	return nil
+	for _, it := range f.Items {
+		if it.ID == id {
+			return toReviewItem(it), nil
+		}
+	}
+	return db.ReviewItem{ID: id}, nil
 }
 
 func (f *fakeReviewStore) RejectReview(ctx context.Context, id int64, resolvedBy string) error {
@@ -85,7 +85,7 @@ func (f *fakeReviewStore) RejectReview(ctx context.Context, id int64, resolvedBy
 
 func toReviewItem(it pendingItem) db.ReviewItem {
 	return db.ReviewItem{
-		ID: it.ID, ScreenshotID: it.ScreenshotID, RowY0: it.RowY0, RowY1: it.RowY1,
+		ID: it.ID, CaptureID: it.CaptureID, ScreenshotID: it.ScreenshotID, RowY0: it.RowY0, RowY1: it.RowY1,
 		RawText: it.RawText, Candidates: it.Candidates, Reason: it.Reason, Confidence: it.Confidence,
 	}
 }
@@ -141,8 +141,15 @@ func TestReviewListsPendingItemsWithCandidates(t *testing.T) {
 }
 
 // Resolving must write the alias, which is the mechanism that makes matching
-// improve rather than needing to be re-tuned.
-func TestResolveWritesAnAliasAndTheFact(t *testing.T) {
+// improve rather than needing to be re-tuned. It must not write a fact --
+// the project owner's ruling on this task's original defect report confirmed
+// that a fact only ever arrives by re-running ingest over the item's
+// capture, never from the resolve call itself (see ResolveReview's doc
+// comment in internal/db/analytics.go). This test's name and assertions
+// originally claimed the opposite ("...AndTheFact", asserting store.Facts
+// had one entry); that was the bug the defect report caught, and the
+// assertion below is what replaced it.
+func TestResolveWritesAnAliasButNoFact(t *testing.T) {
 	store := &fakeReviewStore{}
 	s := newReviewServerWithStore(t, store)
 
@@ -154,11 +161,39 @@ func TestResolveWritesAnAliasAndTheFact(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303", rec.Code)
 	}
-	if len(store.Aliases) != 1 {
-		t.Errorf("aliases written = %d, want 1", len(store.Aliases))
+	if len(store.Aliases) != 1 || store.Aliases[0].ReviewID != 1 || store.Aliases[0].MemberID != 2 {
+		t.Errorf("Aliases = %+v, want exactly one alias for review 1 / member 2", store.Aliases)
 	}
-	if len(store.Facts) != 1 {
-		t.Errorf("facts written = %d, want 1", len(store.Facts))
+}
+
+// The redirect after a resolve is the only channel back to the reviewer, so
+// it must carry enough for handleReviewList to render the "alias saved, run
+// ingest over capture N" notice -- without it, a reviewer who just resolved
+// an item has no way to learn the fact isn't written yet.
+func TestResolveRedirectsWithAReingestNoticeNamingTheCapture(t *testing.T) {
+	store := &fakeReviewStore{Items: []pendingItem{{ID: 5, CaptureID: 77, RawText: "kaln445"}}}
+	s := newReviewServerWithStore(t, store)
+
+	req := httptest.NewRequest(http.MethodPost, "/review/5/resolve", strings.NewReader("member_id=2"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, authed(req))
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.Contains(loc, "resolved=5") || !strings.Contains(loc, "capture=77") {
+		t.Fatalf("Location = %q, want it to carry the resolved id and capture id", loc)
+	}
+
+	// Follow the redirect, the way a browser would, and confirm the notice
+	// itself names the capture and the ingest command.
+	rec2 := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec2, authed(httptest.NewRequest(http.MethodGet, loc, nil)))
+	body := rec2.Body.String()
+	if !strings.Contains(body, "control ingest --capture 77") {
+		t.Fatalf("review page after resolving did not name the re-ingest command: %q", body)
 	}
 }
 
@@ -185,9 +220,6 @@ func TestRejectWritesNeitherAliasNorFactButMarksTheItem(t *testing.T) {
 	}
 	if len(store.Aliases) != 0 {
 		t.Errorf("aliases written = %d, want 0", len(store.Aliases))
-	}
-	if len(store.Facts) != 0 {
-		t.Errorf("facts written = %d, want 0", len(store.Facts))
 	}
 	if len(store.Rejected) != 1 || store.Rejected[0] != 7 {
 		t.Errorf("Rejected = %v, want [7]", store.Rejected)

@@ -8,9 +8,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"image/png"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/tomharris/lw-manager/internal/db"
@@ -25,6 +27,7 @@ type candidate = roster.Candidate
 // pendingItem is one review_queue row as the review page renders it.
 type pendingItem struct {
 	ID           int64
+	CaptureID    int64
 	ScreenshotID int64
 	RowY0, RowY1 int
 	RawText      string
@@ -39,11 +42,15 @@ type pendingItem struct {
 // missing exist on it -- added alongside this task in
 // internal/db/analytics.go, in the same hand-written pgx style as the rest
 // of that file.
+//
+// ResolveReview returns the resolved item (mainly for its CaptureID) so the
+// handler can tell the reviewer which capture to re-ingest without a second
+// round trip -- see handleReviewResolve.
 type ReviewStore interface {
 	PendingReviews(ctx context.Context) ([]db.ReviewItem, error)
 	Review(ctx context.Context, id int64) (db.ReviewItem, error)
 	ScreenshotObjectKey(ctx context.Context, screenshotID int64) (string, error)
-	ResolveReview(ctx context.Context, id, memberID int64, resolvedBy string) error
+	ResolveReview(ctx context.Context, id, memberID int64, resolvedBy string) (db.ReviewItem, error)
 	RejectReview(ctx context.Context, id int64, resolvedBy string) error
 }
 
@@ -63,6 +70,7 @@ func toPendingItem(r db.ReviewItem) pendingItem {
 	cands, _ := r.Candidates.([]roster.Candidate)
 	return pendingItem{
 		ID:           r.ID,
+		CaptureID:    r.CaptureID,
 		ScreenshotID: r.ScreenshotID,
 		RowY0:        r.RowY0,
 		RowY1:        r.RowY1,
@@ -87,7 +95,29 @@ func (s *Server) handleReviewList(w http.ResponseWriter, r *http.Request) {
 		"Title":      "review",
 		"Items":      pending,
 		"CanCapture": s.tr != nil,
+		"Notice":     resolveNotice(r.URL.Query()),
 	})
+}
+
+// resolveNotice turns handleReviewResolve's redirect query params into the
+// confirmation a reviewer needs to see. Resolving only ever writes an alias
+// (ReviewStore.ResolveReview's doc comment, and the one on the underlying
+// db.Pool.ResolveReview, explain why) -- the fact does not exist until
+// ingest re-runs over the originating capture and re-derives it from the
+// pixels. Without this banner a reviewer who just resolved an item has no
+// way to learn that, and the natural (wrong) conclusion is that the work is
+// done; a 303 redirect is the only channel back from the resolve POST, so
+// the confirmation has to travel as query params.
+func resolveNotice(q url.Values) string {
+	id := q.Get("resolved")
+	if id == "" {
+		return ""
+	}
+	capture := q.Get("capture")
+	if capture == "" {
+		return fmt.Sprintf("Review #%s resolved: the alias is saved. Its capture id was not recorded on this row, so find the capture that produced it and re-run ingest over that to write the fact.", id)
+	}
+	return fmt.Sprintf("Review #%s resolved: the alias is saved. Run `control ingest --capture %s` to write the fact.", id, capture)
 }
 
 // handleReviewCrop serves the row crop: the screenshot the review item came
@@ -172,10 +202,24 @@ func clamp01(f float64) float64 {
 }
 
 // handleReviewResolve records the reviewer's pick. ReviewStore.ResolveReview
-// writes the alias, so tomorrow's identical misread matches directly
-// instead of queueing again -- see its doc comment in internal/db/analytics.go
-// for why it does not also write a participation fact, and the task-14
-// report for the full account.
+// writes the alias now -- the mechanism that makes matching compound, so
+// tomorrow's identical misread matches directly instead of queueing again --
+// and stops there. It never writes a participation fact: the fact arrives
+// later, by re-running ingest over the same capture (`control ingest
+// --capture <id>`), which then matches the newly-aliased name directly and
+// writes the fact with the capture's own period_key and observed_at, not
+// today's. That replay property is what Task 13 repaired specifically so
+// this works. See ResolveReview's doc comment in internal/db/analytics.go
+// for the project owner's ruling on why the row's numeric value is not
+// stored here to shortcut that: it would be a second copy of the number
+// living outside participation_facts, and the fact would be built from that
+// copy instead of re-derived from the pixels -- weaker provenance than every
+// other fact in the system.
+//
+// Because a 303 redirect is the only channel back to the reviewer, the
+// resolved id and (when known) the capture id travel as query params for
+// handleReviewList to turn into the on-page notice -- without it, a
+// reviewer has no way to learn the loop isn't finished yet.
 func (s *Server) handleReviewResolve(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -192,7 +236,8 @@ func (s *Server) handleReviewResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch err := s.review.ResolveReview(r.Context(), id, memberID, resolvedBySource); {
+	item, err := s.review.ResolveReview(r.Context(), id, memberID, resolvedBySource)
+	switch {
 	case errors.Is(err, db.ErrNotFound):
 		http.Error(w, "no such pending review", http.StatusNotFound)
 		return
@@ -200,7 +245,14 @@ func (s *Server) handleReviewResolve(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "resolving review "+strconv.FormatInt(id, 10), err)
 		return
 	}
-	http.Redirect(w, r, "/review", http.StatusSeeOther)
+
+	redirect := url.URL{Path: "/review", RawQuery: url.Values{"resolved": {strconv.FormatInt(id, 10)}}.Encode()}
+	if item.CaptureID != 0 {
+		q := redirect.Query()
+		q.Set("capture", strconv.FormatInt(item.CaptureID, 10))
+		redirect.RawQuery = q.Encode()
+	}
+	http.Redirect(w, r, redirect.String(), http.StatusSeeOther)
 }
 
 // handleReviewReject marks an item rejected: not any known member, or the
