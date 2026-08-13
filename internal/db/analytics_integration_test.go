@@ -5,8 +5,10 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -417,5 +419,168 @@ func TestQueueReviewRoundTripsCandidates(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, candidates) {
 		t.Fatalf("candidates_json round-trip = %+v, want %+v", got, candidates)
+	}
+}
+
+// CurrentAllianceID is ingest's entry point into ListMembers/MemberAliases:
+// this bot tracks exactly one alliance, so "most recently observed" must
+// resolve to whichever alliance was most recently ingested, not to
+// insertion order or id order.
+func TestCurrentAllianceIDReturnsTheMostRecentlyObserved(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	suffix := testSuffix()
+	first, err := pool.UpsertAlliance(ctx, Alliance{Tag: "F1-" + suffix, Name: "First " + suffix, MemberCount: 10})
+	if err != nil {
+		t.Fatalf("UpsertAlliance first: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond) // guarantee a strictly later observed_at
+	second, err := pool.UpsertAlliance(ctx, Alliance{Tag: "S1-" + suffix, Name: "Second " + suffix, MemberCount: 20})
+	if err != nil {
+		t.Fatalf("UpsertAlliance second: %v", err)
+	}
+
+	got, err := pool.CurrentAllianceID(ctx)
+	if err != nil {
+		t.Fatalf("CurrentAllianceID: %v", err)
+	}
+	if got != second {
+		t.Fatalf("CurrentAllianceID = %d, want %d (first=%d is older)", got, second, first)
+	}
+}
+
+// Capture is how ingest (Task 12's VS route) would read a capture's own
+// status back; roster ingest does not call it, but it is part of the shared
+// Store interface and owes its own coverage rather than riding on that.
+func TestCaptureReadsBackOneRun(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	accountID := dbtest.SeedAccount(ctx, t, pool)
+	id, err := pool.CreateCapture(ctx, Capture{AccountID: accountID, Route: "roster", ExpectedRows: 96})
+	if err != nil {
+		t.Fatalf("CreateCapture: %v", err)
+	}
+	if err := pool.FinishCapture(ctx, id, "complete", 94, ""); err != nil {
+		t.Fatalf("FinishCapture: %v", err)
+	}
+
+	got, err := pool.Capture(ctx, id)
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if got.ID != id || got.AccountID != accountID || got.Route != "roster" || got.Status != "complete" ||
+		got.ExpectedRows != 96 || got.ParsedRows != 94 {
+		t.Fatalf("Capture = %+v, want id=%d account=%d route=roster status=complete expected=96 parsed=94",
+			got, id, accountID)
+	}
+}
+
+func TestCaptureUnknownIDReturnsErrNotFound(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	if _, err := pool.Capture(ctx, -1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Capture(-1): got %v, want ErrNotFound", err)
+	}
+}
+
+// ScreenshotObjectKey is how ingest turns a capture_frames.screenshot_id
+// into the blob store key it fetches pixels from — the seam this task adds
+// between a stored capture and the bytes ingest actually reads.
+func TestScreenshotObjectKeyResolvesTheStoredKey(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	accountID := dbtest.SeedAccount(ctx, t, pool)
+	shotID := dbtest.SeedScreenshot(ctx, t, pool, accountID)
+
+	key, err := pool.ScreenshotObjectKey(ctx, shotID)
+	if err != nil {
+		t.Fatalf("ScreenshotObjectKey: %v", err)
+	}
+	if key != "test/key.png" {
+		t.Fatalf("key = %q, want %q", key, "test/key.png")
+	}
+}
+
+func TestScreenshotObjectKeyUnknownIDReturnsErrNotFound(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	if _, err := pool.ScreenshotObjectKey(ctx, -1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ScreenshotObjectKey(-1): got %v, want ErrNotFound", err)
+	}
+}
+
+// MemberAliases must scope to the alliance and to active members the same
+// way ListMembers does — the two are folded together into roster.Member at
+// the ingest seam, and a drift between their scopes would let a stale or
+// foreign alias silently match a row it should not.
+func TestMemberAliasesScopesToAllianceAndActive(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	suffix := testSuffix()
+	a1, err := pool.UpsertAlliance(ctx, Alliance{Tag: "MA1-" + suffix, Name: "Alpha " + suffix, MemberCount: 2})
+	if err != nil {
+		t.Fatalf("UpsertAlliance a1: %v", err)
+	}
+	a2, err := pool.UpsertAlliance(ctx, Alliance{Tag: "MA2-" + suffix, Name: "Bravo " + suffix, MemberCount: 1})
+	if err != nil {
+		t.Fatalf("UpsertAlliance a2: %v", err)
+	}
+
+	alice, err := pool.CreateMember(ctx, Member{AllianceID: a1, Name: "Alice", NameNormalized: "alice"})
+	if err != nil {
+		t.Fatalf("CreateMember Alice: %v", err)
+	}
+	bob, err := pool.CreateMember(ctx, Member{AllianceID: a1, Name: "Bob", NameNormalized: "bob"})
+	if err != nil {
+		t.Fatalf("CreateMember Bob: %v", err)
+	}
+	carol, err := pool.CreateMember(ctx, Member{AllianceID: a1, Name: "Carol", NameNormalized: "carol"})
+	if err != nil {
+		t.Fatalf("CreateMember Carol: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE members SET active = false, left_at = now() WHERE id = $1`, carol,
+	); err != nil {
+		t.Fatalf("soft-deleting Carol: %v", err)
+	}
+	dave, err := pool.CreateMember(ctx, Member{AllianceID: a2, Name: "Dave", NameNormalized: "dave"})
+	if err != nil {
+		t.Fatalf("CreateMember Dave: %v", err)
+	}
+
+	for _, al := range []struct {
+		memberID int64
+		alias    string
+	}{
+		{alice, "Alicia"}, {alice, "AL1c3"}, {bob, "Bobby"}, {carol, "Carrie"}, {dave, "David"},
+	} {
+		if err := pool.AddAlias(ctx, al.memberID, al.alias, "manual"); err != nil {
+			t.Fatalf("AddAlias(%d, %q): %v", al.memberID, al.alias, err)
+		}
+	}
+
+	got, err := pool.MemberAliases(ctx, a1)
+	if err != nil {
+		t.Fatalf("MemberAliases: %v", err)
+	}
+	if _, ok := got[carol]; ok {
+		t.Errorf("MemberAliases(a1) includes soft-deleted Carol: %+v", got)
+	}
+	if _, ok := got[dave]; ok {
+		t.Errorf("MemberAliases(a1) includes Dave from a2: %+v", got)
+	}
+	aliceAliases := append([]string(nil), got[alice]...)
+	sort.Strings(aliceAliases)
+	if want := []string{"AL1c3", "Alicia"}; !reflect.DeepEqual(aliceAliases, want) {
+		t.Errorf("MemberAliases(a1)[alice] = %+v, want %+v", aliceAliases, want)
+	}
+	if want := []string{"Bobby"}; !reflect.DeepEqual(got[bob], want) {
+		t.Errorf("MemberAliases(a1)[bob] = %+v, want %+v", got[bob], want)
 	}
 }

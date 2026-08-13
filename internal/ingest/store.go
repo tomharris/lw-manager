@@ -8,7 +8,7 @@ import (
 	"github.com/tomharris/lw-manager/internal/runtime"
 )
 
-// Store persists capture runs the task runtime hands it, satisfying
+// CaptureStore persists capture runs the task runtime hands it, satisfying
 // runtime.CaptureRecorder against *db.Pool.
 //
 // It lives here rather than as a method on *db.Pool because internal/runtime
@@ -24,19 +24,25 @@ import (
 //
 // internal/ingest sits downstream of both — it already turns stored capture
 // frames into facts — and nothing imports it back, so it is where the two
-// meet. Store does the type conversion at that seam and delegates to
+// meet. CaptureStore does the type conversion at that seam and delegates to
 // (*db.Pool).RecordCapture, which does the actual transactional write.
-type Store struct {
+//
+// Named CaptureStore rather than Store to leave that name for the read+write
+// data-access interface Ingester uses below — a task-runtime-facing write
+// adapter and an analytics-facing read/write surface are different
+// consumers, and giving them the same name in the same package invited a
+// collision the moment the second one was written.
+type CaptureStore struct {
 	pool *db.Pool
 }
 
-// NewStore wraps a pool as a runtime.CaptureRecorder.
-func NewStore(pool *db.Pool) *Store {
-	return &Store{pool: pool}
+// NewCaptureStore wraps a pool as a runtime.CaptureRecorder.
+func NewCaptureStore(pool *db.Pool) *CaptureStore {
+	return &CaptureStore{pool: pool}
 }
 
 // RecordCapture implements runtime.CaptureRecorder.
-func (s *Store) RecordCapture(ctx context.Context, accountID int64, route string, frames []runtime.CaptureFrameRef, complete bool) error {
+func (s *CaptureStore) RecordCapture(ctx context.Context, accountID int64, route string, frames []runtime.CaptureFrameRef, complete bool) error {
 	in := make([]db.CaptureFrameInput, len(frames))
 	for i, f := range frames {
 		in[i] = db.CaptureFrameInput{

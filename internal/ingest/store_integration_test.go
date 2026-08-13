@@ -26,13 +26,13 @@ func testPool(t *testing.T) *db.Pool {
 	return p
 }
 
-// Store is the seam between runtime.CaptureRecorder and *db.Pool: this
+// CaptureStore is the seam between runtime.CaptureRecorder and *db.Pool: this
 // exercises it end to end, through runtime.CaptureFrameRef, the type task
 // code actually builds, rather than through db.CaptureFrameInput directly.
 func TestStoreRecordCaptureRoundTripsThroughRuntimeTypes(t *testing.T) {
 	ctx := context.Background()
 	pool := testPool(t)
-	store := NewStore(pool)
+	store := NewCaptureStore(pool)
 
 	accountID := dbtest.SeedAccount(ctx, t, pool)
 	shot := dbtest.SeedScreenshot(ctx, t, pool, accountID)

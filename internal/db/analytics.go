@@ -3,8 +3,11 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	// roster stays data-in: it takes members and aliases as plain values and
 	// must never import internal/db. Storage is allowed to depend on domain
@@ -99,6 +102,54 @@ func (p *Pool) UpsertAlliance(ctx context.Context, a Alliance) (int64, error) {
 		return 0, fmt.Errorf("db: upserting alliance %s/%s: %w", a.Tag, a.Name, err)
 	}
 	return id, nil
+}
+
+// CurrentAllianceID returns the id of the alliance most recently observed —
+// this bot tracks exactly one alliance, so "most recently observed" is
+// "the" alliance rather than a real disambiguation. Returns ErrNotFound
+// before any `alliance` screen has ever been ingested into this table, which
+// is the state of a fresh deployment.
+func (p *Pool) CurrentAllianceID(ctx context.Context) (int64, error) {
+	var id int64
+	err := p.QueryRow(ctx, `SELECT id FROM alliances ORDER BY observed_at DESC LIMIT 1`).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("db: current alliance: %w", ErrNotFound)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("db: resolving current alliance: %w", err)
+	}
+	return id, nil
+}
+
+// Capture fetches one capture run by id.
+func (p *Pool) Capture(ctx context.Context, id int64) (Capture, error) {
+	var c Capture
+	err := p.QueryRow(ctx, `
+		SELECT id, account_id, route, status, coalesce(expected_rows, 0), coalesce(parsed_rows, 0), coalesce(error, '')
+		FROM captures WHERE id = $1`, id).Scan(
+		&c.ID, &c.AccountID, &c.Route, &c.Status, &c.ExpectedRows, &c.ParsedRows, &c.Error)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Capture{}, fmt.Errorf("db: capture %d: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return Capture{}, fmt.Errorf("db: reading capture %d: %w", id, err)
+	}
+	return c, nil
+}
+
+// ScreenshotObjectKey resolves a screenshot id to the blob key its bytes are
+// stored under, which is all ingest needs — it verifies content by re-hashing
+// what it reads, not by trusting a stored digest passed out of band.
+func (p *Pool) ScreenshotObjectKey(ctx context.Context, screenshotID int64) (string, error) {
+	var key string
+	err := p.QueryRow(ctx, `SELECT object_key FROM screenshots WHERE id = $1`, screenshotID).Scan(&key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("db: screenshot %d: %w", screenshotID, ErrNotFound)
+	}
+	if err != nil {
+		return "", fmt.Errorf("db: resolving object key for screenshot %d: %w", screenshotID, err)
+	}
+	return key, nil
 }
 
 // CreateCapture starts a new capture run and returns its id. Rows are
@@ -281,6 +332,34 @@ func (p *Pool) CreateMember(ctx context.Context, m Member) (int64, error) {
 		return 0, fmt.Errorf("db: creating member %q in alliance %d: %w", m.Name, m.AllianceID, err)
 	}
 	return id, nil
+}
+
+// MemberAliases returns every confirmed alias for every active member of an
+// alliance, keyed by member id. Ingest folds this together with ListMembers
+// into roster.Member, whose Aliases field is what makes a past human
+// confirmation match directly next time instead of re-asking review.
+func (p *Pool) MemberAliases(ctx context.Context, allianceID int64) (map[int64][]string, error) {
+	rows, err := p.Query(ctx, `
+		SELECT ma.member_id, ma.alias
+		FROM member_aliases ma
+		JOIN members m ON m.id = ma.member_id
+		WHERE m.alliance_id = $1 AND m.active
+		ORDER BY ma.member_id, ma.created_at`, allianceID)
+	if err != nil {
+		return nil, fmt.Errorf("db: listing aliases for alliance %d: %w", allianceID, err)
+	}
+	defer rows.Close()
+
+	out := make(map[int64][]string)
+	for rows.Next() {
+		var memberID int64
+		var alias string
+		if err := rows.Scan(&memberID, &alias); err != nil {
+			return nil, fmt.Errorf("db: scanning alias for alliance %d: %w", allianceID, err)
+		}
+		out[memberID] = append(out[memberID], alias)
+	}
+	return out, rows.Err()
 }
 
 // AddAlias records a confirmed alternate spelling for a member. Every human

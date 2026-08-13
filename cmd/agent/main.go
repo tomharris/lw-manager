@@ -336,7 +336,7 @@ func runTask(ctx context.Context, cfg config.Config, args []string) error {
 		Graph:           graph,
 		Kill:            runtime.NewDBKillSwitch(pool, *accountID),
 		Capture:         capture.New(pool, blobs, nil),
-		CaptureRecorder: ingest.NewStore(pool),
+		CaptureRecorder: ingest.NewCaptureStore(pool),
 		AccountID:       *accountID,
 		Rand:            rand.New(rand.NewSource(time.Now().UnixNano())),
 	})
@@ -388,7 +388,7 @@ func (e *runtimeExecutor) Execute(ctx context.Context, accountID int64, taskName
 		Graph:           e.graph,
 		Kill:            runtime.NewDBKillSwitch(e.pool, accountID),
 		Capture:         capture.New(e.pool, e.blobs, nil),
-		CaptureRecorder: ingest.NewStore(e.pool),
+		CaptureRecorder: ingest.NewCaptureStore(e.pool),
 		AccountID:       accountID,
 		Rand:            rand.New(rand.NewSource(time.Now().UnixNano())),
 	})
