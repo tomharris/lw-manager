@@ -61,6 +61,16 @@ const (
 	statusYFrac0, statusYFrac1       = 0.0, 0.45
 )
 
+// The MinConf values below are advisory, not enforced: nothing in this file
+// calls ocr.Result.Accepted(spec), so a read below its field's MinConf is
+// neither rejected nor rerouted on that basis alone. The floor actually
+// applied is the flat factConfidenceGate (0.80) in writeFacts, against each
+// field's blended (name-match × OCR) confidence — which exceeds every value
+// declared here, so today this causes no wrong fact to be written. The
+// per-field numbers are kept as documentation of each field's OCR
+// difficulty (a free-text name at 0.4 versus a constrained-charset number at
+// 0.6) and as the Charset each field is actually read with; they are not a
+// second gate.
 var (
 	groupHeaderSpec = ocr.Spec{MinConf: 0.5}
 	nameSpec        = ocr.Spec{MinConf: 0.4}
@@ -235,6 +245,21 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64) (RosterRes
 		regionTop := int(memberListRegion.Y1 * float64(img.Bounds().Dy()))
 		for _, band := range bands {
 			rowY := gt.contentY + (band.Y0 - regionTop)
+			// The design doc also specifies an identity-based cross-check
+			// alongside this geometric dedupe, flagging a disagreement
+			// between the two counts. It is deliberately not implemented
+			// here. That check exists to catch a member's row appearing at
+			// two different screen positions at once — which geometric
+			// dedupe structurally cannot detect, since it only compares a
+			// row's position to the previous one — and the only place recon
+			// observed that phenomenon is the VS ranking's pinned self row
+			// (docs/superpowers/specs/2026-08-12-m4-recon-findings.md §2:
+			// "the self row is pinned... and also appears in its natural
+			// position"). Recon's roster notes (§1) record no such
+			// duplicate: the logged-in account's row is unremarkable except
+			// for lacking a Manage button. A pinned row is a property of the
+			// VS ranking screen, not of alliance_members, so the identity
+			// cross-check belongs to the VS ingest path, not here.
 			if gt.lastRowY >= 0 && rowY <= gt.lastRowY+memberRowPitch/2 {
 				continue // geometric duplicate; OCR never runs on it
 			}
