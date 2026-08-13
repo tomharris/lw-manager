@@ -472,3 +472,45 @@ func TestVSCaptureRecordsAnIncompleteScrollAsPartial(t *testing.T) {
 		t.Error("want at least one frame recorded — a partial capture's frames are still evidence")
 	}
 }
+
+// This is the branch with the sharpest consequence: the weekly ranking lists
+// only members with a nonzero score (94 ranked rows against 96 members), so
+// ingest reads an absent member as a zero only on a capture proven to have
+// reached the bottom. A genuine mid-scroll error — not just running out of
+// frame budget — must still persist what was captured before it, mark that
+// capture not complete, and surface the failure to the scheduler rather than
+// swallowing it. Losing the frames here would discard evidence outright;
+// recording them as complete would silently zero out members who were simply
+// never photographed.
+//
+// The shift of 180px is measured, not guessed: vsListRegion/vsRowPitch give
+// a usable height of 118px at vsFrameH (246px of region less one 128px row),
+// so a single swipe reporting 180px of travel is unambiguously further than
+// the visible region could have shown — vision.ScrollOffset confirms it
+// measures cleanly at exactly 180 for this shift, rather than wrapping into
+// something smaller via vsStripePeriod, the way a larger shift can (measured
+// by sweeping shift values against vision.ScrollOffset directly).
+func TestVSCaptureRecordsThePartialScrollAndReturnsTheErrorOnAGenuineScrollFailure(t *testing.T) {
+	frames := append(vsHappyPathFrames(), vsExpandScrollScript([]int{180})...)
+
+	rt, _, rec := newVSHarness(t, frames)
+	fn, _ := Get("vs_capture")
+	err := fn(context.Background(), rt)
+
+	if !errors.Is(err, ErrScrollOvershot) {
+		t.Fatalf("got %v, want it to wrap ErrScrollOvershot — a genuine scroll failure must be visible to the caller, not swallowed", err)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("got %d RecordCapture calls, want exactly 1 — the frames collected before the failure must still be persisted", len(rec.calls))
+	}
+	call := rec.calls[0]
+	if call.route != "vs_ranking" {
+		t.Errorf("route = %q, want %q", call.route, "vs_ranking")
+	}
+	if call.complete {
+		t.Error("want complete = false — a mid-scroll failure must never be recorded as a proven bottom")
+	}
+	if len(call.frames) == 0 {
+		t.Error("want at least one frame recorded — the frame-0 capture taken before the overshot swipe is still evidence and must not be discarded")
+	}
+}
