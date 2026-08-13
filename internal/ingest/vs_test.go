@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/tomharris/lw-manager/internal/db"
 	"github.com/tomharris/lw-manager/internal/ocr"
@@ -28,7 +29,7 @@ type vsFakeStore struct {
 }
 
 func (s *vsFakeStore) Capture(ctx context.Context, id int64) (db.Capture, error) {
-	return db.Capture{ID: id, Status: s.status}, nil
+	return db.Capture{ID: id, Status: s.status, StartedAt: s.startedAt}, nil
 }
 
 // --- harness -----------------------------------------------------------------
@@ -289,6 +290,43 @@ func TestIngestVSInferredZeroCarriesLowerConfidenceThanARead(t *testing.T) {
 		sawRead = true
 		if f.Confidence <= zeroInferenceConfidence {
 			t.Errorf("read fact confidence %v does not exceed the inferred-zero confidence %v", f.Confidence, zeroInferenceConfidence)
+		}
+	}
+	if !sawRead || !sawInferredZero {
+		t.Fatalf("expected both a read fact and an inferred zero in this fixture, sawRead=%v sawInferredZero=%v", sawRead, sawInferredZero)
+	}
+}
+
+// Replay: IngestVS already took periodKey as an explicit argument, but
+// ObservedAt was still stamped from time.Now() internally — the same defect
+// TestIngestRosterStampsFactsWithTheCapturesStartedAtNotWallClockNow checks
+// for the roster route. startedAt is set six years in the past so a
+// wall-clock fallback would fail regardless of what day this test runs.
+// Covers both a read fact and an inferred zero, since they take different
+// code paths to InsertFact.
+func TestIngestVSStampsFactsWithTheCapturesStartedAtNotWallClockNow(t *testing.T) {
+	h := newVSIngestHarness(t, vsFixture{captureComplete: true, rosterSize: 3, rankedRows: 2})
+	past := time.Date(2020, 1, 15, 9, 30, 0, 0, time.UTC)
+	h.store.startedAt = past
+
+	if _, err := h.IngestVS(context.Background(), 1, "2020-W03"); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	var sawRead, sawInferredZero bool
+	for _, f := range h.store.Facts {
+		if f.Metric != "vs_points" {
+			continue
+		}
+		if !f.ObservedAt.Equal(past) {
+			t.Errorf("fact %+v ObservedAt = %v, want the capture's started_at %v, not wall-clock now", f, f.ObservedAt, past)
+		}
+		if f.PeriodKey != "2020-W03" {
+			t.Errorf("fact %+v PeriodKey = %q, want 2020-W03", f, f.PeriodKey)
+		}
+		if f.Value == 0 {
+			sawInferredZero = true
+		} else {
+			sawRead = true
 		}
 	}
 	if !sawRead || !sawInferredZero {

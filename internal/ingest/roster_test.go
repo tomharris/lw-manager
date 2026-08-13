@@ -8,12 +8,19 @@ import (
 	"image/png"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/tomharris/lw-manager/internal/blob"
 	"github.com/tomharris/lw-manager/internal/db"
 	"github.com/tomharris/lw-manager/internal/ocr"
 	"github.com/tomharris/lw-manager/internal/roster"
 )
+
+// testPeriodKey is the periodKey most tests in this file pass to
+// IngestRoster — its exact form doesn't matter to them, only that it round-
+// trips onto the facts written, which TestIngestRosterWritesFactsWithScreenshotProvenance
+// and the replay-specific tests below check directly.
+const testPeriodKey = "2026-08-01"
 
 // --- fakes -------------------------------------------------------------
 
@@ -25,6 +32,7 @@ type fakeIngestStore struct {
 	aliases    map[int64][]string
 	objectKeys map[int64]string
 	allianceID int64
+	startedAt  time.Time
 
 	nextMemberID int64
 
@@ -36,7 +44,7 @@ type fakeIngestStore struct {
 }
 
 func (s *fakeIngestStore) Capture(ctx context.Context, id int64) (db.Capture, error) {
-	return db.Capture{ID: id}, nil
+	return db.Capture{ID: id, StartedAt: s.startedAt}, nil
 }
 
 func (s *fakeIngestStore) CaptureFrames(ctx context.Context, captureID int64) ([]db.CaptureFrame, error) {
@@ -334,7 +342,7 @@ func TestIngestRosterRefusesToCreateBeyondTheGroupCount(t *testing.T) {
 		extraGarbled: 1,
 	})
 
-	res, err := h.IngestRoster(context.Background(), 1)
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
 	if err != nil {
 		t.Fatalf("IngestRoster: %v", err)
 	}
@@ -349,7 +357,7 @@ func TestIngestRosterRefusesToCreateBeyondTheGroupCount(t *testing.T) {
 func TestIngestRosterMarksAShortGroupPartial(t *testing.T) {
 	h := newRosterIngestHarness(t, rosterFixture{group: "R3", groupTotal: 64, parsedRows: 60})
 
-	res, err := h.IngestRoster(context.Background(), 1)
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
 	if err != nil {
 		t.Fatalf("IngestRoster: %v", err)
 	}
@@ -366,7 +374,7 @@ func TestIngestRosterQueuesALowConfidenceNameRatherThanGuessing(t *testing.T) {
 		group: "R2", groupTotal: 11, existing: 11, ambiguousName: true,
 	})
 
-	res, err := h.IngestRoster(context.Background(), 1)
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
 	if err != nil {
 		t.Fatalf("IngestRoster: %v", err)
 	}
@@ -378,7 +386,7 @@ func TestIngestRosterQueuesALowConfidenceNameRatherThanGuessing(t *testing.T) {
 func TestIngestRosterWritesFactsWithScreenshotProvenance(t *testing.T) {
 	h := newRosterIngestHarness(t, rosterFixture{group: "R2", groupTotal: 2, existing: 2})
 
-	if _, err := h.IngestRoster(context.Background(), 1); err != nil {
+	if _, err := h.IngestRoster(context.Background(), 1, testPeriodKey); err != nil {
 		t.Fatalf("IngestRoster: %v", err)
 	}
 	for _, f := range h.store.Facts {
@@ -401,7 +409,7 @@ func TestIngestRosterWritesTheFieldsThatParsedWhenOneDoesNot(t *testing.T) {
 		group: "R1", groupTotal: 5, unparseablePower: true,
 	})
 
-	res, err := h.IngestRoster(context.Background(), 1)
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
 	if err != nil {
 		t.Fatalf("IngestRoster: %v", err)
 	}
@@ -439,7 +447,7 @@ func TestIngestRosterCountsAPartiallyParsedRowTowardReconciliation(t *testing.T)
 		group: "R1", groupTotal: 1, unparseablePower: true,
 	})
 
-	res, err := h.IngestRoster(context.Background(), 1)
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
 	if err != nil {
 		t.Fatalf("IngestRoster: %v", err)
 	}
@@ -462,7 +470,7 @@ func TestIngestRosterNeverWritesAFactBelowTheConfidenceGate(t *testing.T) {
 		group: "R1", groupTotal: 5, lowConfidencePower: true,
 	})
 
-	res, err := h.IngestRoster(context.Background(), 1)
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
 	if err != nil {
 		t.Fatalf("IngestRoster: %v", err)
 	}
@@ -521,7 +529,7 @@ func TestIngestRosterDiscardsTheOccludedTopRow(t *testing.T) {
 	}
 	h.engine.Results = results
 
-	res, err := h.IngestRoster(context.Background(), 1)
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
 	if err != nil {
 		t.Fatalf("IngestRoster: %v (an unexpected OCR call means the occluded row was not dropped)", err)
 	}
@@ -530,5 +538,37 @@ func TestIngestRosterDiscardsTheOccludedTopRow(t *testing.T) {
 	}
 	if res.Created != 11 {
 		t.Errorf("created %d members, want 11", res.Created)
+	}
+}
+
+// Replay: a parser fix rerun over a capture from long ago must write the
+// same facts it would have written on capture day, not today's. startedAt
+// is set six years in the past and asserted directly against every fact's
+// ObservedAt and PeriodKey — a test using a recent timestamp would pass
+// whether or not IngestRoster actually used it, since "recent" and "now"
+// are hard to tell apart.
+func TestIngestRosterStampsFactsWithTheCapturesStartedAtNotWallClockNow(t *testing.T) {
+	h := newRosterIngestHarness(t, rosterFixture{group: "R1", groupTotal: 1, parsedRows: 1})
+	past := time.Date(2020, 1, 15, 9, 30, 0, 0, time.UTC)
+	h.store.startedAt = past
+	const replayPeriodKey = "2020-01-15"
+
+	res, err := h.IngestRoster(context.Background(), 1, replayPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Created != 1 {
+		t.Fatalf("created %d members, want 1", res.Created)
+	}
+	if len(h.store.Facts) == 0 {
+		t.Fatal("no facts were written")
+	}
+	for _, f := range h.store.Facts {
+		if !f.ObservedAt.Equal(past) {
+			t.Errorf("fact %+v ObservedAt = %v, want the capture's started_at %v, not wall-clock now", f, f.ObservedAt, past)
+		}
+		if f.PeriodKey != replayPeriodKey {
+			t.Errorf("fact %+v PeriodKey = %q, want the derived replay period %q, not today's", f, f.PeriodKey, replayPeriodKey)
+		}
 	}
 }

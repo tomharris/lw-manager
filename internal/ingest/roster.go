@@ -162,7 +162,21 @@ type groupTracker struct {
 // which group it is looking at. Every frame carries its own evidence
 // instead, in its sticky group header, which this function OCRs on every
 // frame rather than trusting a label asserted elsewhere.
-func (i *Ingester) IngestRoster(ctx context.Context, captureID int64) (RosterResult, error) {
+//
+// periodKey is supplied by the caller rather than computed here, matching
+// IngestVS's shape — both routes take it as an explicit argument so the
+// caller (cmd/control's `ingest` command) derives it once, from the
+// capture's own started_at, and neither route can silently fall back to
+// wall-clock now. observedAt (the facts' own timestamp) is likewise pinned
+// to the capture's started_at rather than time.Now(): a parser fix replayed
+// over a capture from months ago must write the same facts it would have
+// written the day the screenshot was taken, and stamping "now" on either
+// value would defeat that.
+func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey string) (RosterResult, error) {
+	capture, err := i.store.Capture(ctx, captureID)
+	if err != nil {
+		return RosterResult{}, fmt.Errorf("ingest: loading capture %d: %w", captureID, err)
+	}
 	frames, err := i.store.CaptureFrames(ctx, captureID)
 	if err != nil {
 		return RosterResult{}, fmt.Errorf("ingest: loading frames for capture %d: %w", captureID, err)
@@ -181,14 +195,13 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64) (RosterRes
 		return RosterResult{}, fmt.Errorf("ingest: listing aliases for alliance %d: %w", allianceID, err)
 	}
 
-	observedAt := time.Now().UTC()
 	run := &rosterRun{
 		captureID:  captureID,
 		allianceID: allianceID,
 		members:    toRosterMembers(dbMembers, aliases),
 		groups:     map[string]*groupTracker{},
-		observedAt: observedAt,
-		periodKey:  observedAt.Format("2006-01-02"),
+		observedAt: capture.StartedAt,
+		periodKey:  periodKey,
 		res:        RosterResult{PerGroup: map[string]GroupTally{}},
 	}
 

@@ -25,7 +25,7 @@ import (
 // and an *ingest.Ingester.
 type ingester interface {
 	Capture(ctx context.Context, id int64) (db.Capture, error)
-	IngestRoster(ctx context.Context, captureID int64) (ingest.RosterResult, error)
+	IngestRoster(ctx context.Context, captureID int64, periodKey string) (ingest.RosterResult, error)
 	IngestVS(ctx context.Context, captureID int64, periodKey string) (ingest.VSResult, error)
 }
 
@@ -41,8 +41,8 @@ func (s ingestService) Capture(ctx context.Context, id int64) (db.Capture, error
 	return s.pool.Capture(ctx, id)
 }
 
-func (s ingestService) IngestRoster(ctx context.Context, captureID int64) (ingest.RosterResult, error) {
-	return s.ing.IngestRoster(ctx, captureID)
+func (s ingestService) IngestRoster(ctx context.Context, captureID int64, periodKey string) (ingest.RosterResult, error) {
+	return s.ing.IngestRoster(ctx, captureID, periodKey)
 }
 
 func (s ingestService) IngestVS(ctx context.Context, captureID int64, periodKey string) (ingest.VSResult, error) {
@@ -117,7 +117,7 @@ func runIngest(out, errOut io.Writer, args []string, svc ingester) int {
 
 	switch capture.Route {
 	case "roster":
-		res, err := svc.IngestRoster(ctx, *captureID)
+		res, err := svc.IngestRoster(ctx, *captureID, periodKey)
 		if err != nil {
 			logger.ErrorContext(ctx, "control ingest: roster ingest failed", "capture_id", *captureID, "error", err)
 			return 1

@@ -17,9 +17,10 @@ import (
 // call shape the task brief specifies), so a pointer field is what lets a
 // test observe which route actually ran without changing that shape.
 type callLog struct {
-	rosterCalls int
-	vsCalls     int
-	vsPeriod    string
+	rosterCalls  int
+	rosterPeriod string
+	vsCalls      int
+	vsPeriod     string
 }
 
 // fakeIngester is a device- and database-free stand-in for ingestService. Its
@@ -57,9 +58,10 @@ func (f fakeIngester) Capture(ctx context.Context, id int64) (db.Capture, error)
 	return db.Capture{ID: id, Route: route, StartedAt: f.startedAt, Status: status}, nil
 }
 
-func (f fakeIngester) IngestRoster(ctx context.Context, captureID int64) (ingest.RosterResult, error) {
+func (f fakeIngester) IngestRoster(ctx context.Context, captureID int64, periodKey string) (ingest.RosterResult, error) {
 	if f.calls != nil {
 		f.calls.rosterCalls++
+		f.calls.rosterPeriod = periodKey
 	}
 	if f.rosterErr != nil {
 		return ingest.RosterResult{}, f.rosterErr
@@ -210,6 +212,29 @@ func TestIngestDefaultPeriodKeyForVSIsTheISOWeekOfTheCaptureNotNow(t *testing.T)
 	}
 	if !strings.Contains(out.String(), "period=2026-W33") {
 		t.Errorf("stdout %q missing period=2026-W33", out.String())
+	}
+}
+
+func TestIngestDefaultPeriodKeyForRosterIsTheDateOfTheCaptureNotNow(t *testing.T) {
+	var out, errOut bytes.Buffer
+	calls := &callLog{}
+	// Same reasoning as the VS test above, for the roster route's date-form
+	// default: a fixed, long-past timestamp so a wall-clock fallback would
+	// fail on every day except the one this test happened to run on.
+	svc := fakeIngester{
+		route:     "roster",
+		startedAt: time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC),
+		calls:     calls,
+	}
+	code := runIngest(&out, &errOut, []string{"--capture", "9"}, svc)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0: %s", code, errOut.String())
+	}
+	if calls.rosterPeriod != "2026-08-12" {
+		t.Errorf("period passed to IngestRoster = %q, want 2026-08-12", calls.rosterPeriod)
+	}
+	if !strings.Contains(out.String(), "period=2026-08-12") {
+		t.Errorf("stdout %q missing period=2026-08-12", out.String())
 	}
 }
 

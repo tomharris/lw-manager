@@ -115,7 +115,10 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 	}
 	members := toRosterMembers(dbMembers, aliases)
 
-	observedAt := time.Now().UTC()
+	// observedAt is the capture's own started_at, not wall-clock now — see
+	// IngestRoster's doc comment for why: a replayed ingest run must write
+	// the same facts it would have written on capture day.
+	observedAt := capture.StartedAt
 	run := &vsRun{
 		captureID:  captureID,
 		observedAt: observedAt,
