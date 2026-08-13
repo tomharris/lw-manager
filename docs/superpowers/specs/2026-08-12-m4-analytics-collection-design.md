@@ -22,7 +22,7 @@ Two of the design doc's six collection routes:
 | route | screen path | yields |
 |---|---|---|
 | `roster` | Alliance → Members | name, rank, power, level, last-active |
-| `vs_ranking` | base → VS → Ranking → Weekly → Your Alliance | per-member VS points |
+| `vs_ranking` | base → VS → Alliance Duel → Ranking → Weekly → Your Alliance | per-member VS points |
 
 `vs_ranking` is the gate. `roster` is not optional despite not being named by
 the gate: `participation_facts` has a foreign key to `members`, and the fuzzy

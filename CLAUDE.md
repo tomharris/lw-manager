@@ -7,10 +7,13 @@ screens on a schedule and feed the parser directly.
 
 Those are two separate routes, not one chain. The roster is Alliance →
 Members. The VS ranking is **not reachable from Alliance at all**: it is
-base → VS → Ranking → "weekly ranking" tab → select your alliance. Earlier
-docs describe it as "Alliance → Members → VS Ranking", which is wrong and is
-worth correcting wherever it appears — a route that does not exist is the
-kind of thing a task gets written against.
+base → VS → Alliance Duel → Ranking → "weekly ranking" tab → select your
+alliance. VS is the button, not the screen — it lands on a screen titled
+ALLIANCE DUEL, and eliding that step is exactly the conflation that let a
+screen labelled `vs` stand uncorrected for three weeks (see the corpus
+section). Earlier docs describe the whole route as "Alliance → Members → VS
+Ranking", which is wrong and is worth correcting wherever it appears — a
+route that does not exist is the kind of thing a task gets written against.
 
 Full design: `docs/lastwar-platform-design.gen`.
 Current milestone spec: `docs/superpowers/specs/`.
