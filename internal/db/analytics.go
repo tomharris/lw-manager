@@ -464,6 +464,144 @@ func (p *Pool) QueueReview(ctx context.Context, r ReviewItem) (int64, error) {
 	return id, nil
 }
 
+// PendingReviews returns every review item still awaiting a human decision,
+// oldest first -- the order a reviewer works down the queue in.
+func (p *Pool) PendingReviews(ctx context.Context) ([]ReviewItem, error) {
+	rows, err := p.Query(ctx, `
+		SELECT id, coalesce(capture_id, 0), screenshot_id, row_y0, row_y1,
+		       raw_text, candidates_json, reason, coalesce(confidence, 0)
+		FROM review_queue
+		WHERE status = 'pending'
+		ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("db: listing pending reviews: %w", err)
+	}
+	defer rows.Close()
+	return scanReviewItems(rows)
+}
+
+// Review fetches one review item by id, whatever its status -- a reviewer
+// reloading the page for an item they just resolved (a stale tab, a double
+// click) still needs it to load rather than 404, most concretely to fetch
+// its crop.
+func (p *Pool) Review(ctx context.Context, id int64) (ReviewItem, error) {
+	rows, err := p.Query(ctx, `
+		SELECT id, coalesce(capture_id, 0), screenshot_id, row_y0, row_y1,
+		       raw_text, candidates_json, reason, coalesce(confidence, 0)
+		FROM review_queue
+		WHERE id = $1`, id)
+	if err != nil {
+		return ReviewItem{}, fmt.Errorf("db: reading review %d: %w", id, err)
+	}
+	defer rows.Close()
+	items, err := scanReviewItems(rows)
+	if err != nil {
+		return ReviewItem{}, err
+	}
+	if len(items) == 0 {
+		return ReviewItem{}, fmt.Errorf("db: review %d: %w", id, ErrNotFound)
+	}
+	return items[0], nil
+}
+
+// scanReviewItems decodes candidates_json back into []roster.Candidate for
+// every row read, the reverse of the json.Marshal QueueReview does going in.
+func scanReviewItems(rows pgx.Rows) ([]ReviewItem, error) {
+	var out []ReviewItem
+	for rows.Next() {
+		var r ReviewItem
+		var candidatesJSON []byte
+		if err := rows.Scan(&r.ID, &r.CaptureID, &r.ScreenshotID, &r.RowY0, &r.RowY1,
+			&r.RawText, &candidatesJSON, &r.Reason, &r.Confidence); err != nil {
+			return nil, fmt.Errorf("db: scanning review item: %w", err)
+		}
+		var candidates []roster.Candidate
+		if err := json.Unmarshal(candidatesJSON, &candidates); err != nil {
+			return nil, fmt.Errorf("db: decoding candidates for review %d: %w", r.ID, err)
+		}
+		r.Candidates = candidates
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ResolveReview marks a review item resolved and records the human's
+// confirmation as a member alias -- the mechanism that makes matching
+// compound, per CLAUDE.md: tomorrow's identical misread matches directly
+// instead of queueing again.
+//
+// It deliberately does not also write a participation fact, despite that
+// being task-14's stated requirement. Every review item this UI shows
+// carries only a raw_text/candidates pair -- an ambiguous or unmatched
+// *name* -- because internal/ingest/roster.go and vs.go's processRow send a
+// name that fails to resolve to a member straight to review with no
+// memberID, and, critically, without the row's other already-OCR'd fields
+// (power/level/last_active_hours, or vs_points): those values are read
+// (see roster.go's processRow, which parses power/level/last-active *before*
+// checking candidates) but then simply discarded when the name branch is
+// "ambiguous_name_match" or "no_confident_match" rather than a clean match,
+// per roster.go's own comment at the top of processRow ("without a memberID
+// no fact has anywhere to attach"). So even now that a human has supplied
+// the missing memberID, there is no value left to attach it to: nothing
+// downstream of review_queue kept one. Writing a fact here would mean
+// inventing its value, which invariants #4 and #5 rule out. Flagged in the
+// task-14 report as a gap in what ingest persists to review_queue, not
+// something patched over here.
+//
+// The UPDATE's own "WHERE status = 'pending'" is the concurrency guard: a
+// second resolve of the same id (a duplicate form submit, a slow response
+// resubmitted) touches zero rows and reports ErrNotFound rather than writing
+// a second alias.
+func (p *Pool) ResolveReview(ctx context.Context, id, memberID int64, resolvedBy string) error {
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("db: resolving review %d: %w", id, err)
+	}
+	defer tx.Rollback(ctx)
+
+	var rawText string
+	err = tx.QueryRow(ctx, `
+		UPDATE review_queue SET status = 'resolved', resolved_by = $2, resolved_at = now()
+		WHERE id = $1 AND status = 'pending'
+		RETURNING raw_text`, id, resolvedBy).Scan(&rawText)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("db: review %d: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("db: marking review %d resolved: %w", id, err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO member_aliases (member_id, alias, alias_normalized, source)
+		VALUES ($1, $2, $3, 'review')
+		ON CONFLICT (member_id, alias_normalized) DO NOTHING`,
+		memberID, rawText, roster.Normalize(rawText)); err != nil {
+		return fmt.Errorf("db: aliasing %q to member %d for review %d: %w", rawText, memberID, id, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("db: committing resolution of review %d: %w", id, err)
+	}
+	return nil
+}
+
+// RejectReview marks a review item rejected: not any known member, or the
+// read is unusable. It writes neither an alias nor a fact -- rejection is a
+// statement that this row taught nothing, not a claim about anyone's
+// identity.
+func (p *Pool) RejectReview(ctx context.Context, id int64, resolvedBy string) error {
+	tag, err := p.Exec(ctx, `
+		UPDATE review_queue SET status = 'rejected', resolved_by = $2, resolved_at = now()
+		WHERE id = $1 AND status = 'pending'`, id, resolvedBy)
+	if err != nil {
+		return fmt.Errorf("db: rejecting review %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("db: review %d: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 // nullString converts an empty string to SQL NULL, so an optional column
 // stays NULL instead of storing "" when the caller has no value.
 func nullString(s string) any {

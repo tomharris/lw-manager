@@ -148,3 +148,34 @@ var cropTmpl = template.Must(template.New("crop").Parse(layout + `
 })();
 </script>
 `))
+
+// reviewTmpl lists every pending review item: the crop of the actual pixels
+// (never a review without the pixels), the raw OCR text, the ranked
+// candidates with their scores, and the confidence that failed to clear the
+// write-time gate. Resolving picks a candidate; rejecting needs no reason
+// beyond "not any of these, or unusable".
+var reviewTmpl = template.Must(template.New("review").Parse(layout + `
+<h1>review <span class="count">({{len .Items}})</span></h1>
+<div class="grid">
+{{range .Items}}
+ <div class="card">
+  <a href="/review/{{.ID}}/crop"><img src="/review/{{.ID}}/crop" alt="row crop for review {{.ID}}"></a>
+  <p><strong>raw:</strong> {{.RawText}}</p>
+  {{if .Reason}}<p><strong>reason:</strong> {{.Reason}}</p>{{end}}
+  {{if .Confidence}}<p><strong>confidence:</strong> {{printf "%.2f" .Confidence}}</p>{{end}}
+  <form method="post" action="/review/{{.ID}}/resolve">
+   <label>member
+    <select name="member_id" required>
+     <option value="" disabled selected>choose a candidate</option>
+     {{range .Candidates}}<option value="{{.MemberID}}">{{.Name}} ({{.Score}})</option>{{end}}
+    </select>
+   </label>
+   <button>resolve</button>
+  </form>
+  <form method="post" action="/review/{{.ID}}/reject">
+   <button>reject</button>
+  </form>
+ </div>
+{{end}}
+</div>
+`))

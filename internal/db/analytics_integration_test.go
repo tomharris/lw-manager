@@ -587,3 +587,214 @@ func TestMemberAliasesScopesToAllianceAndActive(t *testing.T) {
 		t.Errorf("MemberAliases(a1)[bob] = %+v, want %+v", got[bob], want)
 	}
 }
+
+// seedPendingReview queues one review item with a unique raw_text (so a
+// database that is never dropped between `make test-integration` runs can
+// never confuse this run's row with a previous one) and returns its id.
+func seedPendingReview(ctx context.Context, t *testing.T, pool *Pool, accountID int64, candidates []roster.Candidate) (id int64, rawText string) {
+	t.Helper()
+	shotID := dbtest.SeedScreenshot(ctx, t, pool, accountID)
+	rawText = "kaln445-" + testSuffix()
+	id, err := pool.QueueReview(ctx, ReviewItem{
+		ScreenshotID: shotID, RowY0: 100, RowY1: 140,
+		RawText: rawText, Candidates: candidates, Reason: "ambiguous_name_match",
+	})
+	if err != nil {
+		t.Fatalf("QueueReview: %v", err)
+	}
+	return id, rawText
+}
+
+func TestPendingReviewsListsAQueuedItemAndReviewFetchesItByID(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	accountID := dbtest.SeedAccount(ctx, t, pool)
+	candidates := []roster.Candidate{{MemberID: 1, Name: "Kain445", Score: 86}}
+	id, rawText := seedPendingReview(ctx, t, pool, accountID, candidates)
+
+	pending, err := pool.PendingReviews(ctx)
+	if err != nil {
+		t.Fatalf("PendingReviews: %v", err)
+	}
+	var found *ReviewItem
+	for i := range pending {
+		if pending[i].ID == id {
+			found = &pending[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("PendingReviews did not include review %d among %+v", id, pending)
+	}
+	if found.RawText != rawText {
+		t.Errorf("RawText = %q, want %q", found.RawText, rawText)
+	}
+	if !reflect.DeepEqual(found.Candidates, candidates) {
+		t.Errorf("Candidates = %+v, want %+v", found.Candidates, candidates)
+	}
+
+	got, err := pool.Review(ctx, id)
+	if err != nil {
+		t.Fatalf("Review(%d): %v", id, err)
+	}
+	if got.RawText != rawText || !reflect.DeepEqual(got.Candidates, candidates) {
+		t.Fatalf("Review(%d) = %+v, want raw_text %q and candidates %+v", id, got, rawText, candidates)
+	}
+}
+
+func TestReviewUnknownIDReturnsErrNotFound(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	if _, err := pool.Review(ctx, -1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Review(-1): err = %v, want ErrNotFound", err)
+	}
+}
+
+// ResolveReview must write the alias, so tomorrow's identical misread
+// matches directly instead of queueing again -- and, having done that, must
+// not let a second resolve of the same item (a duplicate form submit) write
+// a second alias or resolve something that is no longer pending.
+func TestResolveReviewWritesAnAliasAndIsNotDoubleApplied(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	allianceID, err := pool.UpsertAlliance(ctx, Alliance{Tag: "RVW" + testSuffix(), Name: "Review Test Alliance"})
+	if err != nil {
+		t.Fatalf("UpsertAlliance: %v", err)
+	}
+	// The member name is unique to this test run, not the literal "Kain445"
+	// TestFactsAreAppendOnlyAndSupersede uses: that test's own cleanup step
+	// (`DELETE FROM members WHERE name = 'Kain445'`) would otherwise hit the
+	// member_aliases row ResolveReview writes below on a later run, since
+	// member_aliases has no ON DELETE CASCADE from members -- turning this
+	// test's leftover state into a foreign-key failure in an unrelated test.
+	memberName := "Kain445-" + testSuffix()
+	memberID, err := pool.CreateMember(ctx, Member{
+		AllianceID: allianceID, Name: memberName, NameNormalized: roster.Normalize(memberName),
+	})
+	if err != nil {
+		t.Fatalf("CreateMember: %v", err)
+	}
+	accountID := dbtest.SeedAccount(ctx, t, pool)
+	id, rawText := seedPendingReview(ctx, t, pool, accountID, []roster.Candidate{{MemberID: memberID, Name: memberName, Score: 86}})
+
+	if err := pool.ResolveReview(ctx, id, memberID, "reviewer@test"); err != nil {
+		t.Fatalf("ResolveReview: %v", err)
+	}
+
+	aliases, err := pool.MemberAliases(ctx, allianceID)
+	if err != nil {
+		t.Fatalf("MemberAliases: %v", err)
+	}
+	if got := aliases[memberID]; len(got) != 1 || got[0] != rawText {
+		t.Fatalf("MemberAliases[%d] = %+v, want [%q]", memberID, got, rawText)
+	}
+
+	pending, err := pool.PendingReviews(ctx)
+	if err != nil {
+		t.Fatalf("PendingReviews: %v", err)
+	}
+	for _, p := range pending {
+		if p.ID == id {
+			t.Fatalf("review %d is still pending after being resolved", id)
+		}
+	}
+
+	// The guard the "WHERE status = 'pending'" clause exists for: resolving
+	// the same item again (a duplicate form submit) must not write a second
+	// alias, and must report ErrNotFound rather than silently succeeding.
+	if err := pool.ResolveReview(ctx, id, memberID, "reviewer@test"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second ResolveReview: err = %v, want ErrNotFound", err)
+	}
+	aliases, err = pool.MemberAliases(ctx, allianceID)
+	if err != nil {
+		t.Fatalf("MemberAliases (after second resolve attempt): %v", err)
+	}
+	if got := aliases[memberID]; len(got) != 1 {
+		t.Fatalf("MemberAliases[%d] = %+v after a duplicate resolve, want still exactly 1", memberID, got)
+	}
+}
+
+// A review item this UI ever shows carries only a raw name and its ranked
+// candidates -- the numeric value a fact would need (points, power, ...) was
+// already read by OCR at ingest time but never carried into review_queue
+// (see internal/ingest/roster.go's processRow and vs.go's equivalent: a name
+// that fails to resolve sends the whole row to review with no memberID to
+// hang a fact off, and the row's other already-parsed fields are discarded
+// right there). So ResolveReview must not fabricate a participation fact --
+// there is no value in the row to give it. This is the gap flagged in the
+// task-14 report, verified here directly rather than left as a documented
+// assumption.
+func TestResolveReviewWritesNoParticipationFact(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	allianceID, err := pool.UpsertAlliance(ctx, Alliance{Tag: "RVF" + testSuffix(), Name: "Review Fact Test Alliance"})
+	if err != nil {
+		t.Fatalf("UpsertAlliance: %v", err)
+	}
+	// See TestResolveReviewWritesAnAliasAndIsNotDoubleApplied for why this
+	// member's name must not literally be "Kain445".
+	memberName := "Kain445-" + testSuffix()
+	memberID, err := pool.CreateMember(ctx, Member{
+		AllianceID: allianceID, Name: memberName, NameNormalized: roster.Normalize(memberName),
+	})
+	if err != nil {
+		t.Fatalf("CreateMember: %v", err)
+	}
+	accountID := dbtest.SeedAccount(ctx, t, pool)
+	id, _ := seedPendingReview(ctx, t, pool, accountID, []roster.Candidate{{MemberID: memberID, Name: memberName, Score: 86}})
+
+	var before int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM participation_facts WHERE member_id = $1`, memberID).Scan(&before); err != nil {
+		t.Fatalf("counting facts before resolve: %v", err)
+	}
+	if err := pool.ResolveReview(ctx, id, memberID, "reviewer@test"); err != nil {
+		t.Fatalf("ResolveReview: %v", err)
+	}
+	var after int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM participation_facts WHERE member_id = $1`, memberID).Scan(&after); err != nil {
+		t.Fatalf("counting facts after resolve: %v", err)
+	}
+	if after != before {
+		t.Fatalf("participation_facts for member %d went from %d to %d rows across a resolve; want unchanged", memberID, before, after)
+	}
+}
+
+// RejectReview marks the item rejected without writing an alias for anyone
+// -- a rejection is a statement that the row taught nothing, not a claim
+// about whose row it was.
+func TestRejectReviewMarksRejectedAndWritesNoAlias(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	accountID := dbtest.SeedAccount(ctx, t, pool)
+	id, _ := seedPendingReview(ctx, t, pool, accountID, nil)
+
+	if err := pool.RejectReview(ctx, id, "reviewer@test"); err != nil {
+		t.Fatalf("RejectReview: %v", err)
+	}
+
+	pending, err := pool.PendingReviews(ctx)
+	if err != nil {
+		t.Fatalf("PendingReviews: %v", err)
+	}
+	for _, p := range pending {
+		if p.ID == id {
+			t.Fatalf("review %d is still pending after being rejected", id)
+		}
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM review_queue WHERE id = $1`, id).Scan(&status); err != nil {
+		t.Fatalf("reading status: %v", err)
+	}
+	if status != "rejected" {
+		t.Fatalf("status = %q, want rejected", status)
+	}
+
+	if err := pool.RejectReview(ctx, id, "reviewer@test"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second RejectReview: err = %v, want ErrNotFound", err)
+	}
+}
