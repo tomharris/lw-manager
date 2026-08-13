@@ -16,7 +16,7 @@ func TestScreenNamesContainsEveryDeclaredConstant(t *testing.T) {
 		vision.ScreenAllianceTech, vision.ScreenAllianceTechDonate, vision.ScreenBase,
 		vision.ScreenMail, vision.ScreenMailAlliance, vision.ScreenMailEvent,
 		vision.ScreenMailSystem, vision.ScreenRadar, vision.ScreenStaminaPrompt,
-		vision.ScreenVS, vision.ScreenVSRanking, vision.ScreenVSRankingWeekly,
+		vision.ScreenVSRanking, vision.ScreenVSRankingWeekly,
 		vision.ScreenWorldMap,
 	}
 	got := make(map[string]bool, len(vision.ScreenNames))

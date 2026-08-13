@@ -438,44 +438,6 @@ screens:
                 - 0.23045
               threshold: 0.85
               identifies_screen: true
-    vs:
-        anchors:
-            - id: base_button
-              template: vs/base_button.png
-              region:
-                - 0
-                - 0.90545
-                - 0.1419
-                - 1
-              threshold: 0.85
-              identifies_screen: false
-            - id: theme_tab
-              template: vs/theme_tab.png
-              region:
-                - 0.00571
-                - 0.08795
-                - 0.34429
-                - 0.17366
-              threshold: 0.85
-              identifies_screen: true
-            - id: vs
-              template: vs/vs.png
-              region:
-                - 0
-                - 0.03116
-                - 0.36571
-                - 0.10938
-              threshold: 0.85
-              identifies_screen: true
-            - id: vs_ranking_button
-              template: vs/vs_ranking_button.png
-              region:
-                - 0.62952
-                - 0.91403
-                - 0.78476
-                - 1
-              threshold: 0.85
-              identifies_screen: false
     vs_ranking:
         anchors:
             - id: daily_tab

@@ -203,7 +203,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 0a023203108393f9c944c6da03c2ca6875629c2b63ecc75a5be3e08843d19c13
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:09:45.598789202Z
@@ -567,7 +567,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 203382fbb744b7e81e1010dfcf9b9282c809ed13bb1a8ee664ebd1860ff0a9de
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:13:35.789029919Z
@@ -588,7 +588,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 20d051483ea2207883ad32852527e60e8171f2e61f5645e78a17121cc7999094
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
@@ -763,7 +763,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 2aed5e2583b22642538b911bd965072d512c4a29ae8fe1d3bafd20a7c015102d
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
@@ -1337,7 +1337,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 4cc131dd2bc6ca464d9d37ee6bbcbc6f815396a5b1008f9d4612b9d0e23e3929
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
@@ -1435,7 +1435,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 52fcae6c34ab217a20b6784f55facdb3fdea1b250a5a7abf4973951cc7955965
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
@@ -1526,7 +1526,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 58a73648fe2413cdadc6374cd60d3650a78514ef7767c8fd7eae24dda8336370
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
@@ -1610,7 +1610,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 5e86a7bb481fd207003798af99a57488a38df0eac58ff81a91ade14aa7ff53c3
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
@@ -1645,7 +1645,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 60e48a4352bb98dff6e2c717eccaffc39325edf08bc281e4024a3cb08ad78d16
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
@@ -1946,14 +1946,14 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 7203edcb25f1854ed4358822cc89ccb9dfb6fe7a31ac9274795d9e14f41e783a
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 720cc7bbb3571cb12ec9e9895b9a8a7fd48285009ae9cbcc36411e15373781c6
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:25:12.740838497Z
@@ -2065,7 +2065,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 79248eee488067fa2d2969901b6510f598e96fd836f1086edbe6d8f41bbe0dc2
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:24:45.366342773Z
@@ -2457,7 +2457,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 8f8640d2148e988934a8541d63e64ced78ae075cadef911a5fc445d96f416566
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
@@ -2583,7 +2583,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 96b97aa305349cb86a5f7cc4247f96d22ff2fa9ae2a92503ac0f68ef0b421461
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
@@ -2758,7 +2758,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: 9c639cd059f242774afebbf825098363f587f1885bb7296164abe01070f168f5
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
@@ -3311,7 +3311,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: bf274d271402a69ad19da60f1d7621e6a5ce8bf06acbc4b146ee46374f64afbb
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
@@ -3339,7 +3339,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: c09bb12fe266459000518ea6022cc2aab17484490a15c8e9d33d6e616625c5dc
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
@@ -3458,7 +3458,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: c87b11fdb5cfbf9a174499d4e72bf4738eaaccb487b84e2badc3a5adbf5e10d0
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:27:26.832874711Z
@@ -3661,7 +3661,7 @@ frames:
       device: moto g play - 2024
       game_version: 1.0.354
     - hash: d5b5d186e0b5caba524477b379aa2664407c2d16762d87ba5c3ed056df725847
-      label: vs
+      label: alliance_duel
       width: 720
       height: 1600
       captured_at: 2026-07-27T02:09:37.782911983Z

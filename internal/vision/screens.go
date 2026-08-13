@@ -12,7 +12,6 @@ const (
 	ScreenAllianceTechDonate = "alliance_tech_donate"
 	ScreenAllianceMembers    = "alliance_members"
 	ScreenAllianceDuel       = "alliance_duel"
-	ScreenVS                 = "vs"
 	ScreenVSRanking          = "vs_ranking"
 	ScreenVSRankingWeekly    = "vs_ranking_weekly"
 	ScreenMail               = "mail"
@@ -64,6 +63,21 @@ const (
 // docs that describe the route as "Alliance -> Members -> VS Ranking" are
 // wrong.
 //
+// alliance_duel used to be labelled vs. That name came from base's VS
+// button — the thing that opens the screen — rather than from anything on
+// the screen itself, and it was never reconciled once corpus frames showed
+// what the screen actually says: "ALLIANCE DUEL" across the top, the same
+// three-tab strip, the same Ranking button at the bottom. A mislabelled
+// screen that only ever gets one label is self-consistent and gives no
+// signal that anything is wrong — vs was wrong for three weeks and nothing
+// broke, because nothing was comparing it to a second name for the same
+// pixels. It only became visible once alliance_duel was added under its
+// correct name and the two started competing for the same frames. Two
+// screen names for one screen is worse than a bad name for one, because a
+// task that navigates to alliance_duel and waits for it to be recognized can
+// legitimately see a frame the recognizer calls vs instead — invariant #3
+// refusing to act on an unmatched anchor, for a reason that was never real.
+//
 // The filtered and unfiltered weekly views are one screen, vs_ranking_weekly,
 // not two. They used to be modelled separately, but they differ only by
 // whether a checkbox is ticked, and template matching cannot express the
@@ -91,7 +105,6 @@ var ScreenNames = []string{
 	ScreenAllianceTechDonate,
 	ScreenAllianceMembers,
 	ScreenAllianceDuel,
-	ScreenVS,
 	ScreenVSRanking,
 	ScreenVSRankingWeekly,
 	ScreenMail,
