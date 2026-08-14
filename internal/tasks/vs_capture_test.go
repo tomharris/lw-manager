@@ -89,9 +89,8 @@ const vsStripePeriod = 419
 //
 // The row content used to be v = (yy/3*37) % 251 alone, the same degenerate
 // linear-ramp-in-disguise pattern rosterBaseFrame and scrollFrame had (see
-// rosterBaseFrame's comment for the mechanism and why it only became a
-// problem once ScrollOffset started asking for a margin, not just a peak).
-// Fixed the same way: a per-band marker column, keyed off the row band
+// rosterBaseFrame's comment for the mechanism and why a tied score is not
+// harmless). Fixed the same way: a per-band marker column, keyed off the row band
 // after the period wraparound so it stays consistent with the pattern it
 // decorates.
 func vsBaseFrame(shift int) *image.RGBA {
@@ -105,11 +104,18 @@ func vsBaseFrame(shift int) *image.RGBA {
 	y0 := int(vsListRegion.Y1 * float64(vsFrameH))
 	y1 := int(vsListRegion.Y2 * float64(vsFrameH))
 	markerW := vsFrameW/7 + 1
+	// markerX is a function of band alone, constant for 3 consecutive rows —
+	// cache it rather than constructing a fresh PRNG every scanline.
+	haveMarkerX := false
+	lastBand, markerX := 0, 0
 	for y := y0; y < y1; y++ {
 		yy := ((y+shift)%vsStripePeriod + vsStripePeriod) % vsStripePeriod
 		band := yy / 3
 		v := uint8((band * 37) % 200) // capped below 255 so the marker always stands out
-		markerX := rand.New(rand.NewSource(int64(band))).Intn(vsFrameW)
+		if !haveMarkerX || band != lastBand {
+			markerX = rand.New(rand.NewSource(int64(band))).Intn(vsFrameW)
+			lastBand, haveMarkerX = band, true
+		}
 		for x := 0; x < vsFrameW; x++ {
 			px := v
 			if x >= markerX && x < markerX+markerW {

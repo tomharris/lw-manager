@@ -25,9 +25,10 @@ import (
 // same local slope: it is the flat-crop trap CLAUDE.md documents for
 // near-zero-variance templates, just wearing a non-flat disguise. That was
 // invisible while ScrollOffset only ever asked "is this the best-scoring
-// placement", but it produces an exact tie (peak == best competing placement)
-// once ScrollOffset also asks "is it the *only* good placement" via
-// offsetMinMargin, which every test in this file now exercises. The
+// placement", but a tied score is resolved only by which candidate Match's
+// scan visits first (matcher.go: `score > best.Score`, not `>=`) — which
+// every probe searching from a different starting row would resolve
+// differently, and disagreement between admissible probes is a refusal. The
 // per-column marker below is what breaks the tie: its horizontal position
 // advances with the row band on a different modulus than the band value's
 // own wraparound, so no two row bands within these frames' height look alike
@@ -84,12 +85,20 @@ func listLatticeFrame(w, h, pitch, shift int) *image.RGBA {
 	const markerW = 8
 	const markerAmp = 60
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	// markerX is a function of rowIdx alone, which is constant for `pitch`
+	// consecutive rows — cache it rather than constructing a fresh PRNG on
+	// every scanline for the same value.
+	haveMarkerX := false
+	lastRowIdx, markerX := 0, 0
 	for y := 0; y < h; y++ {
 		Y := y + shift
 		within := Y % pitch
 		rowIdx := Y / pitch
 		band := (within * 180) / pitch // periodic vertical ramp: identical in every row
-		markerX := rand.New(rand.NewSource(int64(rowIdx))).Intn(w)
+		if !haveMarkerX || rowIdx != lastRowIdx {
+			markerX = rand.New(rand.NewSource(int64(rowIdx))).Intn(w)
+			lastRowIdx, haveMarkerX = rowIdx, true
+		}
 		for x := 0; x < w; x++ {
 			v := band
 			if x >= markerX && x < markerX+markerW {

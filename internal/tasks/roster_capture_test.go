@@ -29,7 +29,7 @@ const (
 	patchH       = 16
 )
 
-// Header anchor regions, all above memberListRegion's Y1 (0.42) so they
+// Header anchor regions, all above memberListRegion's Y1 (0.44) so they
 // never overlap the striped list band scrollCapture actually measures.
 var (
 	allianceIDRegion        = transport.Rect{X1: 0.05, Y1: 0.03, X2: 0.35, Y2: 0.18}
@@ -86,9 +86,10 @@ func stampPatch(img *image.RGBA, region transport.Rect, seed int) {
 // stripedFrame comment for the mechanism). That was invisible while
 // ScrollOffset only asked for the best-scoring placement, but every one of
 // this list's frames here is the same static image repeated seven times —
-// exactly the "still list, offset 0" case — and ScrollOffset's margin check
-// now also asks whether that placement is the *only* good one. A per-band
-// marker column, matching the fix already made to scrollFrame in
+// exactly the "still list, offset 0" case — and a tied score at a
+// non-zero offset would have been resolved arbitrarily by which candidate
+// Match's scan visits first (matcher.go), not necessarily the true zero. A
+// per-band marker column, matching the fix already made to scrollFrame in
 // scrollcapture_test.go, is what answers that.
 func rosterBaseFrame() *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, rosterFrameW, rosterFrameH))
@@ -101,10 +102,17 @@ func rosterBaseFrame() *image.RGBA {
 	y0 := int(memberListRegion.Y1 * float64(rosterFrameH))
 	y1 := int(memberListRegion.Y2 * float64(rosterFrameH))
 	markerW := rosterFrameW/7 + 1
+	// markerX is a function of band alone, constant for 3 consecutive rows —
+	// cache it rather than constructing a fresh PRNG every scanline.
+	haveMarkerX := false
+	lastBand, markerX := 0, 0
 	for y := y0; y < y1; y++ {
 		band := y / 3
 		v := uint8((band * 37) % 200) // capped below 255 so the marker always stands out
-		markerX := rand.New(rand.NewSource(int64(band))).Intn(rosterFrameW)
+		if !haveMarkerX || band != lastBand {
+			markerX = rand.New(rand.NewSource(int64(band))).Intn(rosterFrameW)
+			lastBand, haveMarkerX = band, true
+		}
 		for x := 0; x < rosterFrameW; x++ {
 			px := v
 			if x >= markerX && x < markerX+markerW {

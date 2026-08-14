@@ -65,7 +65,8 @@ type frameScript struct {
 // smaller than the mod-251 wraparound. NCC normalizes out a template's own
 // mean and scale, so that shape is indistinguishable from itself at every
 // offset sharing the same local slope, which is invisible to a threshold-only
-// check but fatal to ScrollOffset's margin check (see vision/scroll_test.go's
+// check but fatal once two probes searching from different starting rows
+// resolve the same tie differently and disagree (see vision/scroll_test.go's
 // stripedFrame comment for the full mechanism). The per-band marker column
 // below is the same fix: its position is a pseudo-random function of the row
 // band, so no two bands within one period look alike and only the genuinely
@@ -73,11 +74,18 @@ type frameScript struct {
 func scrollFrame(cum int) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, scrollFrameW, scrollFrameH))
 	markerW := scrollFrameW/7 + 1
+	// markerX is a function of band alone, constant for 3 consecutive rows —
+	// cache it rather than constructing a fresh PRNG every scanline.
+	haveMarkerX := false
+	lastBand, markerX := 0, 0
 	for y := 0; y < scrollFrameH; y++ {
 		yy := ((y+cum)%scrollStripePeriod + scrollStripePeriod) % scrollStripePeriod
 		band := yy / 3
 		v := uint8((band * 37) % 200) // capped below 255 so the marker always stands out
-		markerX := rand.New(rand.NewSource(int64(band))).Intn(scrollFrameW)
+		if !haveMarkerX || band != lastBand {
+			markerX = rand.New(rand.NewSource(int64(band))).Intn(scrollFrameW)
+			lastBand, haveMarkerX = band, true
+		}
 		for x := 0; x < scrollFrameW; x++ {
 			px := v
 			if x >= markerX && x < markerX+markerW {

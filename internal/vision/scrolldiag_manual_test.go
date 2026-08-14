@@ -30,7 +30,7 @@ var (
 	diagFrames = flag.String("frames", "", "comma-separated frames in capture order")
 	diagPitch  = flag.Int("pitch", 112, "row pitch, for annotating decoys")
 	diagTrue   = flag.Int("true", -1, "independently measured true offset, if known")
-	diagY1     = flag.Float64("y1", 0.42, "region Y1")
+	diagY1     = flag.Float64("y1", 0.44, "region Y1")
 	diagY2     = flag.Float64("y2", 0.89, "region Y2")
 	diagX1     = flag.Float64("x1", 0.03, "region X1")
 	diagX2     = flag.Float64("x2", 0.97, "region X2")
