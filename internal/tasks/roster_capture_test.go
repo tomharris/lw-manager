@@ -239,6 +239,8 @@ func newRosterHarness(t *testing.T, frames []image.Image) (*runtime.Ctx, *transp
 //     and the confirming CurrentScreen its outer replan loop takes on its
 //     next pass before returning — see radar_test.go's toRadar, which
 //     documents the same "WaitFor, arrival CurrentScreen" pair.
+//   - 1 frame for normalizeGroups' own chevron_expanded check: everything
+//     is already collapsed here, so it taps nothing and returns immediately.
 //   - per group: 1 frame for the loop's own chevron_collapsed check, 2 for
 //     openGroup (the tap's own verify, then the confirm), 7 for
 //     scrollCapture (1 raw frame-0 capture + 3 swipes x (Swipe's pre-verify
@@ -256,6 +258,7 @@ func threeGroupFrames() []image.Image {
 	done := rosterFrame(false, false)
 
 	frames := []image.Image{alliance, alliance, alliance, alliance, collapsed, collapsed}
+	frames = append(frames, collapsed) // normalizeGroups: nothing expanded, nothing to do
 	for i := 0; i < 3; i++ {
 		frames = append(frames, collapsed)       // loop's chevron_collapsed check
 		frames = append(frames, collapsed, open) // openGroup: tap verify, then confirm
@@ -334,9 +337,11 @@ func TestRosterCaptureRecordsOneCaptureWithRenumberedSeq(t *testing.T) {
 // NavigateTo(alliance)/Capture/NavigateTo(alliance_members) spend, then
 // NavigateTo(alliance_members)'s own two reads (WaitFor's arrival, and the
 // confirming CurrentScreen its replan loop takes before returning — see
-// threeGroupFrames' doc comment), then one more for the loop's own check.
+// threeGroupFrames' doc comment), then one more for normalizeGroups' own
+// chevron_expanded check (nothing expanded here, so it taps nothing), then
+// one more for the loop's own check.
 func navToChevronCheckFrames(alliance, collapsed image.Image) []image.Image {
-	return []image.Image{alliance, alliance, alliance, alliance, collapsed, collapsed, collapsed}
+	return []image.Image{alliance, alliance, alliance, alliance, collapsed, collapsed, collapsed, collapsed}
 }
 
 // A group that does not open fails with ErrGroupDidNotExpand rather than
@@ -366,6 +371,94 @@ func TestRosterCaptureFailsWhenAGroupDoesNotOpen(t *testing.T) {
 	}
 	if len(rec.calls) != 0 {
 		t.Errorf("got %d RecordCapture calls, want 0 — a failed group must not reach recordFrames", len(rec.calls))
+	}
+}
+
+// A group already expanded when the task starts — left open by an earlier
+// session, exactly what happened on the handset (task-25 brief, finding 10)
+// — is collapsed before the capture loop ever runs, rather than being
+// skipped because the loop never sees a collapsed chevron to open.
+func TestRosterCaptureNormalizesAnAlreadyExpandedGroupBeforeCapturing(t *testing.T) {
+	alliance := allianceScreenFrame()
+	collapsed := rosterFrame(true, false)
+	open := rosterFrame(false, true)
+	done := rosterFrame(false, false)
+
+	frames := []image.Image{alliance, alliance, alliance, alliance}
+	frames = append(frames, open, open)      // NavigateTo(members)'s own two reads: the real starting state is already expanded
+	frames = append(frames, open)            // normalize's check: an expanded chevron is present
+	frames = append(frames, open, collapsed) // normalize's closeGroup: tap verify, then confirm
+	frames = append(frames, collapsed)       // normalize's next check: none left, done
+	frames = append(frames, collapsed)       // main loop's own chevron_collapsed check
+	frames = append(frames, collapsed, open) // openGroup: tap verify, then confirm
+	frames = append(frames, rep(open, 7)...) // scrollCapture, held static so it proves the bottom
+	frames = append(frames, open, collapsed) // closeGroup: tap verify, then confirm
+	frames = append(frames, done)            // final loop check: no collapsed chevron remains
+
+	rt, tr, _, rec := newRosterHarness(t, frames)
+	fn, ok := Get("roster_capture")
+	if !ok {
+		t.Fatal("roster_capture not registered")
+	}
+	if err := fn(context.Background(), rt); err != nil {
+		t.Fatalf("roster_capture: %v", err)
+	}
+
+	// 1 navigation tap + 1 normalize close + 2 for the group's own open/close.
+	if got, want := countTaps(tr), 4; got != want {
+		t.Errorf("got %d taps, want %d (1 navigation + 1 normalize-close + 2 group open/close) — the pre-existing group must be closed before the capture loop, not left for the loop to trip over", got, want)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("got %d RecordCapture calls, want exactly 1", len(rec.calls))
+	}
+	call := rec.calls[0]
+	if !call.complete {
+		t.Error("want complete = true — the single group proved its bottom")
+	}
+	// The alliance summary frame, plus the one group's own frame — captured
+	// only after normalization closed the group that was already open, not
+	// skipped because the main loop found no collapsed chevron to open.
+	if len(call.frames) != 2 {
+		t.Fatalf("got %d frames, want 2 (alliance summary + the one group) — a group left open at start must still be captured, not silently skipped", len(call.frames))
+	}
+	if call.frames[0].GroupKey != vision.AllianceSummaryGroupKey {
+		t.Errorf("frame 0 GroupKey = %q, want %q", call.frames[0].GroupKey, vision.AllianceSummaryGroupKey)
+	}
+}
+
+// Normalization that cannot reach a fully-collapsed state within
+// maxRankGroups attempts fails with ErrNormalizeFailed rather than
+// proceeding to capture from a state it never confirmed collapsed. The
+// script holds a single frame where both chevrons are always present —
+// standing in for a group set normalization can never converge on — so
+// every closeGroup call individually succeeds (its own confirm anchor is
+// right there) while the outer normalize loop never sees "nothing expanded
+// remains".
+func TestRosterCaptureNormalizeFailsRatherThanCaptureFromAnUnknownState(t *testing.T) {
+	alliance := allianceScreenFrame()
+	stuck := rosterFrame(true, true) // both chevrons always present: closing one never reduces the count normalizeGroups can observe
+
+	frames := []image.Image{alliance, alliance, alliance, alliance, stuck, stuck}
+	for i := 0; i < maxRankGroups; i++ {
+		frames = append(frames, stuck)        // normalize's chevron_expanded check: still true
+		frames = append(frames, stuck, stuck) // closeGroup: tap verify, then confirm (chevron_collapsed is present too)
+	}
+	frames = append(frames, stuck) // normalize's final check after the bound: still expanded
+
+	rt, _, cap, rec := newRosterHarness(t, frames)
+	fn, ok := Get("roster_capture")
+	if !ok {
+		t.Fatal("roster_capture not registered")
+	}
+	err := fn(context.Background(), rt)
+	if !errors.Is(err, ErrNormalizeFailed) {
+		t.Fatalf("got %v, want ErrNormalizeFailed", err)
+	}
+	if cap.nextID != 1 {
+		t.Errorf("got %d frames captured, want 1 (only the alliance frame) — a starting state that never confirms collapsed must not reach the capture loop", cap.nextID)
+	}
+	if len(rec.calls) != 0 {
+		t.Errorf("got %d RecordCapture calls, want 0", len(rec.calls))
 	}
 }
 

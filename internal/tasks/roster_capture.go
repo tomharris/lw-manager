@@ -20,6 +20,18 @@ import (
 // anchor first).
 var ErrGroupDidNotExpand = errors.New("tasks: rank group chevron did not flip")
 
+// ErrNormalizeFailed reports that normalizeGroups could not collapse every
+// rank group before the capture loop began. This is the sentinel for the
+// bug finding 10 of the m4-ocr-2026-08-14 evidence traced to its root: R2
+// was left expanded by an earlier session, roster_capture only ever closes
+// groups it opened itself, and scrolling through R3's 64 members eventually
+// crossed into R2's still-open rows — two groups captured as one
+// interleaved stream, which crashed ingest on a duplicate key. Reaching
+// this sentinel means the starting state could not be established at all,
+// which is worse than the bug it replaces: proceeding to capture from an
+// unknown state would reproduce the interleaving rather than surface it.
+var ErrNormalizeFailed = errors.New("tasks: could not collapse every rank group before capture")
+
 const (
 	// maxRankGroups bounds the group loop. It is not a claim about the
 	// game: four rank groups exist today and the set is user-edited (see
@@ -101,6 +113,12 @@ func rosterCapture(ctx context.Context, rt *runtime.Ctx) error {
 	if err := rt.NavigateTo(ctx, vision.ScreenAllianceMembers); err != nil {
 		return err
 	}
+	// Establish the starting state rather than assume it (see
+	// ErrNormalizeFailed and the task-25 evidence): a group left expanded by
+	// an earlier session must not stay open for this run too.
+	if err := normalizeGroups(ctx, rt); err != nil {
+		return err
+	}
 
 	all := []ScrolledFrame{
 		{ScreenshotID: allianceScreenshotID, GroupKey: vision.AllianceSummaryGroupKey},
@@ -145,6 +163,59 @@ func rosterCapture(ctx context.Context, rt *runtime.Ctx) error {
 	}
 
 	return recordFrames(ctx, rt, "roster", all, allComplete)
+}
+
+// normalizeGroups collapses every expanded rank group before the capture
+// loop begins, so each group is captured in isolation and the frame
+// sequence is deterministic regardless of what an earlier session — or an
+// earlier, killed run of this one — left open.
+//
+// It runs once, to completion, before the main loop starts rather than
+// interleaved with it: the two loops would otherwise have no way to tell
+// "a group normalization just closed" apart from "a group the main loop
+// itself is mid-capture on", and could in principle alternate forever,
+// each undoing the other's most recent state change. Running normalization
+// first and only once removes that hazard rather than guarding against it.
+//
+// Like the main loop, it never identifies which group it is looking at —
+// every expanded chevron is a valid thing to close, in whatever order Match
+// returns them (CLAUDE.md, "Rank groups have no fixed identity"). That is
+// also what makes it idempotent: a rerun after a mid-capture kill finds
+// whatever this task itself left open and closes it exactly as it would
+// close a stranger's, satisfying invariant #2 for free rather than needing
+// its own case.
+//
+// Bounded by maxRankGroups, the same backstop the main loop uses, so a
+// group set larger than expected — or, in the pathological case, one that
+// never converges — fails fast with ErrNormalizeFailed rather than looping
+// forever or proceeding from a state that was never confirmed collapsed.
+func normalizeGroups(ctx context.Context, rt *runtime.Ctx) error {
+	for i := 0; i < maxRankGroups; i++ {
+		if err := rt.CheckKillSwitch(ctx); err != nil {
+			return err
+		}
+		present, err := rt.Sees(ctx, vision.ScreenAllianceMembers, "chevron_expanded")
+		if err != nil {
+			return err
+		}
+		if !present {
+			return nil // every group is already collapsed
+		}
+		if err := closeGroup(ctx, rt); err != nil {
+			return err
+		}
+	}
+	// Ran out of attempts. Check rather than assume: closeGroup succeeding
+	// maxRankGroups times in a row does not by itself prove nothing remains
+	// open, only that each individual close was confirmed.
+	present, err := rt.Sees(ctx, vision.ScreenAllianceMembers, "chevron_expanded")
+	if err != nil {
+		return err
+	}
+	if present {
+		return fmt.Errorf("tasks: %d attempts, an expanded rank group still remains: %w", maxRankGroups, ErrNormalizeFailed)
+	}
+	return nil
 }
 
 // openGroup taps the collapsed chevron and confirms the group opened.
