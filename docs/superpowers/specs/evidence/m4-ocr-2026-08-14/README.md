@@ -213,3 +213,40 @@ check, and it is the same shape as every other acceptance rule this milestone
 arrived at: **compare the winner against its runner-up rather than against an
 absolute level.** A region that is not a periodic list has no phase that stands
 out, and its contrast collapses.
+
+## Finding 7: a charset whitelist launders a bad read into a confident wrong fact
+
+The most serious finding of this pass, and it is a data-corruption path rather
+than an accuracy ceiling.
+
+`powerSpec` carries `Charset: "0123456789.KMB"`. On a real member row reading
+**`Power: 218.7M`**:
+
+```
+no whitelist        -> "Power:je18°7M"   fails ParsePower's anchored regex -> review queue
+shipped whitelist   -> "1877M"           parses cleanly -> 1,877,000,000
+```
+
+True value 218,700,000. The whitelisted read is wrong by **8.6x** and arrives
+with nothing to distinguish it from a good one.
+
+The mechanism: the whitelist strips exactly the characters — `:`, `°`, stray
+letters — that would have made the string fail to parse. `ParsePower`'s regex
+`^([0-9]+(?:\.[0-9]+)?)([KMB])$` is doing its job perfectly; the input has been
+laundered into validity before it arrives.
+
+This is the same class of defect as the earlier "parsers fabricated confident
+wrong numbers", fixed then by anchoring every pattern — arriving again by a
+route the anchors cannot see. It defeats invariant #5: the review queue exists
+so an uncertain read never reaches a leaderboard, and a whitelist removes the
+uncertainty rather than the error.
+
+**The general rule this earns:** a character whitelist is safe only where every
+character it removes would also have been removed by a correct read. Where a
+whitelist can *repair* a malformed string into a well-formed one, it converts a
+detectable failure into an undetectable one and must not be used.
+
+`levelSpec` (`Lv.0123456789`) and `lastActiveSpec` (`0123456789hmdagoOnline `)
+carry the same shape of whitelist and have **not** been tested — the crops used
+for this check were misaligned, so their behaviour is unknown rather than
+cleared.
