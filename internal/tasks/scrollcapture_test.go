@@ -274,6 +274,34 @@ func newScrollHarness(t *testing.T, script []frameScript) (*runtime.Ctx, *scroll
 	return c, tr
 }
 
+// A ScrollSpec that omits SwipeFrac must fail loudly, not swipe zero
+// distance and report a one-frame capture as having proven the bottom.
+// swipeOnce's `to` would collapse onto `from` (from == to), every measured
+// offset would read exactly 0, and scrollCapture would return
+// (1 frame, complete=true, nil) indistinguishable from a genuine one-row
+// list — the silently-truncated-but-reported-complete failure invariant #4
+// exists to catch. usableHeight is scrollCapture's first call, before any
+// screenshot or swipe, so this never touches the transport at all.
+func TestScrollCaptureRejectsANonPositiveSwipeFrac(t *testing.T) {
+	rt, tr := newScrollHarness(t, []frameScript{{shift: 40}})
+
+	_, complete, err := scrollCapture(context.Background(), rt, ScrollSpec{
+		Screen: "vs_ranking_alliance",
+		Region: transport.Rect{X1: 0, Y1: 0.2, X2: 1, Y2: 0.8},
+		Pitch:  128,
+		// SwipeFrac deliberately omitted (zero value).
+	})
+	if err == nil {
+		t.Fatal("want an error for a zero SwipeFrac, got nil")
+	}
+	if complete {
+		t.Error("a rejected spec is never complete")
+	}
+	if tr.ScreenshotCount() != 0 || tr.SwipeCount() != 0 {
+		t.Errorf("touched the transport (screenshots=%d, swipes=%d) before validating the spec", tr.ScreenshotCount(), tr.SwipeCount())
+	}
+}
+
 // The list bottom must be proven, not assumed. A swallowed swipe and a real
 // bottom both produce a zero offset, so the loop retries before believing it,
 // exactly as startExecution retries a tap the game ignored.

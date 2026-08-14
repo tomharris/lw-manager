@@ -16,6 +16,23 @@ import (
 // region between two frames, so rows passed by without ever being
 // photographed. No dedupe can recover them, which is why this is an error and
 // not a warning.
+//
+// Belt-and-braces, not the primary defence: vision.ScrollOffset's own
+// geometry check refuses a candidate before it ever reaches usableHeight's
+// comparison here, for both routes' actual numbers. Roster (Pitch 112,
+// regionH 720 at Y1=0.44): ScrollOffset's ceiling is 548px against a usable
+// of 608px. VS (Pitch 128, regionH 984): ceiling 748px against a usable of
+// 856px. Either way the vision-side refusal (ErrOffsetUncertain) fires
+// first — which is the right order, since it is the stricter,
+// measurement-integrity check, and reordering it behind this one would let
+// an unmeasurable candidate reach a comparison that assumes it is real. The
+// consequence is that this branch is not dead code (a different
+// Pitch/regionH ratio, Pitch < 0.24*regionH, would still reach it, and
+// TestScrollCaptureFlagsAnOvershoot still drives it directly) but it is
+// unreachable in production today: a genuine overswipe on either route
+// surfaces as vision.ErrOffsetUncertain, wrapped by the "measuring scroll
+// frame" error below, not as this sentinel. See usableHeight's doc comment
+// for the same numbers from the other side.
 var ErrScrollOvershot = errors.New("tasks: scroll moved further than the visible region")
 
 const (
@@ -143,7 +160,30 @@ func scrollCapture(ctx context.Context, rt *runtime.Ctx, spec ScrollSpec) ([]Scr
 
 // usableHeight is the region's height less one row pitch: the furthest the
 // list may travel while still leaving every row photographed somewhere.
+//
+// This is compared against vision.ScrollOffset's own result to raise
+// ErrScrollOvershot, but for both real routes ScrollOffset's geometry check
+// refuses a candidate before it ever gets this far: roster's usable is
+// 608px against a 548px measurement ceiling, VS's is 856px against 748px.
+// See ErrScrollOvershot's doc comment for the full arithmetic and why the
+// stricter check firing first is correct rather than something to reorder
+// around.
 func usableHeight(rt *runtime.Ctx, spec ScrollSpec) (int, error) {
+	// SwipeFrac <= 0 belongs in this same validation, not left to fail
+	// downstream: swipeOnce's `to` collapses onto `from` (a zero-distance
+	// swipe), so every measured offset reads exactly 0, zeroOffsetRetries is
+	// reached on schedule, and scrollCapture returns (1 frame, complete =
+	// true, nil) — a capture truncated to its very first frame, reported as
+	// having proven the bottom. That is indistinguishable from a genuinely
+	// one-row list without checking the frame count, which is exactly the
+	// silently-truncated-but-reported-complete failure invariant #4 exists
+	// to catch. All three current call sites set SwipeFrac explicitly, so
+	// this is a latent guard, not a live fix — but a ScrollSpec literal that
+	// omits the field is a compile-time-valid zero value, and nothing else
+	// stops it.
+	if spec.SwipeFrac <= 0 {
+		return 0, fmt.Errorf("tasks: %s has a non-positive SwipeFrac (%.3f): a swipe that travels nothing would report a truncated capture as complete", spec.Screen, spec.SwipeFrac)
+	}
 	size := rt.Resolution()
 	h := int((spec.Region.Y2 - spec.Region.Y1) * float64(size.Y))
 	if h <= spec.Pitch {
