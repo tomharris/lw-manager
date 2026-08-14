@@ -6,6 +6,14 @@
 //	go test -tags scrolldiag ./internal/vision -run TestScrollDiag -v \
 //	    -args -frames /path/r0.png,/path/r1.png,... -pitch 112
 //
+// Pixel rows go through pxFrac, not float64(px)/float64(h): Crop truncates,
+// so the naive division silently cuts a strip one row short on 73 of the 1600
+// rows this handset has — y=414, the VS route's probe 1, among them. The
+// measurements this tool produced before that fix are unaffected for the
+// roster (probe rows 704/790/876 all round-trip cleanly at h=1600) and did not
+// change any conclusion on the VS side, where probe 1 found the correct offset
+// either way. Checked rather than assumed, because these numbers set constants.
+//
 // It reports, for each consecutive pair, every probe's full score-vs-offset
 // curve reduced to: the winning offset, its score, and the best competing
 // placement more than one strip away. The last number is the one that matters
@@ -106,11 +114,11 @@ func TestScrollDiag(t *testing.T) {
 			// only find content that is still above the region's bottom edge
 			// in the previous frame.
 			y := regionTop + p*stripH
-			r := transport.Rect{X1: region.X1, Y1: float64(y) / float64(h), X2: region.X2, Y2: float64(y+stripH) / float64(h)}
+			r := transport.Rect{X1: region.X1, Y1: pxFrac(y, h), X2: region.X2, Y2: pxFrac(y+stripH, h)}
 			sub := Crop(cur, r)
 			c := diagCurve{y: y, varnce: variance(sub)}
 			for oy := y; oy+stripH <= regionBot; oy++ {
-				sr := transport.Rect{X1: region.X1, Y1: float64(oy) / float64(h), X2: region.X2, Y2: float64(oy+stripH) / float64(h)}
+				sr := transport.Rect{X1: region.X1, Y1: pxFrac(oy, h), X2: region.X2, Y2: pxFrac(oy+stripH, h)}
 				res, err := Match(prev, sub, sr, h)
 				if err != nil {
 					t.Fatal(err)

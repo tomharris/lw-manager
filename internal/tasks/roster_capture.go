@@ -56,8 +56,12 @@ var chevronSettle = 900 * time.Millisecond
 // internal/ingest/roster.go's groupHeaderRegion is measured from the same
 // frames and the two constants are consistent by that measurement, not by
 // assumption; see its doc comment. This measurably helped ScrollOffset too:
-// probe 0's margin on the same frame pair went 0.056 -> 0.117
-// (docs/superpowers/specs/evidence/m4-scrolloffset-2026-08-13/).
+// probe 0's separation from the nearest competing placement on the same frame
+// pair roughly doubled, 0.056 -> 0.117
+// (docs/superpowers/specs/evidence/m4-scrolloffset-2026-08-13/). That margin
+// is no longer a criterion — no threshold could separate real captures from
+// garbage, see ScrollOffset — but it remains a fair measure of how much the
+// header was costing the match.
 //
 // internal/ingest/roster.go duplicates this Rect rather than importing it —
 // see that file's own comment for why — so a further change here must move
