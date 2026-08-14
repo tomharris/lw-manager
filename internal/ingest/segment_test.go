@@ -141,9 +141,11 @@ func TestSegmentRowsFindsEveryPeriodInASyntheticList(t *testing.T) {
 // dark-card-on-light-page split: the card body oscillates continuously
 // through a wide band (noisyCardLevel), and only the inter-card gap is
 // reliably, consistently brighter. Confirmed against the pre-replacement
-// algorithm (git history) before this test was made to pass: it produced 34
-// bands over 6 real periods, median height 3px against the 112px pitch --
-// the same failure shape findng 6 measured on the real corpus, from
+// algorithm (git history) before this test was made to pass: it failed with
+// "ingest: rows measure 2 px against an expected pitch of 112" -- a false
+// ErrPitchMismatch from a median band height of 2px against a real pitch of
+// 112, the same failure shape (tiny slivers, not clean rows) finding 6
+// measured on the real corpus (30 bands, median height 3px there), from
 // hunting the noise for midpoint crossings instead of locking onto the
 // period.
 func TestSegmentRowsHandlesNonBimodalRealisticSignal(t *testing.T) {
@@ -165,57 +167,33 @@ func TestSegmentRowsHandlesNonBimodalRealisticSignal(t *testing.T) {
 	}
 }
 
-// nonListFrame draws irregular-width bands of varying shade -- like a real
-// non-list screen's header bars, buttons and text blocks, which vary in
-// height and tone but not on any fixed pitch -- via a small seeded LCG, so
-// band widths and shades don't fall into a pattern a human hand-picking
-// "irregular" numbers tends to produce by accident.
-//
-// Two earlier attempts at this fixture were both accidentally periodic in
-// ways that only showed up once measured, which is worth recording so the
-// next person doesn't repeat them: two smooth, incommensurate sine waves
-// summed together produce a beat pattern that is itself periodic over some
-// longer span, and independent per-scanline random noise -- maximally
-// "non-periodic" in the abstract -- turns out to have a high chance of a
-// spuriously good phase purely from picking the best of ~pitch candidates
-// out of only six or seven samples each (measured: several different hash
-// constants all landed contrast in the high 30s to 50s, overlapping real
-// list frames' own 45-92). A real non-list screen does not vary
-// scanline-to-scanline like that; it is spatially coherent, like the bands
-// this builds. Seed 2 was picked because it measures a comfortable 18.2
-// across the *entire* pitch search range SegmentRows uses
-// (bestFittingPitch's 84-168 window for a 112 expected pitch), not just at
-// 112 itself -- the failure mode that sank the first hand-picked attempt,
-// where a neighbouring pitch (not the expected one) was what accidentally
-// lined up.
-func nonListFrame(w, h, top, bot int) *image.Gray {
-	seed := 2
-	state := uint32(seed*2654435761 + 12345)
-	next := func(lo, hi int) int {
-		state = state*1664525 + 1013904223
-		return lo + int(state>>16)%(hi-lo)
-	}
-	type band struct {
-		from, to int
-		v        uint8
-	}
-	var bands []band
-	for pos := 0; pos < bot-top; {
-		width := next(25, 95)
-		bands = append(bands, band{pos, pos + width, uint8(next(165, 245))})
-		pos += width
-	}
-
+// interposedHeaderFrame draws two periodic runs separated by a band that is
+// NOT one pitch tall and is not gap-bright either -- a rank-group header
+// inline in the scrolling list, the shape round-2 review found on 8 of 61
+// real capture-1 member-list frames (70, 75, 80, 86, 91, 96, 101, 106). The
+// header's height not being a multiple of pitch is the point: it shifts the
+// second run's true phase relative to the first run's, so a single global
+// phase cannot fit both.
+func interposedHeaderFrame(w, h, top, pitch, gapHeight, headerHeight, firstRuns, secondRuns int) *image.Gray {
 	img := image.NewGray(image.Rect(0, 0, w, h))
+	headerEnd := top + firstRuns*pitch + headerHeight
+	secondEnd := headerEnd + secondRuns*pitch
 	for y := 0; y < h; y++ {
 		v := uint8(200)
-		if y >= top && y < bot {
-			o := y - top
-			for _, band := range bands {
-				if o >= band.from && o < band.to {
-					v = band.v
-					break
-				}
+		switch {
+		case y >= top && y < top+firstRuns*pitch:
+			if off := (y - top) % pitch; off >= pitch-gapHeight {
+				v = 246
+			} else {
+				v = 90
+			}
+		case y >= top+firstRuns*pitch && y < headerEnd:
+			v = 150 // the header itself: distinct, and deliberately not gap-bright
+		case y >= headerEnd && y < secondEnd:
+			if off := (y - headerEnd) % pitch; off >= pitch-gapHeight {
+				v = 246
+			} else {
+				v = 90
 			}
 		}
 		for x := 0; x < w; x++ {
@@ -225,21 +203,87 @@ func nonListFrame(w, h, top, bot int) *image.Gray {
 	return img
 }
 
-func TestSegmentRowsOnANonPeriodicRegionFindsNothing(t *testing.T) {
-	// A region with no consistent period at all: brightness wanders but
-	// nothing repeats at any stable offset. No phase should stand out, so
-	// there is nothing to hand downstream as a row.
-	img := nonListFrame(200, 1000, 200, 900)
-	region := transport.Rect{X1: 0, Y1: 0.2, X2: 1, Y2: 0.9}
+// TestSegmentRowsRecoversBothSidesOfAnInterposedHeader is the regression
+// test for the round-2 CRITICAL finding: a single global phase-lock across
+// the whole region cannot fit a header-interposed list, because the rows
+// above and below the header sit at two different phases and the global
+// argmax lands on a compromise offset that matches neither -- previously
+// emitted as ordinary-looking bands with no error, cutting through the
+// middle of real cards on both sides.
+//
+// Confirmed against the round-1 algorithm (single global phase, no
+// per-boundary confirmation) before collectBands replaced it: it returned 5
+// bands -- {300,412} {412,524} {524,636} {636,748} {748,860} -- treating the
+// whole region as one contiguous run. The header sits at [536,576), so the
+// third and fourth bands both straddle it, each holding the tail of one
+// real card and the head of the next: exactly the mid-card-cut corruption
+// round-2 review found on real frames, reproduced here without needing the
+// blob store. Verified directly against the real frames themselves too
+// while building the fix (screenshots 70, 75, 80, 86, 91, 96, 101, 106 of
+// capture 1): every one now segments into only full-pitch bands with none
+// crossing the header, matching every one of the 9 confirmed-aligned frames
+// checked alongside them.
+func TestSegmentRowsRecoversBothSidesOfAnInterposedHeader(t *testing.T) {
+	const top, pitch, gap, headerHeight = 200, 112, 12, 40
+	img := interposedHeaderFrame(200, 1000, top, pitch, gap, headerHeight, 3, 3)
+	region := transport.Rect{X1: 0, Y1: 0.2, X2: 1, Y2: 0.912} // y in [200,912)
 
-	bands, err := SegmentRows(img, region, 112)
+	bands, err := SegmentRows(img, region, pitch)
 	if err != nil {
 		t.Fatalf("SegmentRows: %v", err)
 	}
-	if len(bands) != 0 {
-		t.Fatalf("got %d bands, want 0 (no period should stand out): %+v", len(bands), bands)
+	if len(bands) != 4 {
+		t.Fatalf("got %d bands, want 4 (2 recovered from each run either side of the header): %+v", len(bands), bands)
+	}
+
+	headerStart, headerEnd := top+3*pitch, top+3*pitch+headerHeight
+	for i, b := range bands {
+		if got := b.Height(); got != pitch {
+			t.Errorf("band %d height = %d, want %d -- a compromise-phase band leaked through", i, got, pitch)
+		}
+		if b.Y0 < headerEnd && b.Y1 > headerStart {
+			t.Errorf("band %d = %+v overlaps the header [%d,%d) -- exactly the mid-card cut this test guards against", i, b, headerStart, headerEnd)
+		}
+	}
+	// Both sides recovered, not just the one the global phase happened to
+	// match: at least one band entirely before the header and at least one
+	// entirely after it.
+	var haveBefore, haveAfter bool
+	for _, b := range bands {
+		if b.Y1 <= headerStart {
+			haveBefore = true
+		}
+		if b.Y0 >= headerEnd {
+			haveAfter = true
+		}
+	}
+	if !haveBefore {
+		t.Error("no band recovered before the header -- one side was dropped, not just the compromise avoided")
+	}
+	if !haveAfter {
+		t.Error("no band recovered after the header -- one side was dropped, not just the compromise avoided")
 	}
 }
+
+// There used to be a TestSegmentRowsOnANonPeriodicRegionFindsNothing here,
+// built around a hand-picked "irregular bands" fixture (nonListFrame) tuned
+// to sit under phaseContrastFloor. It was dropped rather than kept, because
+// round-2 review measured what it was implicitly claiming -- that a
+// non-periodic, non-list region reliably fails this floor -- against the
+// real committed corpus, and that claim is false: at pitch 112 over
+// memberListRegion, alliance_duel frames measure up to 93, vs_ranking_weekly
+// up to 53, even _none frames up to 76, fully overlapping real member-list
+// frames' own 83-98. A hand-picked synthetic fixture that sits under the
+// floor proves that fixture sits under the floor, not that the floor
+// rejects non-list content in general -- the same selection bias the
+// fixture's own doc comment already warned about for two earlier, more
+// broken attempts, just not spotted in the one that shipped. See
+// phaseContrastFloor's doc comment: the floor is a coarse periodicity
+// check, and the real guarantee that SegmentRows never runs on a mail or
+// radar screen is the screen_id gate in roster.go/vs.go, upstream of this
+// package. What a synthetic fixture in this file CAN still honestly prove
+// -- and what TestSegmentRowsOnAnEmptyRegionReturnsNoBands below covers --
+// is that a truly flat, zero-variation region produces no bands.
 
 func TestSegmentRowsRejectsAPitchThatDoesNotMatch(t *testing.T) {
 	// The region is genuinely periodic, but at 160px -- a layout change from
