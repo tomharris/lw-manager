@@ -91,12 +91,14 @@ func (h *vsIngestHarness) addFrame(img image.Image, offsetPx int) int64 {
 // at vsRowPitch, tall enough that none are clipped by the region's lower
 // edge. ocr.FakeEngine never looks at the pixels — only SegmentRows does, so
 // this only has to be geometrically right (see rosterFrame's own comment for
-// why pixel realism is not this package's job to fake).
+// why pixel realism is not this package's job to fake, and for why imgH is
+// sized tightly around the drawn content rather than padded with thousands
+// of blank pixels a real capture would not have).
 func vsFrame(nRows int) image.Image {
-	imgH := 3200
+	imgH := 400
 	regionFrac := vsListRegion.Y2 - vsListRegion.Y1
-	for float64(imgH)*regionFrac < float64((nRows+2)*vsRowPitch) {
-		imgH += 3200
+	for float64(imgH)*regionFrac < float64((nRows+1)*vsRowPitch) {
+		imgH += 200
 	}
 	top := int(vsListRegion.Y1 * float64(imgH))
 	return cardFrame(200, imgH, top, vsRowPitch-12, 12, nRows)

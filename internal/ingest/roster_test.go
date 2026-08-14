@@ -231,10 +231,22 @@ func (h *rosterIngestHarness) addAllianceFrame() int64 {
 // SegmentRows does, so this only has to be geometrically right, not
 // visually realistic (see the recon-measured field rects' own doc comment
 // in roster.go for why pixel realism is not this package's job to fake).
+//
+// imgH is sized so the scanned region wraps the drawn cards with about one
+// spare pitch, not thousands of blank pixels: phase-locking measures
+// periodicity across the whole scanned region (see segment.go), and a vast
+// flat trailer -- which a real frame does not have, since a short group is
+// followed immediately by the next group's header or more list content, not
+// empty page -- would dilute that signal in a way no real capture does.
 func rosterFrame(nRows int) image.Image {
-	imgH := 3200
-	for imgH*47/100 < (nRows+2)*memberRowPitch {
-		imgH += 3200
+	imgH := 400
+	for {
+		top := int(memberListRegion.Y1 * float64(imgH))
+		bot := int(memberListRegion.Y2 * float64(imgH))
+		if bot-top >= (nRows+1)*memberRowPitch {
+			break
+		}
+		imgH += 200
 	}
 	top := int(memberListRegion.Y1 * float64(imgH))
 	return cardFrame(200, imgH, top, 100, 12, nRows)
