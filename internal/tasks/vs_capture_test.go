@@ -50,6 +50,7 @@ const (
 	seedVSRankingWeeklyID    = 5
 	seedVSRankingAllianceBtn = 6
 	seedYourAllianceChecked  = 7
+	seedDuelProgressTab      = 8
 )
 
 // vsPatchTemplate is one anchor's deterministic pattern, matching
@@ -107,12 +108,22 @@ func vsBaseFrame(shift int) *image.RGBA {
 
 // allianceDuelFrame renders the alliance_duel screen: its identifying anchor
 // always present, ranking_button only when showRanking — simulating the
-// corpus's other tab mode, which carries no Ranking button at all.
-func allianceDuelFrame(showRanking bool) image.Image {
+// corpus's other tab mode, which carries no Ranking button at all —  and
+// duel_progress_tab only when showProgressTab, reusing the header region
+// vs_ranking_weekly's own your_alliance_checked anchor uses (NCC
+// discriminates on the pattern, not the region's coordinates, so this is
+// safe on a different screen). duel_progress_tab is cropped from its
+// UNSELECTED state (commit 2d1d0ef), so "present" here means the tab has not
+// been chosen yet — the exact condition under which ensureRankingButton
+// should tap it.
+func allianceDuelFrame(showRanking, showProgressTab bool) image.Image {
 	img := vsBaseFrame(0)
 	vsStampPatch(img, vsHeaderLeftRegion, seedAllianceDuelID)
 	if showRanking {
 		vsStampPatch(img, vsHeaderMidRegion, seedRankingButton)
+	}
+	if showProgressTab {
+		vsStampPatch(img, vsHeaderRightRegion, seedDuelProgressTab)
 	}
 	return img
 }
@@ -149,6 +160,7 @@ func vsRegistry() *vision.Registry {
 				Anchors: []vision.Anchor{
 					{ID: "alliance_duel", Template: vsPatchTemplate(seedAllianceDuelID), Region: vsHeaderLeftRegion, Threshold: 0.9, IdentifiesScreen: true},
 					{ID: "ranking_button", Template: vsPatchTemplate(seedRankingButton), Region: vsHeaderMidRegion, Threshold: 0.9, IdentifiesScreen: false},
+					{ID: "duel_progress_tab", Template: vsPatchTemplate(seedDuelProgressTab), Region: vsHeaderRightRegion, Threshold: 0.9, IdentifiesScreen: false},
 				},
 			},
 			{
@@ -240,7 +252,7 @@ func newVSHarness(t *testing.T, frames []image.Image) (*runtime.Ctx, *transport.
 //   - 1 frame: applyAllianceFilter's loop, attempt 0: Tap(vs_ranking_alliance_button) verify
 //   - 1 frame: applyAllianceFilter's loop, attempt 1: Sees(your_alliance_checked), checked
 func vsHappyPathFrames() []image.Image {
-	allianceDuel := allianceDuelFrame(true)
+	allianceDuel := allianceDuelFrame(true, false)
 	ranking := vsRankingFrame()
 	weeklyUnchecked := vsRankingWeeklyFrame(0, true, false)
 	weeklyChecked := vsRankingWeeklyFrame(0, true, true)
@@ -277,7 +289,7 @@ func vsHappyPathFrames() []image.Image {
 // true for both implementations; see the task report for the actual
 // before/after run.
 func vsAlreadyFilteredFrames() []image.Image {
-	allianceDuel := allianceDuelFrame(true)
+	allianceDuel := allianceDuelFrame(true, false)
 	ranking := vsRankingFrame()
 	weeklyChecked := vsRankingWeeklyFrame(0, true, true)
 
@@ -358,7 +370,7 @@ func TestVSCaptureAppliesAnAlreadyCheckedFilterWithZeroTaps(t *testing.T) {
 // filterTapAttempts times, and only then give up — it must not tap more
 // than that, and it must not give up sooner.
 func TestVSCaptureFailsWhenTheAllianceFilterNeverConfirms(t *testing.T) {
-	allianceDuel := allianceDuelFrame(true)
+	allianceDuel := allianceDuelFrame(true, false)
 	ranking := vsRankingFrame()
 	weeklyUnchecked := vsRankingWeeklyFrame(0, true, false)
 
@@ -397,7 +409,7 @@ func TestVSCaptureFailsWhenTheAllianceFilterNeverConfirms(t *testing.T) {
 // must fail the same way, and without ever tapping — invariant #3, no task
 // acts without a matched anchor first.
 func TestVSCaptureFailsWhenTheAllianceButtonControlIsAbsent(t *testing.T) {
-	allianceDuel := allianceDuelFrame(true)
+	allianceDuel := allianceDuelFrame(true, false)
 	ranking := vsRankingFrame()
 	weeklyNoButton := vsRankingWeeklyFrame(0, false, false)
 
@@ -423,16 +435,18 @@ func TestVSCaptureFailsWhenTheAllianceButtonControlIsAbsent(t *testing.T) {
 	}
 }
 
-// The corpus finding this task exists to handle: Alliance Duel can land on a
-// tab with no Ranking button in its bottom bar at all. There is no anchor to
-// select a different tab, so this must fail safely — named, and without ever
+// The corpus finding ensureRankingButton originally existed to handle:
+// Alliance Duel can land on a tab with no Ranking button in its bottom bar
+// at all. With no Duel Progress tab either, there is nothing safe to tap
+// toward a known state, so this must fail safely — named, and without ever
 // tapping toward a guess — rather than surface as a generic anchor-not-found
 // or, worse, act blindly.
-func TestVSCaptureFailsWhenAllianceDuelHasNoRankingButton(t *testing.T) {
-	// Held static: the same absent-ranking-button frame answers every
-	// ensureRankingButton retry, proving the bound is real rather than
-	// eventually finding a frame that happens to have the button.
-	frames := []image.Image{allianceDuelFrame(false)}
+func TestVSCaptureFailsWhenAllianceDuelHasNoRankingButtonOrProgressTab(t *testing.T) {
+	// Held static: the same absent-everything frame answers every
+	// ensureRankingButton retry and the subsequent duel_progress_tab check,
+	// proving the bound is real rather than eventually finding a frame that
+	// happens to have the button.
+	frames := []image.Image{allianceDuelFrame(false, false)}
 
 	rt, tr, rec := newVSHarness(t, frames)
 	fn, _ := Get("vs_capture")
@@ -448,13 +462,46 @@ func TestVSCaptureFailsWhenAllianceDuelHasNoRankingButton(t *testing.T) {
 	}
 }
 
+// duel_progress_tab was cropped from that tab's UNSELECTED state, so it
+// matching some frames but Ranking still never appearing is a real possible
+// outcome, not just "hasn't rendered yet" — the one anchored recovery was
+// tried and did not work. This must still fail with ErrRankingTabUnavailable,
+// having tapped exactly once (the tab itself), and never guess among the
+// other unlabelled tabs.
+func TestVSCaptureFailsWhenDuelProgressTabDoesNotBringRankingBack(t *testing.T) {
+	noButtonWithTab := allianceDuelFrame(false, true)
+
+	frames := []image.Image{
+		noButtonWithTab, // NavigateTo(alliance_duel) CurrentScreen
+		noButtonWithTab, // ensureRankingButton attempt 0: absent
+		noButtonWithTab, // ensureRankingButton attempt 1: absent
+		noButtonWithTab, // ensureRankingButton attempt 2: absent
+		noButtonWithTab, // Sees(duel_progress_tab): present
+		noButtonWithTab, // Tap(duel_progress_tab) verify
+		noButtonWithTab, // re-check Sees(ranking_button): still absent
+	}
+
+	rt, tr, rec := newVSHarness(t, frames)
+	fn, _ := Get("vs_capture")
+	err := fn(context.Background(), rt)
+	if !errors.Is(err, ErrRankingTabUnavailable) {
+		t.Fatalf("got %v, want ErrRankingTabUnavailable", err)
+	}
+	if got := countTaps(tr); got != 1 {
+		t.Errorf("got %d taps, want 1 — only the anchored Duel Progress tap, nothing else", got)
+	}
+	if len(rec.calls) != 0 {
+		t.Errorf("got %d RecordCapture calls, want 0", len(rec.calls))
+	}
+}
+
 // A landing animation that has not finished drawing the bottom bar yet is
 // not the same defect as a genuinely wrong tab: the retry must be able to
 // recover once the button actually renders, and then carry on to a normal
 // capture.
 func TestVSCaptureRecoversWhenTheRankingButtonAppearsAfterASettle(t *testing.T) {
-	allianceDuelAbsent := allianceDuelFrame(false)
-	allianceDuelPresent := allianceDuelFrame(true)
+	allianceDuelAbsent := allianceDuelFrame(false, false)
+	allianceDuelPresent := allianceDuelFrame(true, false)
 	ranking := vsRankingFrame()
 	weeklyUnchecked := vsRankingWeeklyFrame(0, true, false)
 	weeklyChecked := vsRankingWeeklyFrame(0, true, true)
@@ -485,6 +532,49 @@ func TestVSCaptureRecoversWhenTheRankingButtonAppearsAfterASettle(t *testing.T) 
 	}
 	if !rec.calls[0].complete {
 		t.Error("want complete = true")
+	}
+}
+
+// ensureRankingButton's settle retries are exhausted (ranking_button never
+// appears on alliance_duel), but duel_progress_tab is present, so it is
+// tapped, and after that single tap ranking_button does appear — the tab was
+// genuinely unselected and this is the exact case the anchor exists for. The
+// route then carries on through a normal capture.
+func TestVSCaptureSelectsDuelProgressTabWhenRankingButtonIsAbsent(t *testing.T) {
+	noButtonWithTab := allianceDuelFrame(false, true)
+	withButton := allianceDuelFrame(true, false)
+	ranking := vsRankingFrame()
+	weeklyChecked := vsRankingWeeklyFrame(0, true, true)
+
+	frames := []image.Image{
+		noButtonWithTab, // NavigateTo(alliance_duel) CurrentScreen
+		noButtonWithTab, // ensureRankingButton attempt 0: absent
+		noButtonWithTab, // ensureRankingButton attempt 1: absent
+		noButtonWithTab, // ensureRankingButton attempt 2: absent
+		noButtonWithTab, // Sees(duel_progress_tab): present
+		noButtonWithTab, // Tap(duel_progress_tab) verify
+		withButton,      // re-check Sees(ranking_button): now present
+		withButton,      // NavigateTo(vs_ranking_weekly) initial CurrentScreen
+		withButton,      // Tap(ranking_button) verify
+		ranking,         // WaitFor(vs_ranking)
+		ranking,         // Tap(weekly_tab) verify
+		weeklyChecked,   // WaitFor(vs_ranking_weekly)
+		weeklyChecked,   // confirming CurrentScreen
+		weeklyChecked,   // attempt 0: Sees(your_alliance_checked) -> true, done
+	}
+
+	rt, tr, rec := newVSHarness(t, frames)
+	fn, _ := Get("vs_capture")
+	if err := fn(context.Background(), rt); err != nil {
+		t.Fatalf("vs_capture: %v", err)
+	}
+	// duel_progress_tab + ranking_button + weekly_tab: the filter was
+	// already checked, so applyAllianceFilter contributes no tap here.
+	if got := countTaps(tr); got != 3 {
+		t.Errorf("got %d taps, want 3 (duel_progress_tab, ranking_button, weekly_tab)", got)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("got %d RecordCapture calls, want exactly 1", len(rec.calls))
 	}
 }
 

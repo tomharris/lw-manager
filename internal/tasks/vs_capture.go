@@ -19,17 +19,22 @@ import (
 // returned nil.
 var ErrFilterNotApplied = errors.New("tasks: the Your Alliance filter did not apply")
 
-// ErrRankingTabUnavailable reports that Alliance Duel landed with no Ranking
-// button anywhere in its bottom bar.
+// ErrRankingTabUnavailable reports that Ranking was absent on Alliance Duel,
+// and tapping toward Duel Progress — the one anchored recovery available —
+// did not bring it back either.
 //
 // Alliance Duel has more than one tab mode: a corpus frame caught it showing
 // an "Infinite Roulette" / "Duel League" strip instead of the one that
-// carries Ranking, with no Ranking button on screen at all. The manifest has
-// no anchor for selecting a specific tab — alliance_duel carries only its
-// own identifying anchor and ranking_button — so there is nothing on that
-// screen safe to tap toward a known state. Guessing among the unlabelled
-// tabs would be exactly the blind tap invariant #3 forbids, so this fails
-// with a sentinel that names the real cause instead.
+// carries Ranking, with no Ranking button on screen at all. duel_progress_tab
+// (cropped on hardware in commit 2d1d0ef, from its deliberately UNSELECTED
+// state — NCC scores an inverted template near -1, so one crop cannot serve
+// both states) is the only anchor the manifest carries for steering toward a
+// known tab, and ensureRankingButton taps it when present. This sentinel
+// covers both ways that recovery can fail to leave a known-good screen: the
+// tab anchor was never there to tap either, or it was tapped and Ranking
+// still never appeared. Either way there is nothing else on the screen safe
+// to try — the other tabs remain unlabelled, and guessing among them is
+// exactly the blind tap invariant #3 forbids.
 var ErrRankingTabUnavailable = errors.New("tasks: alliance duel has no Ranking button on its current tab")
 
 // vsListRegion is the ranking's scrollable area: below the column header and
@@ -110,13 +115,21 @@ func vsCapture(ctx context.Context, rt *runtime.Ctx) error {
 //
 // The corpus found a frame where it is not: Alliance Duel has more than one
 // tab mode, and one of them ("Infinite Roulette" / "Duel League") carries no
-// Ranking button at all. There is no anchor in the manifest for selecting a
-// specific tab, so there is nothing safe to tap toward a known state — this
-// only ever reads. The bounded retry exists solely to cover a landing
-// animation still drawing the bottom bar; if the button is still absent
-// after it, the screen is genuinely on the wrong tab and this returns a
-// sentinel that says so, rather than letting a bare NavigateTo fail deep
-// inside a Tap with the generic ErrAnchorNotFound.
+// Ranking button at all. The bounded settle retry below exists solely to
+// cover a landing animation still drawing the bottom bar; it does not touch
+// the screen, only reads it.
+//
+// If the button is still absent after that, this reaches for the one
+// anchored recovery the manifest carries: duel_progress_tab, cropped from
+// its deliberately UNSELECTED state, so its presence means the tab has not
+// been chosen yet — exactly the condition under which tapping it is safe and
+// useful (see the doc comment on ErrRankingTabUnavailable for why a crop of
+// the selected state could not do this job). If that anchor is not there
+// either, or tapping it still does not produce a Ranking button, this
+// returns a sentinel that says so, rather than letting a bare NavigateTo
+// fail deep inside a Tap with the generic ErrAnchorNotFound. There is still
+// nothing else on this screen safe to try: the other tabs remain unlabelled,
+// and guessing among them is exactly the blind tap invariant #3 forbids.
 func ensureRankingButton(ctx context.Context, rt *runtime.Ctx) error {
 	for i := 0; i < rankingButtonCheckAttempts; i++ {
 		present, err := rt.Sees(ctx, vision.ScreenAllianceDuel, "ranking_button")
@@ -132,8 +145,30 @@ func ensureRankingButton(ctx context.Context, rt *runtime.Ctx) error {
 			}
 		}
 	}
-	return fmt.Errorf("tasks: no Ranking button after %d checks, probably on a different Alliance Duel tab: %w",
-		rankingButtonCheckAttempts, ErrRankingTabUnavailable)
+
+	onProgressTab, err := rt.Sees(ctx, vision.ScreenAllianceDuel, "duel_progress_tab")
+	if err != nil {
+		return fmt.Errorf("tasks: looking for the Duel Progress tab: %w", err)
+	}
+	if !onProgressTab {
+		return fmt.Errorf("tasks: no Ranking button after %d checks and no Duel Progress tab to select, probably on a different Alliance Duel tab: %w",
+			rankingButtonCheckAttempts, ErrRankingTabUnavailable)
+	}
+	if err := rt.Tap(ctx, vision.ScreenAllianceDuel, "duel_progress_tab"); err != nil {
+		return fmt.Errorf("tasks: tapping the Duel Progress tab: %w", err)
+	}
+	if err := rt.Sleep(ctx, rankingButtonSettle, 2*rankingButtonSettle); err != nil {
+		return err
+	}
+	present, err := rt.Sees(ctx, vision.ScreenAllianceDuel, "ranking_button")
+	if err != nil {
+		return fmt.Errorf("tasks: looking for the Ranking button: %w", err)
+	}
+	if present {
+		return nil
+	}
+	return fmt.Errorf("tasks: no Ranking button after selecting Duel Progress, probably on a different Alliance Duel tab: %w",
+		ErrRankingTabUnavailable)
 }
 
 // applyAllianceFilter checks Your Alliance and confirms the checkmark, which
