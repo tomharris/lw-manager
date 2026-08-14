@@ -203,3 +203,50 @@ func TestParsePointsRejectsGarbage(t *testing.T) {
 		}
 	}
 }
+
+// TestParseGroupHeaderToleratesBadgeAndChevronNoise is task 24's test 3: the
+// real review-queue text task 24's brief quotes verbatim (badge shield
+// outline surviving as "{", ")"; chevron button surviving as "yi]") must
+// still yield the count, even though the old anchored pattern
+// (^(R\d+)\s+.+\s(\d+)/(\d+)$) would have rejected the trailing "yi]" as
+// text after the final anchor.
+func TestParseGroupHeaderToleratesBadgeAndChevronNoise(t *testing.T) {
+	name, total, err := parseGroupHeader("{R3) Footloose 10/64 yi]")
+	if err != nil {
+		t.Fatalf("parseGroupHeader: %v", err)
+	}
+	if total != 64 {
+		t.Errorf("total = %d, want 64", total)
+	}
+	if name == "" {
+		t.Error("name is empty, want the noisy-but-present group name kept for review triage")
+	}
+}
+
+// TestParseGroupHeaderRejectsTwoCountTokens is test 4: two "N/M"-shaped
+// tokens in one line have no principled way to choose between them, so both
+// must be refused rather than one silently picked (parseGroupHeader's own
+// doc comment).
+func TestParseGroupHeaderRejectsTwoCountTokens(t *testing.T) {
+	if _, _, err := parseGroupHeader("R3) Footloose 10/64 3/9"); !errors.Is(err, ErrUnparseable) {
+		t.Errorf("parseGroupHeader with two count tokens = %v, want ErrUnparseable", err)
+	}
+}
+
+// TestParseGroupHeaderRejectsMissingCount is test 5: task 24's brief quotes
+// this exact real OCR text ("[R4) This Is It ap") as a line with zero
+// count-shaped tokens, which must still fail to review rather than guess.
+func TestParseGroupHeaderRejectsMissingCount(t *testing.T) {
+	if _, _, err := parseGroupHeader("[R4) This Is It ap"); !errors.Is(err, ErrUnparseable) {
+		t.Errorf("parseGroupHeader with no count token = %v, want ErrUnparseable", err)
+	}
+}
+
+// TestParseGroupHeaderRejectsEmpty guards the zero-token path at its other
+// edge -- an empty or whitespace-only header must not be treated as a
+// single implicit match.
+func TestParseGroupHeaderRejectsEmpty(t *testing.T) {
+	if _, _, err := parseGroupHeader(""); !errors.Is(err, ErrUnparseable) {
+		t.Errorf("parseGroupHeader(\"\") = %v, want ErrUnparseable", err)
+	}
+}

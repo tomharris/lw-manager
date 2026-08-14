@@ -35,6 +35,11 @@ var (
 	levelRe  = regexp.MustCompile(`^(?:lv\.?|lv\s)?\s*([0-9]+)\s*$`)
 	agoRe    = regexp.MustCompile(`^([0-9]+)\s*([hmd])\s*(ago)?$`)
 	pointsRe = regexp.MustCompile(`^(?:[0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)$`)
+
+	// groupHeaderCountRe finds an "N/M" token anywhere in a sticky group
+	// header's raw OCR text -- unanchored, deliberately, unlike every other
+	// regex in this file. See parseGroupHeader's own doc comment for why.
+	groupHeaderCountRe = regexp.MustCompile(`\d+/\d+`)
 )
 
 // ParsePower reads the abbreviated power the member list shows, e.g.
@@ -190,4 +195,59 @@ func ParsePoints(s string) (int64, error) {
 		return 0, fmt.Errorf("ingest: points %q: %w", s, ErrUnparseable)
 	}
 	return n, nil
+}
+
+// parseGroupHeader extracts a rank group's display name and its stated total
+// from a sticky header's raw OCR text, e.g. "{R3) Footloose 10/64 yi]" ->
+// ("{R3) Footloose", 64).
+//
+// It used to also extract the rank badge itself ("R3"), anchored at both
+// ends of the line (`^(R\d+)\s+.+\s(\d+)/(\d+)$`) — task 24's brief: "those
+// anchors were added deliberately after earlier parsers fabricated
+// confident wrong numbers, and a previous implementer correctly declined to
+// loosen them as a band-aid." That constraint has not been loosened here;
+// it has been made unnecessary. Rank now comes from matchRankBadge's NCC
+// read (rankbadge.go), never from OCR of the badge's outlined glyphs — see
+// CLAUDE.md's note on outlined game glyphs, and Finding 4 (docs/superpowers/
+// specs/evidence/m4-ocr-2026-08-14) for the measurement that ruled OCR out
+// for that shape entirely, under every PSM and charset tried. With rank
+// supplied elsewhere, the only claim this function still has to defend is
+// the count, and it defends it the same way the old anchors did: refuse
+// rather than guess.
+//
+// The pattern is anchored on shape, not on position. It requires exactly one
+// "N/M"-shaped token anywhere in the line and fails if there are zero or
+// more than one, which tolerates arbitrary leading and trailing OCR noise
+// (the shield outline reading as "{", "(", ")"; the chevron button reading
+// as "yi]", "ap", "VN iy]" — real review-queue text, task 24's brief) without
+// ever being able to fabricate a count: two "N/M" tokens in one line (a
+// misread word that happens to contain one, or two genuine counts from a
+// merged line) have no principled way to choose between them, so this
+// refuses both rather than picking one arbitrarily.
+//
+// name is whatever text precedes the matched count, trimmed — kept for
+// review triage (a human looking at a queued row benefits from seeing
+// "Footloose" even wrapped in "{R3) Footloose") but never used as a key:
+// group names are user-editable and the group set itself varies (CLAUDE.md,
+// "Rank groups have no fixed identity"), so every group-keyed structure in
+// this package (GroupTally, groupTracker, run.groups) is keyed on the rank
+// matchRankBadge supplies, not on this string.
+func parseGroupHeader(raw string) (name string, total int, err error) {
+	trimmed := strings.TrimSpace(raw)
+	locs := groupHeaderCountRe.FindAllStringIndex(trimmed, -1)
+	if len(locs) != 1 {
+		return "", 0, fmt.Errorf("ingest: group header %q: found %d count-shaped tokens, want exactly 1: %w", raw, len(locs), ErrUnparseable)
+	}
+	loc := locs[0]
+	token := trimmed[loc[0]:loc[1]]
+	parts := strings.SplitN(token, "/", 2)
+	total, convErr := strconv.Atoi(parts[1])
+	if convErr != nil {
+		// Unreachable given groupHeaderCountRe's own \d+ shape, but a
+		// strconv failure must still route to review rather than panic --
+		// the same defensive shape every other Parse* function in this file
+		// takes on its own regex-validated capture.
+		return "", 0, fmt.Errorf("ingest: group header %q: %w", raw, ErrUnparseable)
+	}
+	return strings.TrimSpace(trimmed[:loc[0]]), total, nil
 }
