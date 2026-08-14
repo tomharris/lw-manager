@@ -48,6 +48,10 @@ const vsRowPitch = 128
 // executeTapAttempts.
 const rankingButtonCheckAttempts = 3
 
+// filterTapAttempts bounds applyAllianceFilter's read-tap loop. Three,
+// matching chevronTapAttempts and executeTapAttempts.
+const filterTapAttempts = 3
+
 // rankingButtonSettle paces the retries above. It only ever covers a landing
 // animation that has not finished drawing the bottom bar yet — it cannot fix
 // a screen that is genuinely on a different tab, which is why the loop still
@@ -136,19 +140,52 @@ func ensureRankingButton(ctx context.Context, rt *runtime.Ctx) error {
 // is the only local proof the tap was taken. Without the filter the list
 // carries both alliances and every enemy row would fail to match, flooding
 // review with rows that were never ours.
+//
+// The game persists this filter across sessions, so the task can just as
+// easily arrive with it already applied as with it off — run 362 on the
+// handset hit exactly that, and the original version of this function
+// tapped the control unconditionally before ever reading its state. Against
+// an already-applied filter that inverted it: the tap turned the checkmark
+// off, and the confirmation logic then correctly (and unhelpfully) reported
+// that the checkmark was missing. No device-free test could have caught
+// that, because a fake always starts from whatever state the test author
+// imagined, never from "the game silently remembered last time."
+//
+// The fix is a loop that reads before every tap, not just before the first
+// one:
+//
+//   - Idempotent (invariant #2): re-running against an already-filtered
+//     screen taps nothing and returns immediately, rather than toggling the
+//     filter off.
+//   - Self-correcting: because state is re-read at the top of every
+//     iteration rather than assumed from the tap that was just issued, a
+//     retry can never double-tap a checkbox that did register but rendered
+//     its checkmark slowly. A loop that instead tapped first and only
+//     re-read after would flip an already-applied filter right back off —
+//     the same bug this function exists to fix, wearing a retry-count
+//     disguise.
 func applyAllianceFilter(ctx context.Context, rt *runtime.Ctx) error {
-	on, err := rt.Sees(ctx, vision.ScreenVSRankingWeekly, "vs_ranking_alliance_button")
-	if err != nil {
-		return fmt.Errorf("tasks: looking for the Your Alliance control: %w", err)
-	}
-	if !on {
-		return fmt.Errorf("tasks: the Your Alliance control is not on screen: %w", ErrFilterNotApplied)
-	}
-	if err := rt.Tap(ctx, vision.ScreenVSRankingWeekly, "vs_ranking_alliance_button"); err != nil {
-		return fmt.Errorf("tasks: tapping Your Alliance: %w", err)
-	}
-	if err := rt.Sleep(ctx, swipeSettleMin, swipeSettleMax); err != nil {
-		return err
+	for attempt := 0; attempt < filterTapAttempts; attempt++ {
+		checked, err := rt.Sees(ctx, vision.ScreenVSRankingWeekly, "your_alliance_checked")
+		if err != nil {
+			return fmt.Errorf("tasks: confirming the alliance filter: %w", err)
+		}
+		if checked {
+			return nil
+		}
+		on, err := rt.Sees(ctx, vision.ScreenVSRankingWeekly, "vs_ranking_alliance_button")
+		if err != nil {
+			return fmt.Errorf("tasks: looking for the Your Alliance control: %w", err)
+		}
+		if !on {
+			return fmt.Errorf("tasks: the Your Alliance control is not on screen: %w", ErrFilterNotApplied)
+		}
+		if err := rt.Tap(ctx, vision.ScreenVSRankingWeekly, "vs_ranking_alliance_button"); err != nil {
+			return fmt.Errorf("tasks: tapping Your Alliance: %w", err)
+		}
+		if err := rt.Sleep(ctx, swipeSettleMin, swipeSettleMax); err != nil {
+			return err
+		}
 	}
 	checked, err := rt.Sees(ctx, vision.ScreenVSRankingWeekly, "your_alliance_checked")
 	if err != nil {

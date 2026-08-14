@@ -214,13 +214,14 @@ func newVSHarness(t *testing.T, frames []image.Image) (*runtime.Ctx, *transport.
 	return c, tr, rec
 }
 
-// vsHappyPathFrames scripts landing on vs_ranking_weekly with the filter
-// applied: alliance_duel (ranking button present) -> vs_ranking ->
-// vs_ranking_weekly -> Your Alliance tapped and confirmed checked. It ends on
-// a checked, at-rest (shift 0) frame, which ReplayTransport then holds for
-// whatever the caller does next — including scrollCapture's own screenshots,
-// which is exactly what a list that is already at the bottom looks like: a
-// captured frame's pixels do not move.
+// vsHappyPathFrames scripts landing on vs_ranking_weekly with the filter off
+// and then applied by exactly one tap: alliance_duel (ranking button
+// present) -> vs_ranking -> vs_ranking_weekly -> Your Alliance read as
+// unchecked, tapped once, then read as checked. It ends on a checked,
+// at-rest (shift 0) frame, which ReplayTransport then holds for whatever the
+// caller does next — including scrollCapture's own screenshots, which is
+// exactly what a list that is already at the bottom looks like: a captured
+// frame's pixels do not move.
 //
 //   - 1 frame: NavigateTo(alliance_duel)'s CurrentScreen (Entry already
 //     matches, so this is the only read)
@@ -233,9 +234,11 @@ func newVSHarness(t *testing.T, frames []image.Image) (*runtime.Ctx, *transport.
 //   - 1 frame: NavigateTo's own re-plan-loop CurrentScreen that confirms
 //     arrival (see roster_capture_test.go's threeGroupFrames doc comment for
 //     the same "WaitFor, then a confirming CurrentScreen" pair)
-//   - 1 frame: applyAllianceFilter's Sees(vs_ranking_alliance_button)
-//   - 1 frame: applyAllianceFilter's Tap(vs_ranking_alliance_button) verify
-//   - 1 frame: applyAllianceFilter's Sees(your_alliance_checked), checked
+//   - 1 frame: applyAllianceFilter's loop, attempt 0: Sees(your_alliance_checked),
+//     not yet checked — the read that must happen before any tap
+//   - 1 frame: applyAllianceFilter's loop, attempt 0: Sees(vs_ranking_alliance_button)
+//   - 1 frame: applyAllianceFilter's loop, attempt 0: Tap(vs_ranking_alliance_button) verify
+//   - 1 frame: applyAllianceFilter's loop, attempt 1: Sees(your_alliance_checked), checked
 func vsHappyPathFrames() []image.Image {
 	allianceDuel := allianceDuelFrame(true)
 	ranking := vsRankingFrame()
@@ -251,9 +254,43 @@ func vsHappyPathFrames() []image.Image {
 		ranking,         // Tap(weekly_tab) verify
 		weeklyUnchecked, // WaitFor(vs_ranking_weekly)
 		weeklyUnchecked, // confirming CurrentScreen
-		weeklyUnchecked, // Sees(vs_ranking_alliance_button)
-		weeklyUnchecked, // Tap(vs_ranking_alliance_button) verify
-		weeklyChecked,   // Sees(your_alliance_checked)
+		weeklyUnchecked, // attempt 0: Sees(your_alliance_checked) -> false
+		weeklyUnchecked, // attempt 0: Sees(vs_ranking_alliance_button) -> true
+		weeklyUnchecked, // attempt 0: Tap(vs_ranking_alliance_button) verify
+		weeklyChecked,   // attempt 1: Sees(your_alliance_checked) -> true, done
+	}
+}
+
+// vsAlreadyFilteredFrames scripts the run 362 hardware scenario directly:
+// the game persisted the Your Alliance filter from a previous session, so it
+// is already checked the moment vs_ranking_weekly is reached. The correct
+// behaviour is to read that and stop — zero taps against the filter control.
+// The old, unconditional-tap applyAllianceFilter would instead tap it
+// (turning it off, per the handset repro) before ever reading state, which
+// this frame script cannot represent faithfully for the old call order
+// (there is no "the game turned it off" simulation here — frames are
+// scripted, not stateful) but does still starve it: the old code's first
+// call is Sees(vs_ranking_alliance_button), which this script answers with
+// the confirming-arrival frame, not a frame prepared for that read, and it
+// proceeds to tap and mis-consume the rest of the list in a way that does
+// not end in success. That is enough to prove this test is not vacuously
+// true for both implementations; see the task report for the actual
+// before/after run.
+func vsAlreadyFilteredFrames() []image.Image {
+	allianceDuel := allianceDuelFrame(true)
+	ranking := vsRankingFrame()
+	weeklyChecked := vsRankingWeeklyFrame(0, true, true)
+
+	return []image.Image{
+		allianceDuel,  // NavigateTo(alliance_duel) CurrentScreen
+		allianceDuel,  // ensureRankingButton Sees
+		allianceDuel,  // NavigateTo(vs_ranking_weekly) initial CurrentScreen
+		allianceDuel,  // Tap(ranking_button) verify
+		ranking,       // WaitFor(vs_ranking)
+		ranking,       // Tap(weekly_tab) verify
+		weeklyChecked, // WaitFor(vs_ranking_weekly)
+		weeklyChecked, // confirming CurrentScreen
+		weeklyChecked, // attempt 0: Sees(your_alliance_checked) -> true, done
 	}
 }
 
@@ -287,10 +324,40 @@ func TestVSCaptureCapturesTheFilteredWeeklyRankingAsOneCompleteRun(t *testing.T)
 	}
 }
 
+// The regression test for run 362 on the handset: the game persists the
+// Your Alliance filter across sessions, so the task can arrive on
+// vs_ranking_weekly with the filter already applied. applyAllianceFilter
+// must read that and return without ever tapping the control — the old
+// unconditional-tap code tapped it regardless, which is exactly what turned
+// an already-applied filter off on hardware.
+func TestVSCaptureAppliesAnAlreadyCheckedFilterWithZeroTaps(t *testing.T) {
+	rt, tr, rec := newVSHarness(t, vsAlreadyFilteredFrames())
+
+	fn, ok := Get("vs_capture")
+	if !ok {
+		t.Fatal("vs_capture is not registered")
+	}
+	if err := fn(context.Background(), rt); err != nil {
+		t.Fatalf("vs_capture: %v", err)
+	}
+	// 2 navigation taps only (ranking_button, weekly_tab) — the filter was
+	// already applied, so the Your Alliance control itself must never be
+	// tapped.
+	if got := countTaps(tr); got != 2 {
+		t.Errorf("got %d taps, want 2 — an already-applied filter must not be tapped", got)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("got %d RecordCapture calls, want exactly 1", len(rec.calls))
+	}
+}
+
 // Without the filter the ranking lists both alliances, so every enemy row
 // would be parsed and fail to match, flooding review with rows that are not
-// ours. The checkmark is the proof the tap landed, not the tap itself.
-func TestVSCaptureFailsWhenTheAllianceFilterDoesNotApply(t *testing.T) {
+// ours. The checkmark is the proof the tap landed, not the tap itself. This
+// exercises the full retry budget: applyAllianceFilter must read-then-tap
+// filterTapAttempts times, and only then give up — it must not tap more
+// than that, and it must not give up sooner.
+func TestVSCaptureFailsWhenTheAllianceFilterNeverConfirms(t *testing.T) {
 	allianceDuel := allianceDuelFrame(true)
 	ranking := vsRankingFrame()
 	weeklyUnchecked := vsRankingWeeklyFrame(0, true, false)
@@ -299,18 +366,27 @@ func TestVSCaptureFailsWhenTheAllianceFilterDoesNotApply(t *testing.T) {
 		allianceDuel, allianceDuel, allianceDuel, allianceDuel,
 		ranking, ranking,
 		weeklyUnchecked, weeklyUnchecked, // WaitFor + confirming CurrentScreen
-		weeklyUnchecked, // Sees(vs_ranking_alliance_button): on
-		weeklyUnchecked, // Tap(vs_ranking_alliance_button) verify
-		weeklyUnchecked, // Sees(your_alliance_checked): never appears
 	}
+	// filterTapAttempts iterations, each: Sees(checked) -> false,
+	// Sees(button) -> true, Tap(button) verify. The checkmark never appears
+	// no matter how many times the control is read and tapped.
+	for i := 0; i < filterTapAttempts; i++ {
+		frames = append(frames, weeklyUnchecked, weeklyUnchecked, weeklyUnchecked)
+	}
+	frames = append(frames, weeklyUnchecked) // final Sees(checked): still false
 
-	rt, _, rec := newVSHarness(t, frames)
+	rt, tr, rec := newVSHarness(t, frames)
 	fn, ok := Get("vs_capture")
 	if !ok {
 		t.Fatal("vs_capture is not registered")
 	}
 	if err := fn(context.Background(), rt); !errors.Is(err, ErrFilterNotApplied) {
 		t.Fatalf("got %v, want ErrFilterNotApplied", err)
+	}
+	// 2 navigation taps + exactly filterTapAttempts filter taps: the loop
+	// must stop at the bound, not retry forever.
+	if got, want := countTaps(tr), 2+filterTapAttempts; got != want {
+		t.Errorf("got %d taps, want %d", got, want)
 	}
 	if len(rec.calls) != 0 {
 		t.Errorf("got %d RecordCapture calls, want 0 — a failed filter must not reach the scroll or recordFrames", len(rec.calls))
@@ -329,6 +405,7 @@ func TestVSCaptureFailsWhenTheAllianceButtonControlIsAbsent(t *testing.T) {
 		allianceDuel, allianceDuel, allianceDuel, allianceDuel,
 		ranking, ranking,
 		weeklyNoButton, weeklyNoButton, // WaitFor + confirming CurrentScreen
+		weeklyNoButton, // Sees(your_alliance_checked): absent
 		weeklyNoButton, // Sees(vs_ranking_alliance_button): absent
 	}
 
@@ -392,9 +469,10 @@ func TestVSCaptureRecoversWhenTheRankingButtonAppearsAfterASettle(t *testing.T) 
 		ranking,             // Tap(weekly_tab) verify
 		weeklyUnchecked,     // WaitFor(vs_ranking_weekly)
 		weeklyUnchecked,     // confirming CurrentScreen
-		weeklyUnchecked,     // Sees(vs_ranking_alliance_button)
-		weeklyUnchecked,     // Tap(vs_ranking_alliance_button) verify
-		weeklyChecked,       // Sees(your_alliance_checked)
+		weeklyUnchecked,     // attempt 0: Sees(your_alliance_checked) -> false
+		weeklyUnchecked,     // attempt 0: Sees(vs_ranking_alliance_button) -> true
+		weeklyUnchecked,     // attempt 0: Tap(vs_ranking_alliance_button) verify
+		weeklyChecked,       // attempt 1: Sees(your_alliance_checked) -> true, done
 	}
 
 	rt, _, rec := newVSHarness(t, frames)
