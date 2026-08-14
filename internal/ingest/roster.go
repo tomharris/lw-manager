@@ -255,9 +255,18 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		return RosterResult{}, fmt.Errorf("ingest: loading frames for capture %d: %w", captureID, err)
 	}
 
+	// CurrentAllianceID's own ErrNotFound means literally nothing has ever
+	// written the alliances table -- the state of a fresh deployment, since
+	// alliance identity is declared via `control alliance set`, never
+	// derived from the roster frame's own pixels (see that command's own
+	// doc comment for why). Left as CurrentAllianceID's bare wrap, the
+	// failure read as "db: current alliance: db: not found" with nothing
+	// telling the operator what to do about it -- this is that fix, named
+	// here rather than in CurrentAllianceID itself so the sentinel stays
+	// wrapped with %w and errors.Is(err, db.ErrNotFound) keeps working.
 	allianceID, err := i.store.CurrentAllianceID(ctx)
 	if err != nil {
-		return RosterResult{}, fmt.Errorf("ingest: resolving current alliance: %w", err)
+		return RosterResult{}, fmt.Errorf("ingest: resolving current alliance (run `control alliance set --tag <tag> --name <name>` first): %w", err)
 	}
 	dbMembers, err := i.store.ListMembers(ctx, allianceID)
 	if err != nil {

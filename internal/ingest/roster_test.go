@@ -3,10 +3,12 @@ package ingest
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +36,11 @@ type fakeIngestStore struct {
 	objectKeys map[int64]string
 	allianceID int64
 	startedAt  time.Time
+
+	// currentAllianceErr, when set, is what CurrentAllianceID returns instead
+	// of allianceID — the fresh-deployment case task 19 exists to fix, where
+	// nothing has ever written the alliances table.
+	currentAllianceErr error
 
 	nextMemberID int64
 
@@ -99,6 +106,9 @@ func (s *fakeIngestStore) FinishCapture(ctx context.Context, id int64, status st
 }
 
 func (s *fakeIngestStore) CurrentAllianceID(ctx context.Context) (int64, error) {
+	if s.currentAllianceErr != nil {
+		return 0, s.currentAllianceErr
+	}
 	return s.allianceID, nil
 }
 
@@ -765,6 +775,28 @@ func TestIngestRosterWritesAllianceMemberCount(t *testing.T) {
 	}
 	if h.store.MemberCountSet != 2 {
 		t.Errorf("alliance member count set to %d, want 2", h.store.MemberCountSet)
+	}
+}
+
+// On a fresh deployment nothing has ever written the alliances table, so
+// CurrentAllianceID returns db.ErrNotFound. Task 19 exists because that
+// surfaced as an opaque "db: current alliance: db: not found" with no
+// indication of what to do about it (see cmd/control ingest.go's error
+// path); IngestRoster's wrap must name the fix — control alliance set —
+// while still letting a caller recover the sentinel with errors.Is.
+func TestIngestRosterNamesTheFixWhenNoAllianceHasEverBeenSet(t *testing.T) {
+	h := newHarness(t)
+	h.store.currentAllianceErr = fmt.Errorf("db: current alliance: %w", db.ErrNotFound)
+
+	_, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err == nil {
+		t.Fatal("IngestRoster: want an error when no alliance has ever been observed, got nil")
+	}
+	if !errors.Is(err, db.ErrNotFound) {
+		t.Fatalf("IngestRoster error = %v, want it to still wrap db.ErrNotFound via %%w", err)
+	}
+	if !strings.Contains(err.Error(), "control alliance set") {
+		t.Fatalf("IngestRoster error = %q, want it to name `control alliance set` as the fix", err.Error())
 	}
 }
 
