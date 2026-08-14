@@ -46,7 +46,22 @@ var chevronSettle = 900 * time.Millisecond
 // it spans the whole scrollable column so a group header can be found
 // wherever the groups above it put it — while this is the narrower band
 // scrollCapture actually swipes and photographs.
-var memberListRegion = transport.Rect{X1: 0.03, Y1: 0.42, X2: 0.97, Y2: 0.89}
+//
+// Y1 was 0.42 (y=672 of a 1600px frame), which sits inside the sticky
+// rank-group header ("R3 Footloose 15/64", pinned in place while rows scroll
+// underneath it): five scrolled frames of the same burst put that header's
+// bar at y=650..697 by eye, every one agreeing to within a pixel. 0.44
+// (y=704) clears the header's own bottom edge by 7px rather than cutting
+// through it — internal/ingest/roster.go's groupHeaderRegion is measured
+// from the same frames and the two constants are consistent by that
+// measurement, not by assumption; see its doc comment. This measurably
+// helped ScrollOffset too: probe 0's margin on the same frame pair went
+// 0.056 -> 0.117 (docs/superpowers/specs/evidence/m4-scrolloffset-2026-08-13/).
+//
+// internal/ingest/roster.go duplicates this Rect rather than importing it —
+// see that file's own comment for why — so a further change here must move
+// there too.
+var memberListRegion = transport.Rect{X1: 0.03, Y1: 0.44, X2: 0.97, Y2: 0.89}
 
 const memberRowPitch = 112
 
@@ -103,9 +118,10 @@ func rosterCapture(ctx context.Context, rt *runtime.Ctx) error {
 		}
 
 		frames, complete, err := scrollCapture(ctx, rt, ScrollSpec{
-			Screen: vision.ScreenAllianceMembers,
-			Region: memberListRegion,
-			Pitch:  memberRowPitch,
+			Screen:    vision.ScreenAllianceMembers,
+			Region:    memberListRegion,
+			Pitch:     memberRowPitch,
+			SwipeFrac: 0.35, // measured on the handset: 263px swipe -> 326-359px travel
 			// GroupKey stays empty: which rank a frame belongs to is read
 			// from the frame's own sticky header at ingest, not asserted
 			// here (see the doc comment above).

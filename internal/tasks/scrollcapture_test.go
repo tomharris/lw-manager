@@ -286,9 +286,10 @@ func TestScrollCaptureRetriesBeforeBelievingTheBottom(t *testing.T) {
 	})
 
 	frames, complete, err := scrollCapture(context.Background(), rt, ScrollSpec{
-		Screen: "vs_ranking_alliance",
-		Region: transport.Rect{X1: 0, Y1: 0.2, X2: 1, Y2: 0.8},
-		Pitch:  128,
+		Screen:    "vs_ranking_alliance",
+		Region:    transport.Rect{X1: 0, Y1: 0.2, X2: 1, Y2: 0.8},
+		Pitch:     128,
+		SwipeFrac: 0.35,
 	})
 	if err != nil {
 		t.Fatalf("scrollCapture: %v", err)
@@ -325,9 +326,10 @@ func TestScrollCaptureFlagsAnOvershoot(t *testing.T) {
 	rt, _ := newScrollHarness(t, []frameScript{{shift: 100}})
 
 	_, complete, err := scrollCapture(context.Background(), rt, ScrollSpec{
-		Screen: "vs_ranking_alliance",
-		Region: transport.Rect{X1: 0, Y1: 0.2, X2: 1, Y2: 0.8},
-		Pitch:  128,
+		Screen:    "vs_ranking_alliance",
+		Region:    transport.Rect{X1: 0, Y1: 0.2, X2: 1, Y2: 0.8},
+		Pitch:     128,
+		SwipeFrac: 0.35,
 	})
 	if !errors.Is(err, ErrScrollOvershot) {
 		t.Fatalf("got %v, want ErrScrollOvershot", err)
@@ -345,9 +347,10 @@ func TestScrollCaptureStopsAtMaxFrames(t *testing.T) {
 	rt, _ := newScrollHarness(t, script)
 
 	frames, complete, err := scrollCapture(context.Background(), rt, ScrollSpec{
-		Screen: "vs_ranking_alliance",
-		Region: transport.Rect{X1: 0, Y1: 0.2, X2: 1, Y2: 0.8},
-		Pitch:  128,
+		Screen:    "vs_ranking_alliance",
+		Region:    transport.Rect{X1: 0, Y1: 0.2, X2: 1, Y2: 0.8},
+		Pitch:     128,
+		SwipeFrac: 0.35,
 	})
 	if err != nil {
 		t.Fatalf("scrollCapture: %v", err)
@@ -386,9 +389,10 @@ func TestScrollCaptureTakesOneScreenshotPerStoredFrame(t *testing.T) {
 	rt, tr := newScrollHarness(t, script)
 
 	frames, complete, err := scrollCapture(context.Background(), rt, ScrollSpec{
-		Screen: "vs_ranking_alliance",
-		Region: transport.Rect{X1: 0, Y1: 0.2, X2: 1, Y2: 0.8},
-		Pitch:  128,
+		Screen:    "vs_ranking_alliance",
+		Region:    transport.Rect{X1: 0, Y1: 0.2, X2: 1, Y2: 0.8},
+		Pitch:     128,
+		SwipeFrac: 0.35,
 	})
 	if err != nil {
 		t.Fatalf("scrollCapture: %v", err)

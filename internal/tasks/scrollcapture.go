@@ -52,6 +52,15 @@ type ScrollSpec struct {
 	Region transport.Rect
 	// Pitch is the expected row height in pixels at the reference resolution.
 	Pitch int
+	// SwipeFrac is how much of the region's own height one swipe travels,
+	// before fling. Measured per list rather than shared as one constant:
+	// recon found the roster's 0.35 (263px swipe -> 326-359px travel) left
+	// the VS ranking's deepest probe with too little headroom (665px travel
+	// against probe 2's 630px limit — see internal/vision/scroll.go's
+	// ScrollOffset doc comment for what a probe's own limit means), so VS
+	// uses 0.25 instead. A single shared literal would have coupled that
+	// fix to the roster's already-measured, already-working behaviour.
+	SwipeFrac float64
 	// GroupKey labels every frame, carrying the rank group on the roster route.
 	GroupKey string
 }
@@ -143,15 +152,16 @@ func usableHeight(rt *runtime.Ctx, spec ScrollSpec) (int, error) {
 	return h - spec.Pitch, nil
 }
 
-// swipeOnce performs one measured-size swipe inside the region. 300px over
-// 800ms was measured on the handset at ~512px of travel — about 48% overlap
-// against a 990px viewport — where 700px over 300ms travelled ~1504px and
-// skipped rows.
+// swipeOnce performs one measured-size swipe inside the region, travelling
+// spec.SwipeFrac of the region's own height before fling. 300px over 800ms
+// (0.35 of the roster's region) was measured on the handset at ~512px of
+// travel — about 48% overlap against a 990px viewport — where 700px over
+// 300ms travelled ~1504px and skipped rows.
 func swipeOnce(ctx context.Context, rt *runtime.Ctx, spec ScrollSpec) error {
 	midX := (spec.Region.X1 + spec.Region.X2) / 2
 	span := spec.Region.Y2 - spec.Region.Y1
 	from := transport.Norm{X: midX, Y: spec.Region.Y1 + span*0.75}
-	to := transport.Norm{X: midX, Y: spec.Region.Y1 + span*0.40}
+	to := transport.Norm{X: midX, Y: spec.Region.Y1 + span*0.75 - span*spec.SwipeFrac}
 	if err := rt.Swipe(ctx, from, to); err != nil {
 		return fmt.Errorf("tasks: swiping %s: %w", spec.Screen, err)
 	}

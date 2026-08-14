@@ -96,6 +96,13 @@ func vsCapture(ctx context.Context, rt *runtime.Ctx) error {
 		Screen: vision.ScreenVSRankingWeekly,
 		Region: vsListRegion,
 		Pitch:  vsRowPitch,
+		// SwipeFrac: measured on the handset at 0.35 (the roster's own
+		// value), a swipe here produced 665px of travel against probe 1's
+		// 748px limit — inside, but with little headroom, and fling
+		// varies. 0.25 pulls that back without disturbing the roster's own
+		// already-working 0.35 (ScrollSpec's doc comment on SwipeFrac has
+		// the full comparison).
+		SwipeFrac: 0.25,
 	}
 	frames, complete, err := scrollCapture(ctx, rt, spec)
 	if err != nil {
