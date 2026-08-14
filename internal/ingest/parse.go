@@ -14,8 +14,24 @@ import (
 // rather than guessing a value.
 var ErrUnparseable = errors.New("ingest: field could not be parsed")
 
+// powerRe requires the decimal point, deliberately, where the shape a naive
+// reading of the UI suggests ("208M" looks like a fine abbreviation) is
+// exactly the shape task 23's audit found dangerous. Every power value on
+// both screens is rendered with exactly one decimal place -- 212.1M, 290.0M,
+// 218.7M, 155.7M, confirmed across every real row measured, both in the
+// evidence corpus and in task 23's own re-measurement of 53 real member rows
+// from capture 1 (docs/superpowers/specs/evidence/m4-ocr-2026-08-14). A
+// decimal-less K/M/B value is therefore not a rarer-but-valid render, it is
+// a corrupted one: it was either misread outright, or (before this task)
+// produced by a charset whitelist that recognized digits where the true
+// pixels were the decimal point and a following digit, off by roughly 10x.
+// Making the decimal mandatory turns that shape back into ErrUnparseable --
+// routed to review, per invariant #5 -- rather than a plausible-looking
+// fact. See ParsePower's own doc comment for the measurement that justified
+// this, and TestParsePowerRejectsTheWhitelistLaunderedShape for the
+// regression it closes.
 var (
-	powerRe  = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?[KMB]$`)
+	powerRe  = regexp.MustCompile(`^[0-9]+\.[0-9][KMB]$`)
 	levelRe  = regexp.MustCompile(`^(?:lv\.?|lv\s)?\s*([0-9]+)\s*$`)
 	agoRe    = regexp.MustCompile(`^([0-9]+)\s*([hmd])\s*(ago)?$`)
 	pointsRe = regexp.MustCompile(`^(?:[0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)$`)
@@ -31,6 +47,28 @@ var (
 //
 // An unparseable field returns ErrUnparseable so the row routes to review
 // instead of contributing a confident wrong number to a leaderboard.
+//
+// powerRe requires exactly one digit after the decimal point, not merely a
+// decimal point somewhere: task 23's audit (docs/superpowers/specs/evidence/
+// m4-ocr-2026-08-14 Finding 7, and the task's own report) found that
+// powerSpec's former charset whitelist ("0123456789.KMB") laundered a real
+// row's raw text -- "Power: 218.7M", which OCRs unconstrained as something
+// like "Power:je18°7M" and correctly fails this regex -- into "1877M",
+// which parsed cleanly to 1,877,000,000 against a true value of 218,700,000:
+// wrong by 8.6x, with nothing downstream able to tell it from a good read.
+// Constraining tesseract's classifier to a charset does not just filter the
+// text it already recognized; it changes which glyph each blob is
+// classified as, and the decimal point -- a single small blob -- was the
+// first casualty on 33 of 53 real rows measured, even though "." is itself
+// in that charset. Removing the whitelist alone fixed 0/53 false accepts in
+// that same measurement (every unconstrained read either parsed correctly or
+// failed this regex), which is why the whitelist is gone from powerSpec
+// entirely (see roster.go) rather than merely narrowed. This regex is the
+// second, independent guard: even a decimal-less value that reaches
+// ParsePower by some other route (a different OCR path, a whitelist
+// "helpfully" re-added later, a hand-built fixture) must still fail rather
+// than silently parse, because CLAUDE.md invariant #5 does not get to
+// depend on which caller produced the string.
 func ParsePower(s string) (int64, error) {
 	// Strip optional "Power:" label and surrounding whitespace
 	t := strings.TrimSpace(s)
