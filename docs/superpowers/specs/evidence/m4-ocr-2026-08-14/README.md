@@ -144,3 +144,43 @@ independent confirmation of the pinning measurement.
 probes here. R1 and R2 were cross-correlated only within a single frame, so
 their real-world separation is inferred, not measured. A capture that expands
 those groups would settle it.
+
+## Finding 6: `SegmentRows` has no valid signal on real frames
+
+Found after the preprocessing fix removed the header failure that had been
+masking it — segmentation had never once run on real pixels.
+
+`SegmentRows` splits rows on scanline mean brightness, assuming the signal is
+bimodal: "cards are darker than the page background on both screens, so below
+the midpoint is card and above is gap." It sets the split at the midpoint
+between the darkest and brightest scanline.
+
+Measured on a real member-list frame (region 0.44–0.89):
+
+```
+scanline means: min=149  p10=179  median=200  p90=223  max=246
+midpoint used  = 198        <- almost exactly the median
+first scanlines: 221 221 220 216 214 205 213 212 209 209 207 200 197 192 ...
+```
+
+There are not two populations. Each row contains light card background *and*
+dark text, which average together, so the row-mean signal oscillates around 200
+with no gap between "card" and "gap". The midpoint therefore lands in the middle
+of the noise, and the result is **30 detected bands with a median height of
+3px** against a real row pitch of 112.
+
+That also explains the `ErrPitchMismatch` on all 62 frames, and shows the check
+doing its job: it refused rather than handing 3px slivers downstream.
+
+Two things follow:
+
+- **This needs a different algorithm, not a tuned threshold.** There is no
+  threshold that separates populations that do not exist. The list is strongly
+  periodic with a known pitch, so phase-finding (autocorrelation against the
+  known pitch, or edge/separator detection in an x-band free of text) is the
+  natural approach — measure the offset of a known-period signal rather than
+  hunt for a level.
+- **`observedPitch` measures the wrong quantity even when bands are found.** It
+  is the median band *height* — the card — while `pitch` is the row-to-row
+  distance, card plus gap. Those differ by the gap, so the comparison is
+  systematically biased even on a healthy frame.
