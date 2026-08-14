@@ -540,7 +540,144 @@ func rowResults(name string) []ocr.Result {
 	}
 }
 
+// rowResultsConf is rowResults with the name's OCR confidence under the
+// test's control -- the numeric fields stay at 0.9 so nothing else in the row
+// is what routes it.
+func rowResultsConf(name string, nameConf float64) []ocr.Result {
+	return []ocr.Result{
+		{Text: name, Confidence: nameConf},
+		{Text: "Power: 200.0M", Confidence: 0.9},
+		{Text: "Lv.30", Confidence: 0.9},
+		{Text: "Online", Confidence: 0.9},
+	}
+}
+
+// reviewReasons counts the queued review rows by reason, for the assertions
+// below that care which gate a row hit rather than only that it was queued.
+func (h *rosterIngestHarness) reviewReasons() map[string]int {
+	out := map[string]int{}
+	for _, r := range h.store.Reviews {
+		out[r.Reason]++
+	}
+	return out
+}
+
 // --- tests -----------------------------------------------------------------
+
+// An empty name cannot identify anybody, so it must never become a member.
+// Before this check, roster.Rank("") scored 0 against every member and the row
+// fell through to the creation branch: capture 1 produced 20 empty-name rows
+// per run and 122 ghost members across re-runs.
+//
+// The fixture is built so the *displacement* half fails loudly too, which is
+// the more damaging consequence and the one an assertion on Created alone
+// would miss. The group states a total of 1 and the frame carries two rows,
+// the empty one first. If an empty name still consumes a slot of the group's
+// creation budget, the real member behind it is refused as
+// no_confident_match_group_full and Created stays 1 either way -- so the
+// reason tally, not the count, is what distinguishes the fix from the bug.
+func TestIngestRosterRefusesToCreateAMemberFromAnEmptyName(t *testing.T) {
+	h := newHarness(t)
+	h.addFrame(rosterFrame(3), 0)
+
+	var results []ocr.Result
+	results = append(results, ocr.Result{Text: "R1 Group 1/1", Confidence: 0.9})
+	results = append(results, rowResultsConf("", 0.0)...)
+	results = append(results, rowResultsConf("   ", 0.85)...) // whitespace-only, and confident: the structural rule must not need the confidence one
+	results = append(results, rowResultsConf("RealOne", 0.95)...)
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+
+	if res.Created != 1 {
+		t.Errorf("created %d members, want 1 (only RealOne)", res.Created)
+	}
+	for _, m := range h.store.members {
+		if strings.TrimSpace(m.Name) == "" {
+			t.Errorf("a member was created with an empty name (id %d, rank %q)", m.ID, m.Rank)
+		}
+	}
+
+	reasons := h.reviewReasons()
+	if reasons["unreadable_name"] != 2 {
+		t.Errorf("unreadable_name reviews = %d, want 2 (the empty and the whitespace-only row); all reasons: %v", reasons["unreadable_name"], reasons)
+	}
+	if reasons["no_confident_match_group_full"] != 0 {
+		t.Errorf("a real member was displaced into no_confident_match_group_full by an empty-name row consuming the group's creation budget; all reasons: %v", reasons)
+	}
+}
+
+// The name is the one field whose MinConf is enforced rather than advisory,
+// and it is enforced only on the creation branch -- see nameSpec's own doc
+// comment. A name read too poorly to trust must not mint an identity that
+// every later capture then tries to match against.
+func TestIngestRosterRefusesToCreateAMemberFromALowConfidenceName(t *testing.T) {
+	h := newHarness(t)
+	h.addFrame(rosterFrame(2), 0)
+
+	var results []ocr.Result
+	results = append(results, ocr.Result{Text: "R1 Group 20/20", Confidence: 0.9})
+	results = append(results, rowResultsConf("Grbldd", 0.2)...) // non-empty, matches nobody, below nameSpec.MinConf
+	results = append(results, rowResultsConf("GoodName", 0.95)...)
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+
+	if res.Created != 1 {
+		t.Errorf("created %d members, want 1 (only GoodName)", res.Created)
+	}
+	for _, m := range h.store.members {
+		if m.Name == "Grbldd" {
+			t.Error("a member was created from a name read below nameSpec.MinConf")
+		}
+	}
+	if reasons := h.reviewReasons(); reasons["low_confidence_name"] != 1 {
+		t.Errorf("low_confidence_name reviews = %d, want 1; all reasons: %v", reasons["low_confidence_name"], reasons)
+	}
+}
+
+// The asymmetry above is deliberate and this pins it. A fuzzy score of 92+
+// against a member who already exists is much stronger evidence that a read is
+// right than the OCR engine's own confidence is -- on capture 1, seven rows
+// scored below nameSpec.MinConf and still auto-matched a real member. Applying
+// the floor to matching as well as creation would throw those away for nothing.
+func TestIngestRosterStillMatchesALowConfidenceNameAgainstAKnownMember(t *testing.T) {
+	h := newHarness(t)
+	h.store.nextMemberID++
+	h.store.members = append(h.store.members, db.Member{
+		ID: h.store.nextMemberID, AllianceID: 1, Name: "Lothar232",
+		NameNormalized: roster.Normalize("Lothar232"), Rank: "R1", Active: true,
+	})
+
+	h.addFrame(rosterFrame(1), 0)
+	var results []ocr.Result
+	results = append(results, ocr.Result{Text: "R1 Group 20/20", Confidence: 0.9})
+	results = append(results, rowResultsConf("Lothar232", 0.2)...) // well below MinConf, but an exact match
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Matched != 1 {
+		t.Errorf("matched %d, want 1: a confident name match must survive a low OCR confidence", res.Matched)
+	}
+	if res.Created != 0 {
+		t.Errorf("created %d, want 0", res.Created)
+	}
+	if reasons := h.reviewReasons(); reasons["low_confidence_name"] != 0 {
+		t.Errorf("the creation-branch floor was applied to a matched row; all reasons: %v", reasons)
+	}
+	if len(h.store.Facts) == 0 {
+		t.Error("no facts written for the matched row")
+	}
+}
 
 // The structural guard the recon supplied: if a group states 11 members and
 // eleven already matched, a twelfth is an OCR artifact rather than a person.
@@ -580,6 +717,13 @@ func TestIngestRosterMarksAShortGroupPartial(t *testing.T) {
 	}
 }
 
+// "Low confidence" here means the *fuzzy match* score, not the OCR
+// confidence: the row's name reads cleanly and lands in roster.ReviewFloor's
+// 75-92 band against a known member. The OCR-confidence gate on the name is a
+// separate rule with its own tests
+// (TestIngestRosterRefusesToCreateAMemberFromALowConfidenceName and the two
+// beside it), and the two are deliberately independent — see nameSpec's doc
+// comment.
 func TestIngestRosterQueuesALowConfidenceNameRatherThanGuessing(t *testing.T) {
 	h := newRosterIngestHarness(t, rosterFixture{
 		group: "R2", groupTotal: 11, existing: 11, ambiguousName: true,

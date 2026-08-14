@@ -103,16 +103,26 @@ const (
 	statusYFrac0, statusYFrac1       = 0.0, 0.45
 )
 
-// The MinConf values below are advisory, not enforced: nothing in this file
-// calls ocr.Result.Accepted(spec), so a read below its field's MinConf is
-// neither rejected nor rerouted on that basis alone. The floor actually
-// applied is the flat factConfidenceGate (0.80) in writeFacts, against each
-// field's blended (name-match × OCR) confidence — which exceeds every value
-// declared here, so today this causes no wrong fact to be written. The
-// per-field numbers are kept as documentation of each field's OCR
-// difficulty (a free-text name at 0.4 versus a constrained-charset number at
-// 0.6) and as the Charset each field is actually read with; they are not a
-// second gate.
+// The MinConf values below are advisory except one: nameSpec's is enforced,
+// at exactly one site.
+//
+// For the numeric fields nothing calls ocr.Result.Accepted(spec), so a read
+// below its field's MinConf is neither rejected nor rerouted on that basis
+// alone. The floor actually applied to them is the flat factConfidenceGate
+// (0.80) in writeFacts, against each field's blended (name-match × OCR)
+// confidence — which exceeds every value declared here, so this causes no
+// wrong fact to be written. Those numbers are kept as documentation of each
+// field's OCR difficulty (a free-text name at 0.4 versus a constrained-charset
+// number at 0.6) and as the Charset each field is actually read with.
+//
+// The name is different in kind, which is why it is the exception. A numeric
+// field's bad read costs one fact and is caught downstream by
+// factConfidenceGate, which queues it for review. The name is not a fact —
+// it is the identity every fact attaches to — so there is no downstream gate
+// to catch it, and a bad read does not lose a number, it mints a *member*.
+// processRow therefore enforces nameSpec.MinConf on the member-creation branch
+// specifically (see the comment there for why creation and not matching, and
+// for the measurement that says the floor costs nothing at 0.4).
 // powerSpec carries no Charset, deliberately -- see task 23's report and
 // parse.go's powerRe doc comment. It used to carry "0123456789.KMB", and
 // that whitelist is exactly what Finding 7 (docs/superpowers/specs/evidence/
@@ -756,6 +766,25 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 		ScreenshotID: screenshotID, Band: band, GroupKey: groupKey,
 	}
 
+	// An empty name cannot identify anybody, and it cannot be matched either:
+	// roster.Rank("") scores 0 against every member, so without this the row
+	// falls through to the creation branch below and mints a member named "".
+	// That is not a cosmetic defect -- each one consumes a slot of the group's
+	// creation budget (gt.matchedOrCreated below), displacing a real member
+	// into no_confident_match_group_full, and it accumulates on every re-run
+	// because an empty name does not match the empty-named member the last run
+	// created. Capture 1 produced 20 such rows per run and 122 ghost members
+	// before this check existed.
+	//
+	// Structural, not a threshold: this holds whatever confidence the engine
+	// reports, because there is no reading of an empty string that identifies
+	// a person. (On capture 1 all 20 also scored exactly 0.000, so the
+	// confidence gate below would have caught them too -- the point of keeping
+	// both is that neither should have to rely on the other.)
+	if strings.TrimSpace(row.Name) == "" {
+		return run.queueReview(ctx, i, screenshotID, band, nameRes.Text, nil, "unreadable_name", row.NameConf)
+	}
+
 	candidates := roster.Rank(row.Name, run.members)
 	switch {
 	case len(candidates) > 0 && candidates[0].Score >= roster.AutoAccept:
@@ -769,6 +798,29 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 		return run.queueReview(ctx, i, screenshotID, band, row.Name, candidates, "ambiguous_name_match", 0)
 
 	default:
+		// Creating a member is the one irreversible thing this loop does: a
+		// match writes a fact against somebody who already exists, but a
+		// creation mints an identity every later capture will try to match
+		// against. So it is the one place nameSpec.MinConf is enforced rather
+		// than advisory (see the specs' own doc comment above).
+		//
+		// Only here, and deliberately not on the matching branches. A fuzzy
+		// score of 92+ against a known member is far stronger evidence that a
+		// read is right than the OCR engine's own confidence is -- on capture 1
+		// seven rows scored below 0.4 and still auto-matched a real member, and
+		// refusing those would lose good data to no purpose.
+		//
+		// Measured before it was enforced: across capture 1's 96 rows, no
+		// non-empty name below this floor reached the creation branch at all
+		// (every sub-0.4 read either matched at 92+ or was empty), so turning
+		// this on costs zero legitimate creations on the only real roster
+		// capture there is. That makes it a guard against a class rather than
+		// a threshold tuned to trim a distribution -- if a future capture
+		// starts losing real members here, the answer is to re-measure the
+		// field's OCR, not to lower this.
+		if !nameRes.Accepted(nameSpec) {
+			return run.queueReview(ctx, i, screenshotID, band, nameRes.Text, candidates, "low_confidence_name", row.NameConf)
+		}
 		gt := run.groups[groupKey]
 		if gt.matchedOrCreated < gt.expected {
 			memberID, err := i.store.CreateMember(ctx, db.Member{
