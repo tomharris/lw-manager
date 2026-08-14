@@ -50,20 +50,47 @@ const memberRowPitch = 112
 // (one frame read 651), bottom y=697 (all five) — which is itself the
 // confirmation that the bar is genuinely pinned rather than coincidentally
 // sitting there in one frame. Normalized against the 1600px frame that is
-// 0.40625..0.435625; the constant below widens that slightly to 0.404..0.438
-// as margin around the measured band, not as a substitute for it.
+// 0.40625..0.435625.
+//
+// That measurement's own margin (widened to 0.404..0.438) is what task 21
+// found too tall: the first real ingest read every header as noise, and
+// TestPreprocMeasure (internal/vision/zz_preproc_probe_test.go) run against
+// 18 real header crops from capture 1 (docs/superpowers/specs/evidence/
+// m4-ocr-2026-08-14) showed why — at 0.404..0.438 the best preprocessing
+// variant read the group name on only 10/18 frames, because the region's
+// bottom edge reaches far enough into the next row that PSM 7 (single text
+// line) merges the two (evidence Finding 2: a legible "Footloose" reading as
+// "Se"). Tightening to 0.409..0.435 — still a margin around the measured
+// 650..697 band, just a smaller one — raised that to 14/18 with the same
+// preprocessing, the single biggest improvement task 21 measured on any
+// field. It is not 18/18: the very first list frame of a capture (before any
+// scroll) shows the header at its unscrolled position, not yet pinned, so
+// that frame's header is expected to miss this band entirely rather than a
+// preprocessing failure.
 //
 // The two constants are consistent by measurement, not by assumption:
 // memberListRegion.Y1=0.44 is y=704, which clears this band's bottom edge
 // (697) by 7px. Whoever moves either one next should keep that clearance.
-var groupHeaderRegion = transport.Rect{X1: 0.03, Y1: 0.404, X2: 0.97, Y2: 0.438}
+var groupHeaderRegion = transport.Rect{X1: 0.03, Y1: 0.409, X2: 0.97, Y2: 0.435}
+
+// groupHeaderOptions is the preprocessing task 21's harness measured for
+// groupHeaderRegion: grayscale and upscale(3), nothing else. Across the same
+// 18-frame set used to tighten the region above, every shape that included
+// adaptive threshold after equalize scored 0-1/18 (equalize stretches the
+// header's flat background before threshold amplifies that into noise — the
+// flat-crop trap CLAUDE.md documents for NCC, in this algorithm); grayscale
+// alone tied for the best score measured (14/18) without depending on that
+// interaction, so it is the one used here rather than a threshold variant
+// that happened to tie on this sample.
+var groupHeaderOptions = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 3}
 
 // Field sub-rects, as fractions of the full frame width (X) and of one row
 // band's own height (Y) — recon-measured from frame 03
-// (docs/superpowers/specs/evidence/m4-recon-2026-08-12/03-r3-expanded-after-tap.png),
-// same caveat as groupHeaderRegion above: real-pixel accuracy is unverified
-// pending a device session, and no unit test depends on it (ocr.FakeEngine
-// ignores the pixels it is handed, per its own doc comment).
+// (docs/superpowers/specs/evidence/m4-recon-2026-08-12/03-r3-expanded-after-tap.png).
+// Task 21 verified these against real capture-1 frames while measuring each
+// field's Options below (ten real rows across two frames, cropped at exactly
+// these fractions and read back by eye before OCR ever ran) — the crop
+// geometry was correct; readField's missing per-field Options was not.
 const (
 	nameXFrac0, nameXFrac1     = 0.19, 0.67
 	powerXFrac0, powerXFrac1   = 0.19, 0.47
@@ -93,19 +120,87 @@ var (
 	lastActiveSpec  = ocr.Spec{Charset: "0123456789hmdagoOnline ", MinConf: 0.6}
 )
 
+// Per-field preprocessing Options, set by TestPreprocMeasure against ten
+// real member rows (five each from two capture-1 frames, cross-checked by
+// eye against the frame before scoring — docs/superpowers/specs/evidence/
+// m4-ocr-2026-08-14). readField used to receive only Region, so every field
+// silently got the full Preprocess chain (see preprocess.go's doc comment
+// for why that chain is wrong on this UI); these are what measurement on
+// real pixels put in its place.
+var (
+	// nameOptions: grayscale + invert + upscale(2) read 9/10 real names
+	// (e.g. "KIRCHO", "BobLeeSwagger44"). Threshold tied at 9/10 too but
+	// equalize did not (5/10) — see powerOptions below for why equalize
+	// specifically helps the power field and not this one: player names
+	// render as flat-colored text on a flat card background, the same
+	// near-flat condition that makes threshold and equalize risky
+	// elsewhere, so this keeps both off and relies on grayscale contrast
+	// alone plus the polarity flip.
+	nameOptions = vision.Options{SkipEqualize: true, SkipThreshold: true, UpscaleFactor: 2}
+
+	// powerOptions: grayscale + equalize + upscale(3) was the best measured
+	// (2/10 exact "###.#M" reads, tied with the full chain), and every
+	// variant tested lost the decimal point on most rows regardless of
+	// shape ("184.3M" read as "1843M") — a 10x-magnitude error that
+	// parses without complaint, since powerRe's decimal is optional. This
+	// is a real, measured limit of grayscale-based OCR on this field's bold
+	// condensed digits, not a shape/upscale choice; the confidence gate is
+	// what stands between a dropped decimal and a wrong fact today, and a
+	// follow-up task should treat this field's low ceiling as a finding, not
+	// as evidence the wrong Options were picked.
+	powerOptions = vision.Options{SkipThreshold: true, SkipInvert: true, UpscaleFactor: 3}
+
+	// levelOptions: grayscale + upscale(3) read 10/10 real levels ("Lv.35"
+	// and friends) — level is short, high-contrast, and constrained to a
+	// small charset, so it was the easiest field measured and several
+	// shapes tied; grayscale-only was chosen for consistency with the other
+	// fields that also tied on it, not because the alternatives were worse.
+	levelOptions = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 3}
+
+	// lastActiveOptions: grayscale + upscale(3) read 5/10 — every "Xm ago"/
+	// "Xh ago" row (grey text) read cleanly, and every "Online" row (green
+	// text) read as garbage ("oo", "ae") under every shape tested,
+	// including ones with equalize. Grayscale conversion maps that green
+	// close to the card's own background luminance, so the text is not
+	// faint in the source, it is nearly invisible once color is discarded —
+	// a different mechanism from the flat-region trap above but the same
+	// shape of problem: a normalizing/reducing step erasing the one signal
+	// the field depends on. No Options combination this package exposes
+	// fixes it; a color-aware read (or a fixed "online" glyph match) is a
+	// separate task's problem, not a threshold this one got wrong.
+	lastActiveOptions = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 3}
+)
+
 // allianceMemberCountRegion is the band on the alliance screen (not
 // alliance_members) carrying "Members: 96/100" — recon frame 01
 // (docs/superpowers/specs/evidence/m4-recon-2026-08-12/01-alliance-members-96-of-100.png).
-// Unverified pending a device session, same caveat as groupHeaderRegion and
-// the field fractions below: no unit test depends on its accuracy, since
-// ocr.FakeEngine ignores the pixels it is handed.
-var allianceMemberCountRegion = transport.Rect{X1: 0.03, Y1: 0.19, X2: 0.60, Y2: 0.27}
+//
+// Task 21 found two faults here, both against real frames (this recon frame
+// and capture 1's own alliance-summary screenshot, seq 0): X2=0.60 (x=432)
+// cut off the value entirely — "Members:" sits at x≈270..390 but its value
+// "97/100" sits at x≈600..680 — which is why the first real run warned with
+// raw_text="4 ES". Widening X2 alone is not sufficient, though: the old Y
+// span (0.19..0.27, y=304..432) is tall enough to also catch the "Power:"
+// line above and the "Language:" line below, so PSM 7 would read three
+// concatenated lines instead of one. Y is now tightened to the "Members:"
+// line alone (measured the same way as groupHeaderRegion, a lum-transition
+// scan of the real frame: text band y=347..383 of a 1600px frame).
+// TestPreprocMeasure against both real frames confirms the fix: the shipped
+// chain (full Preprocess, old region) read neither cleanly; grayscale +
+// upscale(3) at this region reads "Members: 97/100" and "Members: 96/100"
+// exactly, 2/2.
+var allianceMemberCountRegion = transport.Rect{X1: 0.03, Y1: 0.2169, X2: 0.97, Y2: 0.2394}
 
 // See roster.go's Spec-value doc comment above groupHeaderSpec: advisory,
 // not enforced — factConfidenceGate is not applied to this read at all,
 // since it never becomes a Fact; a failed read just degrades the
 // alliance-total check (see readAllianceMemberCount).
 var allianceMemberCountSpec = ocr.Spec{MinConf: 0.5}
+
+// allianceMemberCountOptions: grayscale + upscale(3), the same shape that
+// won on every other field task 21 measured — see allianceMemberCountRegion
+// above for the 2/2 result this and the region fix together produced.
+var allianceMemberCountOptions = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 3}
 
 // allianceMemberCountRe pulls the alliance's current member count out of the
 // alliance screen's "Members: 96/100" line. Only the first number is the
@@ -323,7 +418,7 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 			return RosterResult{}, fmt.Errorf("ingest: loading screenshot %d: %w", frame.ScreenshotID, err)
 		}
 
-		headerRes, err := i.readField(ctx, img, groupHeaderRegion, groupHeaderSpec)
+		headerRes, err := i.readField(ctx, img, groupHeaderRegion, groupHeaderSpec, groupHeaderOptions)
 		if err != nil {
 			return RosterResult{}, fmt.Errorf("ingest: reading group header on screenshot %d: %w", frame.ScreenshotID, err)
 		}
@@ -464,7 +559,7 @@ func (run *rosterRun) readAllianceMemberCount(ctx context.Context, i *Ingester, 
 			"capture_id", run.captureID, "screenshot_id", frame.ScreenshotID, "error", err)
 		return 0, false
 	}
-	res, err := i.readField(ctx, img, allianceMemberCountRegion, allianceMemberCountSpec)
+	res, err := i.readField(ctx, img, allianceMemberCountRegion, allianceMemberCountSpec, allianceMemberCountOptions)
 	if err != nil {
 		slog.WarnContext(ctx, "ingest: could not OCR the alliance frame's member count; alliance-total reconciliation unavailable this run",
 			"capture_id", run.captureID, "screenshot_id", frame.ScreenshotID, "error", err)
@@ -495,19 +590,19 @@ func (run *rosterRun) readAllianceMemberCount(ctx context.Context, i *Ingester, 
 // attach, so an ambiguous or unmatched-and-group-full name still sends the
 // whole row to review, same as before.
 func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Image, band RowBand, screenshotID int64, groupKey string) error {
-	nameRes, err := i.readField(ctx, img, fieldRect(band, img, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1), nameSpec)
+	nameRes, err := i.readField(ctx, img, fieldRect(band, img, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1), nameSpec, nameOptions)
 	if err != nil {
 		return err
 	}
-	powerRes, err := i.readField(ctx, img, fieldRect(band, img, powerXFrac0, powerXFrac1, bottomRowYFrac0, bottomRowYFrac1), powerSpec)
+	powerRes, err := i.readField(ctx, img, fieldRect(band, img, powerXFrac0, powerXFrac1, bottomRowYFrac0, bottomRowYFrac1), powerSpec, powerOptions)
 	if err != nil {
 		return err
 	}
-	levelRes, err := i.readField(ctx, img, fieldRect(band, img, levelXFrac0, levelXFrac1, bottomRowYFrac0, bottomRowYFrac1), levelSpec)
+	levelRes, err := i.readField(ctx, img, fieldRect(band, img, levelXFrac0, levelXFrac1, bottomRowYFrac0, bottomRowYFrac1), levelSpec, levelOptions)
 	if err != nil {
 		return err
 	}
-	lastRes, err := i.readField(ctx, img, fieldRect(band, img, statusXFrac0, statusXFrac1, statusYFrac0, statusYFrac1), lastActiveSpec)
+	lastRes, err := i.readField(ctx, img, fieldRect(band, img, statusXFrac0, statusXFrac1, statusYFrac0, statusYFrac1), lastActiveSpec, lastActiveOptions)
 	if err != nil {
 		return err
 	}
@@ -677,15 +772,32 @@ func fieldRect(band RowBand, img image.Image, xFrac0, xFrac1, yFrac0, yFrac1 flo
 	}
 }
 
-// readField preprocesses one region and reads it with the engine.
-func (i *Ingester) readField(ctx context.Context, img image.Image, rect transport.Rect, spec ocr.Spec) (ocr.Result, error) {
-	pre := vision.Preprocess(img, vision.Options{Region: rect})
+// readField preprocesses one region and reads it with the engine. opts
+// carries every field's own measured Options (see the vars beside each
+// field's ocr.Spec above and in vs.go) — readField sets opts.Region itself
+// so callers never have to remember to, which used to mean every field
+// silently got Options{} (the full, generally-wrong chain — preprocess.go's
+// doc comment) because nothing here overrode it. It is now the caller's job
+// to pass its field's measured Options; readField only positions it.
+func (i *Ingester) readField(ctx context.Context, img image.Image, rect transport.Rect, spec ocr.Spec, opts vision.Options) (ocr.Result, error) {
+	opts.Region = rect
+	pre := visionPreprocess(img, opts)
 	res, err := i.engine.Read(ctx, pre, spec)
 	if err != nil {
 		return ocr.Result{}, fmt.Errorf("ingest: ocr read: %w", err)
 	}
 	return res, nil
 }
+
+// visionPreprocess is vision.Preprocess behind a package-level variable
+// rather than a direct call, solely so a test can substitute a spy that
+// records the Options each readField call actually received. ocr.FakeEngine
+// intentionally ignores the pixels it is handed (its own doc comment), so
+// without this seam nothing could catch a call site silently reverting to
+// the wrong field's Options, or to none at all — exactly the regression
+// that shipped capture 1's zero-fact ingest. Production always resolves to
+// the real vision.Preprocess; only tests reassign it, and restore it after.
+var visionPreprocess = vision.Preprocess
 
 // loadFrame resolves a screenshot to its blob and decodes it. Screenshots
 // are always PNG (adb exec-out screencap -p; see CLAUDE.md gotchas).

@@ -11,6 +11,7 @@ import (
 	"github.com/tomharris/lw-manager/internal/ocr"
 	"github.com/tomharris/lw-manager/internal/roster"
 	"github.com/tomharris/lw-manager/internal/transport"
+	"github.com/tomharris/lw-manager/internal/vision"
 )
 
 // vsListRegion mirrors tasks.vsListRegion (see internal/tasks/vs_capture.go).
@@ -34,9 +35,10 @@ const vsRowPitch = 128
 // Field sub-rects, as fractions of the frame (X) and of one row band's own
 // height (Y) — recon-estimated from frame 05
 // (docs/superpowers/specs/evidence/m4-recon-2026-08-12/05-weekly-your-alliance-checked.png).
-// Unverified pending a device session, same caveat as roster.go's field
-// fractions: no unit test depends on their accuracy, since ocr.FakeEngine
-// ignores the pixels it is handed.
+// Task 21 verified these against eight real rows of the committed
+// m4-scrolloffset-2026-08-13 VS frames while measuring vsNameOptions and
+// vsPointsOptions below (each row read back by eye before OCR ran) — the
+// crop geometry held; the missing per-field Options did not.
 const (
 	vsNameXFrac0, vsNameXFrac1     = 0.26, 0.63
 	vsPointsXFrac0, vsPointsXFrac1 = 0.65, 0.97
@@ -52,6 +54,19 @@ const (
 var (
 	vsNameSpec   = ocr.Spec{MinConf: 0.4}
 	vsPointsSpec = ocr.Spec{Charset: "0123456789,", MinConf: 0.6}
+)
+
+// vsNameOptions and vsPointsOptions: grayscale + upscale(3), measured against
+// eight real rows of docs/superpowers/specs/evidence/m4-scrolloffset-2026-08-13's
+// committed VS weekly-ranking frames (01/02-vs-weekly-frame-*.png). Both
+// fields read 8/8 exactly — vsPointsOptions reproduces the evidence README's
+// own finding 3 ("rank -> 6, points -> 101,286,241") across the other seven
+// rows too, unlike roster.go's powerOptions: VS points are plain digits and
+// commas with no decimal point to lose, which is the field difference that
+// explains the gap between the two numeric fields' results.
+var (
+	vsNameOptions   = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 3}
+	vsPointsOptions = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 3}
 )
 
 // zeroInferenceConfidence is the confidence an inferred (not read) zero
@@ -232,11 +247,11 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 // still counts toward the caller's matchedRowCount, or the disagreement it
 // represents would cancel itself out and the cross-check would never fire.
 func (run *vsRun) processRow(ctx context.Context, i *Ingester, img image.Image, band RowBand, screenshotID int64, members []roster.Member, scored map[int64]bool) (bool, error) {
-	nameRes, err := i.readField(ctx, img, fieldRect(band, img, vsNameXFrac0, vsNameXFrac1, vsNameYFrac0, vsNameYFrac1), vsNameSpec)
+	nameRes, err := i.readField(ctx, img, fieldRect(band, img, vsNameXFrac0, vsNameXFrac1, vsNameYFrac0, vsNameYFrac1), vsNameSpec, vsNameOptions)
 	if err != nil {
 		return false, err
 	}
-	pointsRes, err := i.readField(ctx, img, fieldRect(band, img, vsPointsXFrac0, vsPointsXFrac1, vsPointsYFrac0, vsPointsYFrac1), vsPointsSpec)
+	pointsRes, err := i.readField(ctx, img, fieldRect(band, img, vsPointsXFrac0, vsPointsXFrac1, vsPointsYFrac0, vsPointsYFrac1), vsPointsSpec, vsPointsOptions)
 	if err != nil {
 		return false, err
 	}
