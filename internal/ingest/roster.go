@@ -115,42 +115,65 @@ const (
 // powerSpec carries no Charset, deliberately -- see task 23's report and
 // parse.go's powerRe doc comment. It used to carry "0123456789.KMB", and
 // that whitelist is exactly what Finding 7 (docs/superpowers/specs/evidence/
-// m4-ocr-2026-08-14) found laundering a real row's raw text into a confident
-// wrong fact: "Power: 218.7M" fails unconstrained, correctly, but the
-// whitelist recognized "1877M" instead, which parses to 1,877,000,000 --
-// 8.6x the true value. Task 23 re-measured this against 53 real member rows
-// from capture 1 rather than trusting the one example: with the whitelist,
-// 33/53 (62%) parsed to a value 10x-1000x off; without it, 0/53 false
-// accepted -- every unconstrained read either matched the true value or
-// failed ParsePower's regex outright, which is exactly the "lose the row
-// rather than record a plausible wrong value" trade CLAUDE.md's invariant #5
-// asks for. The general rule (put here because a whitelist reads as an
-// obvious accuracy win to whoever finds this code next): a charset is safe
-// only where every character it removes would also be absent from a correct
-// read. A correct "Power: 218.7M" contains "P","o","w","e","r",":"," " --
-// none of them in "0123456789.KMB" -- so the whitelist was stripping
-// characters a correct read legitimately has, and constraining tesseract's
-// classifier to a charset does not just filter recognized text, it changes
-// what each glyph is classified as; the decimal point was the measured
-// casualty even though "." was itself in the allowed set.
+// m4-ocr-2026-08-14) found laundering a real row's raw text into a
+// well-formed wrong value: "Power: 218.7M" fails unconstrained, correctly,
+// but the whitelist recognized "1877M" instead, which parses to
+// 1,877,000,000 -- 8.6x the true value. (Finding 7's writeup called this "a
+// confident wrong fact"; task 23's fix-round re-check found every one of the
+// 33 laundered reads scored OCR confidence 0.00 under the shipped Options,
+// so factConfidenceGate would have queued all of them as
+// low_confidence_power rather than writing a fact -- participation_facts
+// held zero power rows before this fix. The defect is not that a wrong
+// number reached a leaderboard; it is that ParsePower called a laundered
+// string well-formed at all, which means a human reviewer sees the plausible
+// "1877M" instead of the visibly-broken "Power:je18°7M" it actually was, and
+// that a future confidence improvement on this field would have had nothing
+// left to catch it. Both are still real; neither is "corrupted the facts
+// table".) Task 23 re-measured the parse-shape question against 53 real
+// member rows from capture 1 rather than trusting the one example: with the
+// whitelist, 33/53 (62%) parsed to a value 10x-1000x off; without it, 0/53
+// false accepted -- every unconstrained read either matched the true value
+// or failed ParsePower's regex outright, which is the "lose the row rather
+// than record a plausible wrong value" trade CLAUDE.md's invariant #5 asks
+// for regardless of which gate would also have caught it. The general rule
+// (put here because a whitelist reads as an obvious accuracy win to whoever
+// finds this code next): a charset is safe only where every character it
+// removes would also be absent from a correct read. A correct
+// "Power: 218.7M" contains "P","o","w","e","r",":"," " -- none of them in
+// "0123456789.KMB" -- so the whitelist was stripping characters a correct
+// read legitimately has, and constraining tesseract's classifier to a
+// charset does not just filter recognized text, it changes what each glyph
+// is classified as; the decimal point was the measured casualty even though
+// "." was itself in the allowed set. See vs.go's vsPointsSpec for the same
+// rule applied to a charset that looked safe by a superficially similar
+// argument and was not (task 23 fix-round finding C1) -- "the charset only
+// contains characters a correct read has" is necessary but not sufficient;
+// what also matters is whether the *crop* can contain other real content
+// (points' crop catches the alliance-name line below; power's catches the
+// "Power:" label) that the charset then has nowhere to put.
 var (
 	groupHeaderSpec = ocr.Spec{MinConf: 0.5}
 	nameSpec        = ocr.Spec{MinConf: 0.4}
 	powerSpec       = ocr.Spec{MinConf: 0.6}
 
-	// levelSpec's charset is kept: task 23 measured it against the same 53
-	// real rows and found it cannot launder, for a structural reason rather
-	// than luck. A correct read ("Lv.35", "Lv34", "Lv4") is built entirely
-	// from "L", "v", ".", and digits -- every one of them already in
-	// "Lv.0123456789" -- so the whitelist never strips a character a correct
-	// read would contain; that is exactly the property that made powerSpec's
-	// whitelist unsafe and this one safe. Measured effect: 0/53 disagreements
-	// where the whitelist produced a different parsed value than the
-	// unconstrained read did, and 6/53 crops that failed unconstrained (the
-	// "L" glyph misread as "Y" or "E" -- "Lyi34", "Evi35" -- against letters
-	// the unconstrained recognizer had to choose from) parsed correctly once
-	// the whitelist removed those competing letters as candidates. The
-	// whitelist can only help disambiguation here, never launder.
+	// levelSpec's charset is kept, on a narrower basis than a first pass at
+	// this comment claimed. "0/53 disagreements" is not, by itself, evidence
+	// of anything: 0/53 unconstrained level reads parse at all (this field's
+	// crop is small enough that the "L" glyph reads as "Y" or "E" without the
+	// charset's help), so there was no row on which the two conditions could
+	// even disagree. The whitelist does 100% of this field's parsing (6/53
+	// rows recovered). The actual basis for trusting it: in every one of
+	// those 6 rescues, the *digits* the unconstrained read already carried
+	// were correct and untouched -- "Lyi34"->"Lv34", "Evi35"->"Lv35" -- the
+	// whitelist only ever repaired the "L"/"v" glyphs, never the digits that
+	// determine the parsed value, because "Lv.0123456789" is a superset of
+	// what a correct read is built from and there is no other field's
+	// content sharing this crop for it to launder in from (unlike points --
+	// see powerSpec's comment above). A cross-field probe (this charset run
+	// over the 53 power and last-active crops instead of level crops)
+	// fabricated no "Lv##" out of either field's content, which is the
+	// closest this measurement gets to ruling out the C1 failure mode
+	// directly rather than by argument.
 	levelSpec = ocr.Spec{Charset: "Lv.0123456789", MinConf: 0.6}
 
 	// lastActiveSpec's charset is kept on the same structural grounds as

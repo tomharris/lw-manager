@@ -39,8 +39,15 @@ func TestParsePower(t *testing.T) {
 // Finding 7 measured that powerSpec's charset whitelist turns a real member
 // row's raw OCR text "Power:je18°7M" (which correctly fails ParsePower's
 // regex today) into "1877M" (which parsed cleanly to 1,877,000,000 against a
-// true value of 218,700,000 -- wrong by 8.6x, and written as a confident
-// fact). Removing the whitelist is half the fix; this asserts the other
+// true value of 218,700,000 -- wrong by 8.6x). This did not reach a
+// leaderboard -- every one of the 53 laundered reads task 23 measured scored
+// OCR confidence 0.00, which factConfidenceGate would have queued for review
+// rather than written as a fact (see ParsePower's own doc comment for the
+// fix-round correction on this point) -- but ParsePower calling a laundered
+// string well-formed at all is still the bug: it means a human reviewer sees
+// the plausible "1877M" instead of the visibly-broken original, and nothing
+// downstream would catch a wrong value if this field's OCR confidence ever
+// improves. Removing the whitelist is half the fix; this asserts the other
 // half, that ParsePower itself must not accept the laundered shape even if
 // something upstream hands it one anyway (a whitelist "helpfully" re-added
 // later, a different OCR path, a hand-crafted test fixture). Before this
@@ -50,13 +57,13 @@ func TestParsePower(t *testing.T) {
 func TestParsePowerRejectsTheWhitelistLaunderedShape(t *testing.T) {
 	got, err := ParsePower("1877M")
 	if err == nil {
-		t.Fatalf("ParsePower(%q) = %d, <nil error> -- want ErrUnparseable; a K/M/B value with no decimal point is not how this UI renders power (every real row has exactly one decimal place) and must not become a confident fact", "1877M", got)
+		t.Fatalf("ParsePower(%q) = %d, <nil error> -- want ErrUnparseable; a K/M/B value with no decimal point is not how this UI renders power (every real row has exactly one decimal place) and must not parse as well-formed", "1877M", got)
 	}
 	if !errors.Is(err, ErrUnparseable) {
 		t.Errorf("ParsePower(%q) error = %v, want ErrUnparseable", "1877M", err)
 	}
 	if got == 1_877_000_000 {
-		t.Errorf("ParsePower(%q) = %d: this is exactly the laundered wrong value (8.6x the true 218,700,000) the whitelist produced -- it must never be returned as if it were a fact", "1877M", got)
+		t.Errorf("ParsePower(%q) = %d: this is exactly the laundered wrong value (8.6x the true 218,700,000) the whitelist produced -- it must never be returned as if it were well-formed", "1877M", got)
 	}
 }
 
@@ -81,13 +88,15 @@ func TestParsePowerRejectsGarbage(t *testing.T) {
 // K/M/B-suffixed value with none is structurally suspect regardless of how
 // it was produced -- a charset whitelist (Finding 7, and
 // TestParsePowerRejectsTheWhitelistLaunderedShape above), a different OCR
-// misread, or a hand-built fixture. Every one of these is the exact shape
+// misread, or a hand-built fixture. Every one of these is the exact string
 // task 23's own measurement produced by running the shipped powerSpec
-// whitelist against 53 real member rows from capture 1: real values
-// (168.1M, 210.6M, 164.1M, 21.75M, 1.1M, 190.1M -- see the task report for
-// the full table) came back as "16841M", "2106M", "16441M", "2175M", "1M",
-// "190.1M" once the whitelist was applied, some missing the decimal point
-// entirely and some just a digit short of it. None of these may parse.
+// whitelist against 53 real member rows from capture 1; five were checked
+// directly against their source crop (fix-round correction: an earlier draft
+// of this comment mis-stated two of the true values, caught in review) --
+// true 168.1M read back as "16841M", true 210.6M as "2106M", true 164.1M as
+// "16441M", true 217.5M as "2175M" (a dropped decimal point each time), and
+// true 228.1M as just "1M" (the whitelist kept only the trailing digit and
+// the suffix). None of these may parse.
 func TestParsePowerRejectsDecimalLessValues(t *testing.T) {
 	for _, in := range []string{
 		"16841M", "2106M", "16441M", "22951M", "1889M", "2175M", "1863M",
