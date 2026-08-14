@@ -204,10 +204,10 @@ screens:
             - id: vs_button
               template: base/vs_button.png
               region:
-                - 0.84619
-                - 0.21545
-                - 0.98714
-                - 0.30008999999999997
+                - 0.854
+                - 0.174
+                - 0.978
+                - 0.219
               threshold: 0.85
               identifies_screen: false
             - id: world_map_button

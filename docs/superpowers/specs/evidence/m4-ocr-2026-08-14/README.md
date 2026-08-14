@@ -250,3 +250,42 @@ detectable failure into an undetectable one and must not be used.
 carry the same shape of whitelist and have **not** been tested — the crops used
 for this check were misaligned, so their behaviour is unknown rather than
 cleared.
+
+## Finding 10: the capture interleaves two groups, because one was already open
+
+The first ingest run to get past the header gate crashed on a duplicate key.
+The cause is not in ingest's arithmetic — it is that capture 1 genuinely
+contains two rank groups interleaved.
+
+Matching every frame's badge in capture order gives:
+
+```
+-- R4 R3 R3 ... R3 R2 R2 R2 R3 R3 R3 R2 R2 R3 R3 R3 R2 R2 R2 R3 R3 R2 R2 ...
+                    ^ frame 22 onward oscillates every 2-3 frames
+```
+
+That looks like a misread, and it is not. Evidence frames 09 and 10 are the
+header bands from frames 23 and 26: `R2 | I'm Alright | 1/11` and
+`R3 | Footloose | 10/64`, both with a **down** chevron — both groups expanded
+at once. The badge matcher scored 0.960 with a 0.250 gap throughout; it was
+right every time.
+
+`roster_capture` opens a collapsed group, captures it, and collapses it again.
+It only ever closes groups **it** opened. R2 was already expanded before the
+run began, so it stayed open, and scrolling through R3's 64 members eventually
+crossed into R2's rows.
+
+Two separate defects follow:
+
+- **Capture tier (root cause):** the task assumes every group starts collapsed
+  rather than establishing that. It should normalize the starting state —
+  collapse everything first — so each group's capture is isolated and the frame
+  sequence is deterministic. This is the third instance in this milestone of a
+  task assuming a starting state instead of reading it, after `vs_capture`'s
+  filter toggle and its Alliance Duel tab.
+- **Ingest tier (robustness):** `roster.go` resets `gt.contentY = 0` whenever
+  the header differs from the previous frame, so returning to a group wipes its
+  accumulated scroll offset and reprocesses rows already seen — which is what
+  collides on `participation_facts`' key. Interleaving should be handled
+  without corrupting per-group accounting even once the capture side is fixed,
+  because a capture from before the fix must still ingest correctly.
