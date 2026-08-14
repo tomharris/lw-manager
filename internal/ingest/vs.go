@@ -51,6 +51,21 @@ const (
 // field's OCR difficulty but are advisory, not enforced — factConfidenceGate
 // is the floor actually applied, against each field's blended (name-match x
 // OCR) confidence.
+//
+// vsPointsSpec's charset is kept, on the same structural grounds as
+// roster.go's levelSpec/lastActiveSpec (task 23's audit): a correct read of
+// this field ("101,286,241") is built entirely from digits and commas, both
+// already in "0123456789,", so the whitelist cannot strip anything a correct
+// read would contain. Measured against 15 real VS rows (the committed
+// m4-scrolloffset-2026-08-13 frames), the unconstrained read failed 14/15 --
+// every row but one carried a leading OCR artifact ("— 113,955,154",
+// "aoc 92,730,191") that the whitelist correctly stripped, and every one of
+// those 14 recovered digit sequences matched the row's real value exactly
+// (including 101,286,241, reproducing evidence Finding 3's own reading of
+// this same field). Zero rows changed value between the two reads; the
+// whitelist only ever turned a safe failure into the same correct number,
+// never into a different, wrong one -- the opposite of what powerSpec's
+// whitelist did.
 var (
 	vsNameSpec   = ocr.Spec{MinConf: 0.4}
 	vsPointsSpec = ocr.Spec{Charset: "0123456789,", MinConf: 0.6}

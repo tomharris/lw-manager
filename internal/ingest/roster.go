@@ -112,12 +112,56 @@ const (
 // difficulty (a free-text name at 0.4 versus a constrained-charset number at
 // 0.6) and as the Charset each field is actually read with; they are not a
 // second gate.
+// powerSpec carries no Charset, deliberately -- see task 23's report and
+// parse.go's powerRe doc comment. It used to carry "0123456789.KMB", and
+// that whitelist is exactly what Finding 7 (docs/superpowers/specs/evidence/
+// m4-ocr-2026-08-14) found laundering a real row's raw text into a confident
+// wrong fact: "Power: 218.7M" fails unconstrained, correctly, but the
+// whitelist recognized "1877M" instead, which parses to 1,877,000,000 --
+// 8.6x the true value. Task 23 re-measured this against 53 real member rows
+// from capture 1 rather than trusting the one example: with the whitelist,
+// 33/53 (62%) parsed to a value 10x-1000x off; without it, 0/53 false
+// accepted -- every unconstrained read either matched the true value or
+// failed ParsePower's regex outright, which is exactly the "lose the row
+// rather than record a plausible wrong value" trade CLAUDE.md's invariant #5
+// asks for. The general rule (put here because a whitelist reads as an
+// obvious accuracy win to whoever finds this code next): a charset is safe
+// only where every character it removes would also be absent from a correct
+// read. A correct "Power: 218.7M" contains "P","o","w","e","r",":"," " --
+// none of them in "0123456789.KMB" -- so the whitelist was stripping
+// characters a correct read legitimately has, and constraining tesseract's
+// classifier to a charset does not just filter recognized text, it changes
+// what each glyph is classified as; the decimal point was the measured
+// casualty even though "." was itself in the allowed set.
 var (
 	groupHeaderSpec = ocr.Spec{MinConf: 0.5}
 	nameSpec        = ocr.Spec{MinConf: 0.4}
-	powerSpec       = ocr.Spec{Charset: "0123456789.KMB", MinConf: 0.6}
-	levelSpec       = ocr.Spec{Charset: "Lv.0123456789", MinConf: 0.6}
-	lastActiveSpec  = ocr.Spec{Charset: "0123456789hmdagoOnline ", MinConf: 0.6}
+	powerSpec       = ocr.Spec{MinConf: 0.6}
+
+	// levelSpec's charset is kept: task 23 measured it against the same 53
+	// real rows and found it cannot launder, for a structural reason rather
+	// than luck. A correct read ("Lv.35", "Lv34", "Lv4") is built entirely
+	// from "L", "v", ".", and digits -- every one of them already in
+	// "Lv.0123456789" -- so the whitelist never strips a character a correct
+	// read would contain; that is exactly the property that made powerSpec's
+	// whitelist unsafe and this one safe. Measured effect: 0/53 disagreements
+	// where the whitelist produced a different parsed value than the
+	// unconstrained read did, and 6/53 crops that failed unconstrained (the
+	// "L" glyph misread as "Y" or "E" -- "Lyi34", "Evi35" -- against letters
+	// the unconstrained recognizer had to choose from) parsed correctly once
+	// the whitelist removed those competing letters as candidates. The
+	// whitelist can only help disambiguation here, never launder.
+	levelSpec = ocr.Spec{Charset: "Lv.0123456789", MinConf: 0.6}
+
+	// lastActiveSpec's charset is kept on the same structural grounds as
+	// levelSpec: "0123456789hmdagoOnline " covers every character a correct
+	// read contains ("7h ago", "23m ago", "1d ago", "Online"), so nothing it
+	// strips could have been part of a valid read. Measured against the same
+	// 53 real rows, the whitelisted and unconstrained reads parsed to the
+	// identical value on every single row that parsed at all (34/53 both
+	// ways, zero disagreements) -- the whitelist did not launder a single
+	// row, and did not rescue one either.
+	lastActiveSpec = ocr.Spec{Charset: "0123456789hmdagoOnline ", MinConf: 0.6}
 )
 
 // Per-field preprocessing Options, set by TestPreprocMeasure against ten
