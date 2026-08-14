@@ -122,7 +122,7 @@ func rosterCapture(ctx context.Context, rt *runtime.Ctx) error {
 			Screen:    vision.ScreenAllianceMembers,
 			Region:    memberListRegion,
 			Pitch:     memberRowPitch,
-			SwipeFrac: 0.35, // measured on the handset: 263px swipe -> 326-359px travel
+			SwipeFrac: 0.35, // 252px swipe at the region's current height; run 365 measured 247-393px travel from it (16 real pairs)
 			// GroupKey stays empty: which rank a frame belongs to is read
 			// from the frame's own sticky header at ingest, not asserted
 			// here (see the doc comment above).

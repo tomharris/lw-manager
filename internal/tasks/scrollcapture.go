@@ -71,12 +71,22 @@ type ScrollSpec struct {
 	Pitch int
 	// SwipeFrac is how much of the region's own height one swipe travels,
 	// before fling. Measured per list rather than shared as one constant:
-	// recon found the roster's 0.35 (263px swipe -> 326-359px travel) left
-	// the VS ranking's deepest probe with too little headroom (665px travel
-	// against probe 2's 630px limit — see internal/vision/scroll.go's
-	// ScrollOffset doc comment for what a probe's own limit means), so VS
-	// uses 0.25 instead. A single shared literal would have coupled that
-	// fix to the roster's already-measured, already-working behaviour.
+	// recon found the roster's 0.35 left the VS ranking's deepest probe with
+	// too little headroom (665px travel against probe 2's 630px limit — see
+	// internal/vision/scroll.go's ScrollOffset doc comment for what a
+	// probe's own limit means), so VS uses 0.25 instead. A single shared
+	// literal would have coupled that fix to the roster's already-measured,
+	// already-working behaviour.
+	//
+	// The roster's own 0.35 was originally measured as a 263px swipe (0.35
+	// of a 0.47-tall region) producing 326-359px of travel. Both numbers
+	// moved when memberListRegion.Y1 shifted to clear the sticky header
+	// (0.42 -> 0.44, shrinking the region to 0.45 of the frame): the same
+	// 0.35 is now a 252px swipe, and device run 365 measured 247-393px of
+	// travel from it across 16 real pairs — still comfortably inside the
+	// 548px measurement ceiling (ErrScrollOvershot's doc comment), so 0.35
+	// did not need to move with the region, but the number this comment
+	// once quoted did.
 	SwipeFrac float64
 	// GroupKey labels every frame, carrying the rank group on the roster route.
 	GroupKey string
@@ -193,10 +203,15 @@ func usableHeight(rt *runtime.Ctx, spec ScrollSpec) (int, error) {
 }
 
 // swipeOnce performs one measured-size swipe inside the region, travelling
-// spec.SwipeFrac of the region's own height before fling. 300px over 800ms
-// (0.35 of the roster's region) was measured on the handset at ~512px of
-// travel — about 48% overlap against a 990px viewport — where 700px over
-// 300ms travelled ~1504px and skipped rows.
+// spec.SwipeFrac of the region's own height before fling. The roster's own
+// 0.35 is currently a 252px swipe over 800ms (0.35 of the region's 0.45-tall
+// height at Y1=0.44), which device run 365 measured producing 247-393px of
+// travel across 16 real frame pairs — comfortably inside the 548px
+// measurement ceiling (see ErrScrollOvershot). A much harder swipe overshoots
+// badly instead of merely travelling further: 700px over 300ms was measured
+// at ~1504px of travel against a ~990px viewport, skipping rows entirely —
+// which is why SwipeFrac stays a small, measured-per-list fraction rather
+// than a bigger number chosen for speed.
 func swipeOnce(ctx context.Context, rt *runtime.Ctx, spec ScrollSpec) error {
 	midX := (spec.Region.X1 + spec.Region.X2) / 2
 	span := spec.Region.Y2 - spec.Region.Y1

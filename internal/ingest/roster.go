@@ -348,9 +348,22 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 			return RosterResult{}, fmt.Errorf("ingest: segmenting screenshot %d: %w", frame.ScreenshotID, err)
 		}
 		if !newGroup && len(bands) > 0 {
-			// The sticky header is now pinned over whatever content sits at
-			// the top of the region, so the first band is a row cut in half.
-			// Discard it rather than parse a partial row.
+			// memberListRegion.Y1 is a fixed pixel line (704, 7px below the
+			// sticky header's own bottom edge — see memberListRegion's doc
+			// comment) and the list keeps scrolling underneath it, so this is
+			// no longer "the header covers the first band" as it was
+			// described here before the region moved to clear the header:
+			// with Y1 below the header, the header cannot be why a band gets
+			// cut. It is still true, for an unrelated reason — a swipe's
+			// travel is essentially never an exact multiple of a row's
+			// pitch, so the fixed region-top line almost always bisects
+			// whichever row happens to be sitting across it once the list
+			// has moved at all (newGroup is false). The result looks
+			// identical either way (a partial top band that must not be
+			// parsed as a whole row), which is exactly why the wrong reason
+			// survived a region move undetected — see CLAUDE.md on the `vs`
+			// mislabel for the general shape of that failure. Discard it
+			// rather than parse a partial row.
 			bands = bands[1:]
 		}
 
