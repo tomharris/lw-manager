@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"image"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tomharris/lw-manager/internal/db"
 	"github.com/tomharris/lw-manager/internal/ingest"
+	"github.com/tomharris/lw-manager/internal/ocr"
 )
 
 // callLog records dispatch evidence across fakeIngester's value-receiver
@@ -265,6 +267,58 @@ func TestIngestReportsALoadCaptureFailureWithoutRunningEitherRoute(t *testing.T)
 	}
 	if calls.rosterCalls != 0 || calls.vsCalls != 0 {
 		t.Fatalf("calls = %+v, want neither route run when the capture lookup fails", calls)
+	}
+}
+
+// stubAvailabilityEngine is an ocr.OCREngine that also reports availability,
+// standing in for ocr.TesseractEngine without shelling out to a real binary.
+// Read is never exercised by these tests — preflightOCR only calls
+// Available() — so it panics if reached, to keep that fact honest.
+type stubAvailabilityEngine struct {
+	available bool
+}
+
+func (s stubAvailabilityEngine) Read(context.Context, image.Image, ocr.Spec) (ocr.Result, error) {
+	panic("stubAvailabilityEngine.Read: preflightOCR should never call Read")
+}
+
+func (s stubAvailabilityEngine) Available() bool {
+	return s.available
+}
+
+func TestPreflightOCRRefusesWhenTheEngineReportsUnavailable(t *testing.T) {
+	var errOut bytes.Buffer
+	ok := preflightOCR(&errOut, stubAvailabilityEngine{available: false})
+	if ok {
+		t.Fatal("want preflightOCR to refuse when the engine reports itself unavailable")
+	}
+	if !strings.Contains(errOut.String(), "tesseract") {
+		t.Errorf("errOut = %q, want it to name tesseract", errOut.String())
+	}
+}
+
+func TestPreflightOCRAllowsAnEngineThatCannotReportAvailability(t *testing.T) {
+	// ocr.FakeEngine — the device-free stand-in every ingest test relies on
+	// — implements ocr.OCREngine but has no Available method at all. If
+	// preflightOCR required the assertion to succeed, the fake would fail
+	// every ingest test that ever routes through it. This is the property
+	// the brief calls out explicitly, so it is asserted directly here
+	// rather than left to be noticed as a side effect elsewhere.
+	var errOut bytes.Buffer
+	ok := preflightOCR(&errOut, &ocr.FakeEngine{})
+	if !ok {
+		t.Fatal("want preflightOCR to allow an engine with no Available method")
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("errOut = %q, want nothing written when preflight passes", errOut.String())
+	}
+}
+
+func TestPreflightOCRAllowsAnAvailableEngine(t *testing.T) {
+	var errOut bytes.Buffer
+	ok := preflightOCR(&errOut, stubAvailabilityEngine{available: true})
+	if !ok {
+		t.Fatal("want preflightOCR to allow an engine that reports itself available")
 	}
 }
 

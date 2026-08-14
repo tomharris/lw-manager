@@ -54,6 +54,16 @@ func (s ingestService) IngestVS(ctx context.Context, captureID int64, periodKey 
 // Tesseract — everything else is exercised in cmd/control/ingest_test.go
 // against a fake, with no Docker required.
 func runIngestCmd(ctx context.Context, cfg config.Config, args []string) error {
+	// Checked first, before Postgres or blob storage are even touched: a
+	// missing tesseract binary is knowable instantly and does not depend on
+	// anything this command is about to connect to. Discovering it instead
+	// three wraps down, after a roster capture has already ingested most of
+	// its groups, is the exact failure Task 20 was filed against.
+	engine := ocr.NewTesseractEngine()
+	if !preflightOCR(os.Stderr, engine) {
+		return fmt.Errorf("control ingest: failed")
+	}
+
 	pool, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
@@ -65,12 +75,42 @@ func runIngestCmd(ctx context.Context, cfg config.Config, args []string) error {
 		return err
 	}
 
-	svc := ingestService{pool: pool, ing: ingest.New(pool, blobs, ocr.NewTesseractEngine())}
+	svc := ingestService{pool: pool, ing: ingest.New(pool, blobs, engine)}
 
 	if code := runIngest(os.Stdout, os.Stderr, args, svc); code != 0 {
 		return fmt.Errorf("control ingest: failed")
 	}
 	return nil
+}
+
+// availabilityChecker is the optional capability preflightOCR looks for on
+// an ocr.OCREngine. It is deliberately not part of the OCREngine interface
+// itself: OCREngine is also implemented by ocr.FakeEngine, the device- and
+// tesseract-free stand-in every ingest test depends on, and a fake replaying
+// scripted results has no meaningful answer to "is your subprocess on
+// PATH". Requiring Available() on OCREngine would force the fake to either
+// fabricate an answer or refuse to compile — making the assertion optional
+// is what lets an engine that cannot report availability simply skip the
+// check instead of being rejected by it.
+type availabilityChecker interface {
+	Available() bool
+}
+
+// preflightOCR refuses before any ingest work starts if engine both can and
+// does report itself unavailable. This is the whole fix: the same
+// information TesseractEngine.Available() already carried, surfaced before
+// the run rather than after the first roster group fails to OCR and the
+// cause is buried three levels down a wrapped error.
+func preflightOCR(errOut io.Writer, engine ocr.OCREngine) bool {
+	checker, ok := engine.(availabilityChecker)
+	if !ok {
+		return true
+	}
+	if checker.Available() {
+		return true
+	}
+	fmt.Fprintln(errOut, "control ingest: tesseract is not available on PATH; install it with `apt install tesseract-ocr tesseract-ocr-eng` (Debian/Ubuntu) and re-run")
+	return false
 }
 
 // runIngest parses ingest's flags and runs the route the capture row names.
