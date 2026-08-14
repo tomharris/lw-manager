@@ -813,6 +813,18 @@ func TestParseAllianceMemberCount(t *testing.T) {
 		{raw: "  Members: 5/50  ", want: 5},
 		{raw: "Members: 0/100", want: 0},
 		{raw: "garbled nonsense", wantErr: true},
+		// The actual raw_text the first real ingest queued for review, back
+		// when allianceMemberCountRegion's X2=0.60 cut off the value and left
+		// only a scrap of the "Members:" label (task 21, evidence Finding 5).
+		// This must keep failing to parse -- silently accepting it would be
+		// worse than the review queue it went to.
+		{raw: "4 ES", wantErr: true},
+		// What the widened+tightened region (task 21) reads off a real
+		// frame: capture 1's own alliance-summary screenshot and the
+		// committed recon frame both produced this exact text via
+		// TestPreprocMeasure, 2/2 (allianceMemberCountRegion's own comment
+		// in roster.go).
+		{raw: "Members: 97/100", want: 97},
 		{raw: "", wantErr: true},
 	}
 	for _, tc := range cases {
