@@ -475,6 +475,69 @@ func (p *Pool) InsertFact(ctx context.Context, f Fact) (int64, error) {
 	return id, nil
 }
 
+// UpsertFact records one observation idempotently, keyed on exactly the
+// tuple participation_facts' own unique constraint already enforces
+// (member_id, metric, period_key, source, observed_at). InsertFact's plain
+// INSERT remains what every other caller uses -- a legitimate correction
+// changes observed_at (a later reobservation) or source (an OCR read
+// superseded by a manual one), so it never collides with an existing row,
+// and CLAUDE.md invariant 4 says a correction supersedes rather than
+// overwrites. This method exists for the one caller that can legitimately
+// hit the SAME key twice: the roster route pins observed_at to the
+// capture's own started_at for every frame it reads (see IngestRoster's
+// package doc -- "a parser fix replayed over a capture from months ago must
+// write the same facts it would have written the day the screenshot was
+// taken"), so two OCR reads of the same member's same metric within one
+// capture share every column of the key by construction. That happens for
+// two different reasons task 27 had to tell apart: a genuine second sighting
+// of a member during a capture whose groups interleave (see roster.go's
+// groupTracker), and a full re-run of `control ingest` against a capture an
+// earlier, crashed attempt already partly wrote facts for. Both land on the
+// identical tuple, and by the schema's own design that tuple names ONE
+// fact, not two -- unlike the screenshots table, where identical bytes still
+// earn a separate row because each capture is its own observation event.
+// Here the observed_at column is deliberately coarser than "this frame", so
+// a second read of it is not a second observation in the sense invariant 4
+// protects; it is the same observation read twice. Upserting keeps faith
+// with that, where a second plain INSERT would just be the bug this method
+// exists to close, and ON CONFLICT DO NOTHING would silently keep whichever
+// read happened to land first even if a later one were the cleaner
+// screenshot.
+//
+// written reports whether this call changed anything. It is what makes a
+// re-run of a crashed capture idempotent rather than merely non-crashing:
+// retrying with the exact same pixels produces the exact same confidence,
+// the WHERE guard below turns that retry into a genuine no-op, and a caller
+// that only wants to know "did this add a new number" (as opposed to "did
+// this not blow up") has a way to ask.
+func (p *Pool) UpsertFact(ctx context.Context, f Fact) (id int64, written bool, err error) {
+	err = p.QueryRow(ctx, `
+		INSERT INTO participation_facts
+		  (member_id, metric, value, observed_at, period_key, source, screenshot_id, confidence)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		ON CONFLICT (member_id, metric, period_key, source, observed_at)
+		DO UPDATE SET
+		  value = EXCLUDED.value,
+		  screenshot_id = EXCLUDED.screenshot_id,
+		  confidence = EXCLUDED.confidence
+		WHERE EXCLUDED.confidence > participation_facts.confidence
+		RETURNING id`,
+		f.MemberID, f.Metric, f.Value, f.ObservedAt, f.PeriodKey, f.Source,
+		nullInt64(f.ScreenshotID), f.Confidence).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The conflicting row exists and the WHERE guard rejected the
+		// update -- Postgres' documented behavior for a DO UPDATE whose
+		// condition is not satisfied is to act as DO NOTHING, which returns
+		// no row rather than an error. That is the "already recorded, and
+		// this read is no better" case, not a failure.
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("db: upserting %s fact for member %d in %s: %w", f.Metric, f.MemberID, f.PeriodKey, err)
+	}
+	return id, true, nil
+}
+
 // SupersedeFact points an old fact at its correction. Nothing is mutated in
 // place beyond this pointer, so every number still traces to the screenshot
 // it came from.

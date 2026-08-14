@@ -45,6 +45,7 @@ type fakeIngestStore struct {
 	nextMemberID int64
 
 	Facts          []db.Fact
+	factIndex      map[factKey]int // mirrors participation_facts' unique index; see UpsertFact
 	Reviews        []db.ReviewItem
 	MembersCreated int
 	FinishedStatus string
@@ -92,6 +93,45 @@ func (s *fakeIngestStore) CreateMember(ctx context.Context, m db.Member) (int64,
 func (s *fakeIngestStore) InsertFact(ctx context.Context, f db.Fact) (int64, error) {
 	s.Facts = append(s.Facts, f)
 	return int64(len(s.Facts)), nil
+}
+
+// factKey mirrors participation_facts' own unique constraint (member_id,
+// metric, period_key, source, observed_at) — see UpsertFact's doc comment
+// in internal/db/analytics.go for why the roster route can legitimately hit
+// it twice.
+type factKey struct {
+	memberID           int64
+	metric, periodKey  string
+	source             string
+	observedAtUnixNano int64
+}
+
+func factKeyOf(f db.Fact) factKey {
+	return factKey{f.MemberID, f.Metric, f.PeriodKey, f.Source, f.ObservedAt.UnixNano()}
+}
+
+// UpsertFact simulates internal/db.Pool.UpsertFact's ON CONFLICT ... DO
+// UPDATE ... WHERE EXCLUDED.confidence > participation_facts.confidence
+// semantics in memory, rather than trusting the fake to blindly append the
+// way InsertFact does — a test exercising task 27's fix needs the fake to
+// actually enforce the same key collision Postgres does, or a regression
+// here would pass this package's tests and still crash for real (the same
+// replay-before-real discipline ReplayTransport follows for the device).
+func (s *fakeIngestStore) UpsertFact(ctx context.Context, f db.Fact) (int64, bool, error) {
+	key := factKeyOf(f)
+	if s.factIndex == nil {
+		s.factIndex = map[factKey]int{}
+	}
+	if idx, ok := s.factIndex[key]; ok {
+		if f.Confidence <= s.Facts[idx].Confidence {
+			return 0, false, nil // existing read is at least as good; no-op, same as Postgres' WHERE guard
+		}
+		s.Facts[idx] = f
+		return int64(idx + 1), true, nil
+	}
+	s.Facts = append(s.Facts, f)
+	s.factIndex[key] = len(s.Facts) - 1
+	return int64(len(s.Facts)), true, nil
 }
 
 func (s *fakeIngestStore) QueueReview(ctx context.Context, r db.ReviewItem) (int64, error) {
@@ -216,6 +256,32 @@ func (h *rosterIngestHarness) stubRankFor(rank string) {
 	}
 	matchRankBadge = func(img image.Image) (rankMatch, error) {
 		return rankMatch{Rank: rank, Score: 1.0, Gap: 1.0}, nil
+	}
+}
+
+// stubRankSequence makes matchRankBadge return ranks[i] on the i-th call,
+// rather than stubRankFor's single constant rank -- needed to reproduce
+// capture 1's documented group-key oscillation (docs/superpowers/specs/
+// evidence/m4-ocr-2026-08-14, finding 10) directly instead of approximating
+// it with one rank throughout. matchRankBadge is called exactly once per
+// frame (IngestRoster's main loop), so len(ranks) must equal the number of
+// list frames the test adds. A second call to stubRankSequence (as a re-run
+// test needs, once per IngestRoster call) starts a fresh counter at 0 --
+// each call installs its own closure over its own index.
+func (h *rosterIngestHarness) stubRankSequence(ranks []string) {
+	h.t.Helper()
+	if h.origMatchRankBadge == nil {
+		h.origMatchRankBadge = matchRankBadge
+		h.t.Cleanup(func() { matchRankBadge = h.origMatchRankBadge })
+	}
+	i := 0
+	matchRankBadge = func(img image.Image) (rankMatch, error) {
+		if i >= len(ranks) {
+			h.t.Fatalf("stubRankSequence: matchRankBadge called more times than the %d ranks scripted", len(ranks))
+		}
+		r := ranks[i]
+		i++
+		return rankMatch{Rank: r, Score: 1.0, Gap: 1.0}, nil
 	}
 }
 
@@ -901,6 +967,243 @@ func TestParseAllianceMemberCount(t *testing.T) {
 		}
 		if got != tc.want {
 			t.Errorf("parseAllianceMemberCount(%q) = %d, want %d", tc.raw, got, tc.want)
+		}
+	}
+}
+
+// --- task 27: ingest must survive a capture whose groups interleave -------
+
+// TestGroupTrackerAdvanceResumesAnInterruptedGroupRatherThanRestarting is the
+// regression test for groupTracker.advance's actual arithmetic, decoupled
+// from image segmentation entirely -- it drives the exact header sequence
+// capture 1 measured (docs/superpowers/specs/evidence/m4-ocr-2026-08-14,
+// finding 10: "R4 R3 R3 ... R3 R2 R2 R2 R3 R3 R3 R2 R2 R3 R3 R3 R2 R2 R2 R3
+// R3 ...", excerpted here to its shortest oscillating shape) through two
+// independent trackers and asserts the exact contentY each call returns.
+//
+// Before task 27's fix, the third R3 sighting (index 3, a return after one
+// R2 frame) would have reported contentY=0 -- the bug this test exists to
+// catch, per its own name: a group returned to after an interruption must
+// resume, not restart.
+func TestGroupTrackerAdvanceResumesAnInterruptedGroupRatherThanRestarting(t *testing.T) {
+	type step struct {
+		group           string
+		offsetPx        int
+		wantContentY    int
+		wantSkipTopBand bool
+	}
+	// R3, R3, R2, R3, R2, R2 -- finding 10's own oscillation, at its
+	// shortest. offsetPx is only ever added when the immediately preceding
+	// frame carried the SAME group's header (see advance's own doc comment
+	// for why); every other value here is deliberately unreachable-looking
+	// (999) to prove it is ignored on a group switch, not just unused by
+	// coincidence of a convenient number.
+	steps := []step{
+		{group: "R3", offsetPx: 0, wantContentY: 0, wantSkipTopBand: false},     // R3's first-ever frame
+		{group: "R3", offsetPx: 112, wantContentY: 112, wantSkipTopBand: true},  // continuing: accumulate
+		{group: "R2", offsetPx: 999, wantContentY: 0, wantSkipTopBand: false},   // R2's first-ever frame
+		{group: "R3", offsetPx: 999, wantContentY: 112, wantSkipTopBand: false}, // returning: RESUME 112, not reset to 0
+		{group: "R2", offsetPx: 999, wantContentY: 0, wantSkipTopBand: false},   // returning: resume R2's own leftover (0)
+		{group: "R2", offsetPx: 112, wantContentY: 112, wantSkipTopBand: true},  // continuing: accumulate again
+	}
+
+	groups := map[string]*groupTracker{}
+	var prevGroup string
+	var havePrev bool
+	for idx, s := range steps {
+		gt, ok := groups[s.group]
+		if !ok {
+			gt = &groupTracker{lastRowY: -1}
+			groups[s.group] = gt
+		}
+		sameAsPrev := havePrev && s.group == prevGroup
+		gotContentY, gotSkip := gt.advance(s.offsetPx, sameAsPrev)
+		if gotContentY != s.wantContentY {
+			t.Errorf("step %d (%s): contentY = %d, want %d", idx, s.group, gotContentY, s.wantContentY)
+		}
+		if gotSkip != s.wantSkipTopBand {
+			t.Errorf("step %d (%s): skipTopBand = %v, want %v", idx, s.group, gotSkip, s.wantSkipTopBand)
+		}
+		prevGroup, havePrev = s.group, true
+	}
+}
+
+// groupHeaderText builds the header OCR text newRosterIngestHarness's own
+// fixture builder would, for tests below that script IngestRoster's frames
+// by hand rather than through rosterFixture.
+func groupHeaderText(group string, total int) string {
+	return fmt.Sprintf("%s Group %d/%d", group, total, total)
+}
+
+// TestIngestRosterSurvivesInterleavedGroupsAcrossARerun is task 27's main
+// regression test, built directly from the sequence capture 1 measured
+// (finding 10): R3, R3, R2, R3, R2, R2. Frames 4 and 5 are R3 and R2 each
+// returning after the other interleaved -- under the resumed-offset fix
+// (TestGroupTrackerAdvanceResumesAnInterruptedGroupRatherThanRestarting)
+// their one row apiece lands on ground the group's own earlier frame already
+// covered, so geometric dedupe correctly recognizes "nothing new here" and
+// neither contributes a row. That first pass is not, by itself, a
+// regression test: reset-to-zero and resume-to-leftover computed the same
+// "already covered" verdict for this particular fixture's small offsets,
+// so a single run does not distinguish the fixed code from the code before
+// it (see the task 27 report for why a single run does not reliably
+// distinguish them here, and what a real capture's larger offsets do
+// instead).
+//
+// What isolates the actual bug is calling IngestRoster a SECOND time over
+// the identical capture -- exactly what `control ingest --capture 1`
+// running again does, whether because an earlier attempt crashed partway
+// (task 27's brief: "the database already holds facts and review rows from
+// the aborted runs") or a human simply re-ran it. Every frame's group header
+// and every row's OCR text is scripted identically both times, so the second
+// run is a genuine re-observation of the same four members within the same
+// capture -- and participation_facts' own unique key (member_id, metric,
+// period_key, source, observed_at) makes that the SAME fact both times,
+// because observed_at is pinned to the capture's started_at for every frame
+// in it, not to wall-clock time (see IngestRoster's package doc). Before
+// this task's fix, writeFacts called the plain, always-insert InsertFact, so
+// the second run doubled every fact already on file rather than recognizing
+// it — which is what this test's fact-count assertion below caught, run
+// against the code before this change: the second run's fact count was
+// exactly double the first's, not equal to it.
+func TestIngestRosterSurvivesInterleavedGroupsAcrossARerun(t *testing.T) {
+	h := newHarness(t)
+
+	// Frame 1: R3's first-ever frame. One row, Zephyr.
+	h.addFrame(rosterFrame(1), 0)
+	// Frame 2: R3 continuing. Two bands; the sticky-header occlusion skip
+	// (TestIngestRosterDiscardsTheOccludedTopRow) drops the first, leaving
+	// one real row, Quokka.
+	h.addFrame(rosterFrame(2), memberRowPitch)
+	// Frame 3: R2's own first-ever frame, independent of R3's accounting.
+	h.addFrame(rosterFrame(1), 0)
+	// Frame 4: R3 returning after R2 interleaves. See the test's own doc
+	// comment above: this row lands on ground frame 2 already covered, so
+	// it contributes nothing -- correctly, not as a bug.
+	h.addFrame(rosterFrame(1), 999)
+	// Frame 5: R2 returning after R3. Same shape as frame 4, for R2.
+	h.addFrame(rosterFrame(1), 999)
+	// Frame 6: R2 continuing. Two bands, one real row after the occlusion
+	// skip: Foxtrot.
+	h.addFrame(rosterFrame(2), memberRowPitch)
+
+	scriptOneIngest := func() []ocr.Result {
+		var results []ocr.Result
+		results = append(results, ocr.Result{Text: groupHeaderText("R3", 20), Confidence: 0.9})
+		results = append(results, rowResults("Zephyr")...)
+		results = append(results, ocr.Result{Text: groupHeaderText("R3", 20), Confidence: 0.9})
+		results = append(results, rowResults("Quokka")...)
+		results = append(results, ocr.Result{Text: groupHeaderText("R2", 20), Confidence: 0.9})
+		results = append(results, rowResults("Umbrella")...)
+		results = append(results, ocr.Result{Text: groupHeaderText("R3", 20), Confidence: 0.9})
+		// frame 4: no rows survive geometric dedupe, so no field reads to script.
+		results = append(results, ocr.Result{Text: groupHeaderText("R2", 20), Confidence: 0.9})
+		// frame 5: likewise.
+		results = append(results, ocr.Result{Text: groupHeaderText("R2", 20), Confidence: 0.9})
+		results = append(results, rowResults("Foxtrot")...)
+		return results
+	}
+
+	h.stubRankSequence([]string{"R3", "R3", "R2", "R3", "R2", "R2"})
+	h.engine.Results = scriptOneIngest()
+
+	res1, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("first IngestRoster: %v", err)
+	}
+	if res1.Created != 4 {
+		t.Fatalf("first run created %d members, want 4 (Zephyr, Quokka, Umbrella, Foxtrot)", res1.Created)
+	}
+	factsAfterFirstRun := len(h.store.Facts)
+	if factsAfterFirstRun == 0 {
+		t.Fatal("first run wrote no facts at all -- test setup is broken")
+	}
+
+	// Re-run against the identical capture: same frames (CaptureFrames
+	// returns the same slice both times), same screenshots, same header and
+	// row text scripted again.
+	h.stubRankSequence([]string{"R3", "R3", "R2", "R3", "R2", "R2"})
+	h.engine.Results = append(h.engine.Results, scriptOneIngest()...)
+
+	res2, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("second IngestRoster (re-run over the same capture): %v", err)
+	}
+	if res2.Created != 0 {
+		t.Errorf("second run created %d members, want 0 -- all four already exist from the first run", res2.Created)
+	}
+	if res2.Matched != 4 {
+		t.Errorf("second run matched %d rows, want 4 -- the same four members, re-observed", res2.Matched)
+	}
+	if got := len(h.store.Facts); got != factsAfterFirstRun {
+		t.Errorf("facts after the re-run = %d, want %d unchanged -- a member re-observed within the same capture must not double its fact count", got, factsAfterFirstRun)
+	}
+}
+
+// TestIngestRosterUpsertsARepeatObservationRatherThanDuplicatingTheFact is
+// the within-a-single-run twin of the rerun test above: the same member's
+// row can legitimately appear twice within ONE IngestRoster call too, not
+// just across separate runs -- capture 1's interleaving is one cause, but an
+// ordinary overlap between two screenfuls of a group that never closed is
+// another, and needs no group switch to demonstrate. The two rows here are
+// deliberately far enough apart geometrically that gt.lastRowY's dedupe does
+// NOT recognize them as the same physical row -- only name-identity does,
+// which is the case this task's fix (writeFacts calling UpsertFact) has to
+// carry once geometric dedupe has already let a genuine repeat through.
+//
+// The decision under test: a repeat observation within the same capture
+// upserts rather than duplicating the fact, keeping whichever read carries
+// the higher confidence -- justified in UpsertFact's own doc comment
+// (internal/db/analytics.go) against CLAUDE.md's append-only invariant and
+// the "identical screenshot bytes still earn a row" precedent it is
+// deliberately NOT following here (that precedent is about distinct capture
+// *events*; this is one OCR engine reading one already-covered instant
+// twice within a single capture, which participation_facts' own key treats
+// as one fact by construction).
+func TestIngestRosterUpsertsARepeatObservationRatherThanDuplicatingTheFact(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R1")
+
+	h.addFrame(rosterFrame(1), 0)
+	// A huge offset, not a realistic scroll distance: the point is to place
+	// this frame's one real row far past gt.lastRowY's dedupe window, so it
+	// reaches processRow as a "new" row on identity grounds even though it
+	// names the same member as frame 1's row.
+	h.addFrame(rosterFrame(2), 5000)
+
+	results := []ocr.Result{
+		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
+		{Text: "Kilo", Confidence: 0.9},
+		{Text: "Power: 200.0M", Confidence: 0.85},
+		{Text: "Lv.30", Confidence: 0.85},
+		{Text: "Online", Confidence: 0.85},
+		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
+		// The exact same row, read again -- a cleaner second pass at the
+		// identical figures, which is what a repeat observation of
+		// unchanged game state within one capture looks like.
+		{Text: "Kilo", Confidence: 0.9},
+		{Text: "Power: 200.0M", Confidence: 0.95},
+		{Text: "Lv.30", Confidence: 0.95},
+		{Text: "Online", Confidence: 0.95},
+	}
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Created != 1 {
+		t.Fatalf("created %d members, want 1 -- Kilo, once", res.Created)
+	}
+	if res.Matched != 1 {
+		t.Errorf("matched %d rows, want 1 -- Kilo's second row, matching itself", res.Matched)
+	}
+	if got := len(h.store.Facts); got != 3 {
+		t.Fatalf("facts written = %d, want exactly 3 (power, level, last_active_hours) -- a repeat observation is the same fact, not a second one", got)
+	}
+	for _, f := range h.store.Facts {
+		if f.Confidence != 0.95 {
+			t.Errorf("fact %+v confidence = %v, want 0.95 -- the second, cleaner read of the same figure should have won", f, f.Confidence)
 		}
 	}
 }

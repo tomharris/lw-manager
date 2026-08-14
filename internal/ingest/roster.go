@@ -371,6 +371,45 @@ type groupTracker struct {
 	lastRowY         int // content-Y of the last collected row; -1 = none yet
 }
 
+// advance decides this frame's contentY and whether its topmost detected
+// band must be discarded as the sticky header's occlusion of an already-
+// collected row (see the call site's own comment on that band-drop, and
+// TestIngestRosterDiscardsTheOccludedTopRow). sameGroupAsPrevFrame is true
+// only when the frame immediately before this one — in capture order, not
+// in "frames of this group" order — carried this same group's header: i.e.
+// this frame is an unbroken continuation of a scroll that was already moving
+// through this group when the previous frame was captured.
+//
+// frame.OffsetPx is the scroll distance between two CONSECUTIVE frames of
+// the capture, not "distance this group's list has moved since its tracker
+// was last touched" — those coincide only when the previous frame belonged
+// to this same group. Capture 1 (task 27's evidence, finding 10) shows why
+// that distinction is load-bearing: a device with two rank groups expanded
+// at once can carry frame N's header for R3 and frame N+1's for R2 while a
+// single continuous swipe is in progress, so the pixels moved between them
+// reflect whatever was on screen during that swipe, not R3's list specifically.
+// Attributing that distance to R3 (the bug this replaces) or to R2 would
+// both be guessing at a quantity this frame pair does not carry evidence
+// for. So a group switch of EITHER kind — a group's first-ever frame, or a
+// group returned to after one or more frames of a DIFFERENT group in
+// between — leaves contentY exactly where this tracker last put it: 0 if
+// this group has never been seen before, or its last accumulated value if
+// resuming one already in progress. That is a deliberate claim that an
+// away group does not move while it is off screen, which is the only
+// assumption this frame pair has any evidence for either way — and it is
+// what makes returning to a group idempotent rather than merely
+// non-crashing: the resumed position lines up with gt.lastRowY well enough
+// for the geometric dedupe below to recognize rows already collected,
+// instead of a reset making them look brand new (task 27's brief; the
+// resulting duplicate INSERT is what actually crashed the first real run).
+func (gt *groupTracker) advance(offsetPx int, sameGroupAsPrevFrame bool) (contentY int, skipTopBand bool) {
+	if sameGroupAsPrevFrame {
+		gt.contentY += offsetPx
+		return gt.contentY, true
+	}
+	return gt.contentY, false
+}
+
 // IngestRoster turns one roster capture's frames into members and facts.
 //
 // Rank is not supplied by roster_capture — capture_frames.group_key arrives
@@ -519,19 +558,15 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 			run.res.PerGroup[groupKey] = GroupTally{Expected: headerTotal, Name: groupName}
 		}
 
-		newGroup := !havePrev || groupKey != prevGroupKey
-		if newGroup {
-			gt.contentY = 0
-		} else {
-			gt.contentY += frame.OffsetPx
-		}
+		sameGroupAsPrevFrame := havePrev && groupKey == prevGroupKey
+		_, skipTopBand := gt.advance(frame.OffsetPx, sameGroupAsPrevFrame)
 		prevGroupKey, havePrev = groupKey, true
 
 		bands, err := SegmentRows(img, memberListRegion, memberRowPitch)
 		if err != nil {
 			return RosterResult{}, fmt.Errorf("ingest: segmenting screenshot %d: %w", frame.ScreenshotID, err)
 		}
-		if !newGroup && len(bands) > 0 {
+		if skipTopBand && len(bands) > 0 {
 			// memberListRegion.Y1 is a fixed pixel line (704, 7px below the
 			// sticky header's own bottom edge — see memberListRegion's doc
 			// comment) and the list keeps scrolling underneath it, so this is
@@ -542,12 +577,12 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 			// travel is essentially never an exact multiple of a row's
 			// pitch, so the fixed region-top line almost always bisects
 			// whichever row happens to be sitting across it once the list
-			// has moved at all (newGroup is false). The result looks
-			// identical either way (a partial top band that must not be
-			// parsed as a whole row), which is exactly why the wrong reason
-			// survived a region move undetected — see CLAUDE.md on the `vs`
-			// mislabel for the general shape of that failure. Discard it
-			// rather than parse a partial row.
+			// has moved at all within the same group (skipTopBand is true).
+			// The result looks identical either way (a partial top band
+			// that must not be parsed as a whole row), which is exactly why
+			// the wrong reason survived a region move undetected — see
+			// CLAUDE.md on the `vs` mislabel for the general shape of that
+			// failure. Discard it rather than parse a partial row.
 			bands = bands[1:]
 		}
 
@@ -781,6 +816,21 @@ const factConfidenceGate = 0.80
 // 0.95 fact" — CLAUDE.md's invariant #5 makes it not a fact at all, so the
 // field is queued for review instead, carrying its own blended confidence so
 // a human can see how bad the read was.
+//
+// The write itself goes through UpsertFact, not InsertFact (task 27). Every
+// roster frame in a run shares one observed_at — the capture's own
+// started_at, not per-frame wall-clock time, exactly so a replay writes the
+// same facts twice rather than new ones each time (see IngestRoster's
+// package doc) — so a member whose row genuinely appears in two frames of
+// the same capture, or whose facts a previous, crashed attempt at this same
+// capture already wrote, computes the identical (member_id, metric,
+// period_key, source, observed_at) key both times. InsertFact's plain INSERT
+// would reject the second write outright, which is the crash task 27 exists
+// to fix; UpsertFact's own doc comment (internal/db/analytics.go) is where
+// the append-only-vs-idempotent argument is made in full. Nothing here needs
+// to know whether a given write turned out to be new or a no-op — a review
+// row is never queued for the repeat, because there is nothing uncertain
+// about it that a human could resolve; it is simply not a second fact.
 func (run *rosterRun) writeFacts(ctx context.Context, i *Ingester, screenshotID int64, band RowBand, memberID int64, matchNorm float64, fields [3]fieldRead) error {
 	for _, f := range fields {
 		if f.err != nil {
@@ -796,7 +846,7 @@ func (run *rosterRun) writeFacts(ctx context.Context, i *Ingester, screenshotID 
 			}
 			continue
 		}
-		if _, err := i.store.InsertFact(ctx, db.Fact{
+		if _, _, err := i.store.UpsertFact(ctx, db.Fact{
 			MemberID: memberID, Metric: f.metric, Value: f.value,
 			ObservedAt: run.observedAt, PeriodKey: run.periodKey,
 			Source: "ocr:alliance_members", ScreenshotID: screenshotID,

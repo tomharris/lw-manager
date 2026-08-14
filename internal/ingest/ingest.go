@@ -25,6 +25,15 @@ type Store interface {
 	MemberAliases(ctx context.Context, allianceID int64) (map[int64][]string, error)
 	CreateMember(ctx context.Context, m db.Member) (int64, error)
 	InsertFact(ctx context.Context, f db.Fact) (int64, error)
+	// UpsertFact is InsertFact's idempotent sibling — see its own doc
+	// comment in internal/db/analytics.go. Only the roster route uses it
+	// today (task 27): observed_at is pinned to the capture's started_at
+	// for every roster frame, so a repeat read of the same member/metric
+	// within one capture — or across a re-run of a crashed one — hits the
+	// exact same key InsertFact would reject with a unique-constraint
+	// error. VS ingest has no equivalent within-capture collision (each
+	// row is read once) and keeps using InsertFact unchanged.
+	UpsertFact(ctx context.Context, f db.Fact) (id int64, written bool, err error)
 	QueueReview(ctx context.Context, r db.ReviewItem) (int64, error)
 	FinishCapture(ctx context.Context, id int64, status string, parsed int, errMsg string) error
 	CurrentAllianceID(ctx context.Context) (int64, error)
