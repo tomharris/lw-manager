@@ -7,10 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"reflect"
 	"sort"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/tomharris/lw-manager/internal/dbtest"
 	"github.com/tomharris/lw-manager/internal/roster"
@@ -485,6 +489,125 @@ func TestCurrentAllianceIDReturnsTheMostRecentlyObserved(t *testing.T) {
 	}
 	if got != second {
 		t.Fatalf("CurrentAllianceID = %d, want %d (first=%d is older)", got, second, first)
+	}
+}
+
+// CurrentAlliance is CurrentAllianceID's full-row sibling: `control alliance
+// show` needs tag, name, server and member_count back, not just an id to
+// look up elsewhere.
+func TestCurrentAllianceReturnsTheMostRecentlyObservedRow(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	suffix := testSuffix()
+	if _, err := pool.UpsertAlliance(ctx, Alliance{Tag: "CA1-" + suffix, Name: "First " + suffix, MemberCount: 10}); err != nil {
+		t.Fatalf("UpsertAlliance first: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond) // guarantee a strictly later observed_at
+	second, err := pool.UpsertAlliance(ctx, Alliance{Tag: "CA2-" + suffix, Name: "Second " + suffix, Server: "1380", MemberCount: 20})
+	if err != nil {
+		t.Fatalf("UpsertAlliance second: %v", err)
+	}
+
+	got, err := pool.CurrentAlliance(ctx)
+	if err != nil {
+		t.Fatalf("CurrentAlliance: %v", err)
+	}
+	if got.ID != second || got.Tag != "CA2-"+suffix || got.Name != "Second "+suffix || got.Server != "1380" || got.MemberCount != 20 {
+		t.Fatalf("CurrentAlliance = %+v, want the second (more recently observed) row", got)
+	}
+	if got.ObservedAt.IsZero() {
+		t.Error("CurrentAlliance.ObservedAt is zero, want the alliances.observed_at value")
+	}
+}
+
+// CurrentAlliance's ErrNotFound path is the whole reason task 19 exists: a
+// fresh deployment's `alliances` table has no rows at all, and `control
+// ingest` needs that condition to surface as a clear instruction rather than
+// a bare "not found".
+//
+// This cannot be observed against the shared testPool database: it is never
+// dropped between `make test-integration` runs (see every other test's own
+// cleanup comments in this file), so by the time this suite has run more
+// than once, `alliances` reliably holds rows from the tests above. Wiping it
+// with an unscoped DELETE was considered and rejected — `go test ./...`
+// starts package binaries concurrently (internal/dbtest's own migration-lock
+// comment exists because of exactly that), and an unscoped DELETE against a
+// table every other integration test in this file also touches is the kind
+// of shared-state hazard this project's per-test-suffix cleanup convention
+// exists to avoid. So this test provisions its own private, freshly migrated
+// database instead, via the same dbtest.Prepare every other test in this
+// package uses, just pointed at a name nothing else will ever touch.
+func TestCurrentAllianceReturnsErrNotFoundOnEmptyTable(t *testing.T) {
+	ctx := context.Background()
+	pool := freshAllianceDB(ctx, t)
+
+	if _, err := pool.CurrentAlliance(ctx); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CurrentAlliance on an empty table: got %v, want ErrNotFound", err)
+	}
+}
+
+// freshAllianceDB provisions a database this test alone created and
+// migrated, rather than reusing testPool's shared one — see
+// TestCurrentAllianceReturnsErrNotFoundOnEmptyTable for why. It reuses
+// dbtest.Prepare (creation + advisory-locked migration) by pointing
+// LW_TEST_DATABASE_URL at a name unique to this call; t.Setenv scopes that
+// override to this test and restores it on return, which is safe here
+// specifically because nothing in this package calls t.Parallel().
+func freshAllianceDB(ctx context.Context, t *testing.T) *Pool {
+	t.Helper()
+
+	base := os.Getenv("LW_TEST_DATABASE_URL")
+	if base == "" {
+		base = dbtest.DefaultURL
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatalf("parsing LW_TEST_DATABASE_URL: %v", err)
+	}
+	name := fmt.Sprintf("lw_manager_alliance_%d_test", time.Now().UnixNano())
+	u.Path = "/" + name
+	t.Setenv("LW_TEST_DATABASE_URL", u.String())
+
+	dbURL, err := dbtest.Prepare(ctx, Migrate)
+	if err != nil {
+		t.Fatalf("dbtest.Prepare(%s): %v", u.String(), err)
+	}
+	pool, err := Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("Connect(%s): %v", dbURL, err)
+	}
+	t.Cleanup(func() {
+		pool.Close()
+		dropDatabase(ctx, t, base, name)
+	})
+	return pool
+}
+
+// dropDatabase best-effort tears down the database freshAllianceDB created,
+// so a `make test-integration` run does not leave a fresh, almost-empty
+// database behind on the shared Postgres instance every time this test runs.
+// It is not load-bearing for correctness — a leaked database costs disk, not
+// a wrong test result — so a failure here is logged rather than failing the
+// test that already got its assertion.
+func dropDatabase(ctx context.Context, t *testing.T, baseURL, name string) {
+	t.Helper()
+	adminURL, err := url.Parse(baseURL)
+	if err != nil {
+		t.Logf("dropDatabase(%s): parsing admin url: %v", name, err)
+		return
+	}
+	adminURL.Path = "/postgres"
+
+	conn, err := pgx.Connect(ctx, adminURL.String())
+	if err != nil {
+		t.Logf("dropDatabase(%s): connecting to maintenance database: %v", name, err)
+		return
+	}
+	defer conn.Close(ctx)
+
+	if _, err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()); err != nil {
+		t.Logf("dropDatabase(%s): %v", name, err)
 	}
 }
 

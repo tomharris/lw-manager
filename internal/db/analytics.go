@@ -18,12 +18,17 @@ import (
 
 // Alliance is the observed alliance. MemberCount is the "96/100" read off the
 // alliance screen and is the roster route's reconciliation ground truth.
+// ObservedAt is populated by CurrentAlliance (it is what "most recently
+// observed" orders by) and left zero by UpsertAlliance's return, which
+// reports only the id — a caller that needs the timestamp back reads it via
+// CurrentAlliance instead of guessing at what `now()` resolved to server-side.
 type Alliance struct {
 	ID          int64
 	Tag         string
 	Name        string
 	Server      string
 	MemberCount int
+	ObservedAt  time.Time
 }
 
 // Member is a dimension row: mutable and soft-deleted, unlike a fact.
@@ -147,6 +152,28 @@ func (p *Pool) CurrentAllianceID(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("db: resolving current alliance: %w", err)
 	}
 	return id, nil
+}
+
+// CurrentAlliance returns the full row for the alliance most recently
+// observed — the same "one alliance" resolution CurrentAllianceID performs
+// for ingest, but with every column `control alliance show` needs to report
+// rather than just the id. Returns ErrNotFound under the same condition
+// CurrentAllianceID does: no `alliance` screen has ever been ingested, which
+// on a fresh deployment means running `control alliance set` first, per the
+// error control ingest now wraps with that instruction.
+func (p *Pool) CurrentAlliance(ctx context.Context) (Alliance, error) {
+	var a Alliance
+	err := p.QueryRow(ctx, `
+		SELECT id, tag, name, coalesce(server, ''), coalesce(member_count, 0), observed_at
+		FROM alliances ORDER BY observed_at DESC LIMIT 1`).Scan(
+		&a.ID, &a.Tag, &a.Name, &a.Server, &a.MemberCount, &a.ObservedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Alliance{}, fmt.Errorf("db: current alliance: %w", ErrNotFound)
+	}
+	if err != nil {
+		return Alliance{}, fmt.Errorf("db: resolving current alliance: %w", err)
+	}
+	return a, nil
 }
 
 // Capture fetches one capture run by id.
