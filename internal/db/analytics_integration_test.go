@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"reflect"
@@ -82,6 +83,115 @@ func TestFactsAreAppendOnlyAndSupersede(t *testing.T) {
 	}
 	if len(live) != 1 || live[0].ID != second {
 		t.Fatalf("live facts = %+v, want only the superseding row %d", live, second)
+	}
+}
+
+// TestUpsertFactIsIdempotentAndKeepsTheBetterRead validates the actual
+// Postgres semantics UpsertFact's doc comment relies on -- run against the
+// real database, not the in-memory simulation roster_test.go's
+// fakeIngestStore keeps in step with it, because the whole design hinges on
+// one specific behavior: an ON CONFLICT DO UPDATE whose WHERE guard rejects
+// the update returns NO row from RETURNING, the same as DO NOTHING, rather
+// than erroring or returning the untouched existing row. That is documented
+// Postgres behavior, not assumed -- this test is what would catch it being
+// wrong (a different pgx version's error mapping, say) before task 27's
+// roster route ever hit it against a real capture.
+func TestUpsertFactIsIdempotentAndKeepsTheBetterRead(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	suffix := testSuffix()
+	allianceID, err := pool.UpsertAlliance(ctx, Alliance{Tag: "UF-" + suffix, Name: "Upsert Fact " + suffix})
+	if err != nil {
+		t.Fatalf("UpsertAlliance: %v", err)
+	}
+	memberID, err := pool.CreateMember(ctx, Member{
+		AllianceID: allianceID, Name: "Rosco", NameNormalized: "rosco", Rank: "R2",
+	})
+	if err != nil {
+		t.Fatalf("CreateMember: %v", err)
+	}
+
+	// observed_at is fixed, not time.Now() per call: this is exactly the
+	// roster route's own shape, where every frame of one capture shares one
+	// observed_at (the capture's own started_at) rather than per-frame
+	// wall-clock time -- see UpsertFact's doc comment for why that is what
+	// makes two reads of the same member within one capture collide on the
+	// identical key on purpose.
+	obs := time.Now().UTC().Truncate(time.Second)
+	fact := Fact{
+		MemberID: memberID, Metric: "power", Value: 100, ObservedAt: obs,
+		PeriodKey: "2026-W33", Source: "ocr:alliance_members", Confidence: 0.85,
+	}
+
+	firstID, written, err := pool.UpsertFact(ctx, fact)
+	if err != nil {
+		t.Fatalf("UpsertFact (first write): %v", err)
+	}
+	if !written {
+		t.Fatal("first write reported written=false, want true -- nothing existed yet to conflict with")
+	}
+	if firstID == 0 {
+		t.Fatal("first write returned id=0")
+	}
+
+	// A repeat at LOWER confidence -- the "control ingest re-run reads the
+	// same pixels slightly worse" case -- must be a genuine no-op: the
+	// existing, better row must survive untouched, not get overwritten with
+	// a worse one just because it arrived second.
+	worse := fact
+	worse.Value = 999 // if this were written, the assertion below would catch it
+	worse.Confidence = 0.70
+	worseID, written, err := pool.UpsertFact(ctx, worse)
+	if err != nil {
+		t.Fatalf("UpsertFact (worse repeat): %v", err)
+	}
+	if written {
+		t.Error("worse repeat reported written=true, want false -- a lower-confidence re-read must not overwrite the existing fact")
+	}
+	if worseID != 0 {
+		t.Errorf("worse repeat returned id=%d, want 0 (no row touched)", worseID)
+	}
+
+	// A repeat at HIGHER confidence -- a genuinely cleaner second read of
+	// the same instant -- must replace the value in place, on the SAME row
+	// (same id), since this is one fact being refined, not a correction
+	// (which would be a new row with a later observed_at, per
+	// TestFactsAreAppendOnlyAndSupersede above).
+	better := fact
+	better.Value = 100.5
+	better.Confidence = 0.95
+	betterID, written, err := pool.UpsertFact(ctx, better)
+	if err != nil {
+		t.Fatalf("UpsertFact (better repeat): %v", err)
+	}
+	if !written {
+		t.Error("better repeat reported written=false, want true -- a higher-confidence re-read must replace the existing fact")
+	}
+	if betterID != firstID {
+		t.Errorf("better repeat returned id=%d, want the same id %d the first write got -- this upserts the existing fact in place, it does not insert a new row", betterID, firstID)
+	}
+
+	live, err := pool.LiveFacts(ctx, "power", "2026-W33")
+	if err != nil {
+		t.Fatalf("LiveFacts: %v", err)
+	}
+	var found *Fact
+	for i := range live {
+		if live[i].MemberID == memberID {
+			found = &live[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("no live power fact found for the member")
+	}
+	// confidence is `real` (float32) in the schema, so a float64 0.95 does
+	// not round-trip exactly -- compare with tolerance rather than false-
+	// failing on the storage width's own precision loss.
+	const epsilon = 1e-6
+	if found.Value != 100.5 || math.Abs(found.Confidence-0.95) > epsilon {
+		t.Errorf("live fact = %+v, want value=100.5 confidence~=0.95 -- the better read, and only the better read", found)
 	}
 }
 
