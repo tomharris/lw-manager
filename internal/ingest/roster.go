@@ -270,27 +270,6 @@ func parseAllianceMemberCount(raw string) (int, error) {
 	return count, nil
 }
 
-// groupHeaderRe pulls the rank badge and the "online/total" pair out of a
-// sticky header read like "R3 Footloose 8/64". The group's display name
-// (here "Footloose") is user-editable and not captured — only the rank
-// badge, which is stable, becomes GroupKey.
-var groupHeaderRe = regexp.MustCompile(`^(R\d+)\s+.+\s(\d+)/(\d+)$`)
-
-// parseGroupHeader extracts the rank badge and stated total from a sticky
-// header's raw OCR text. An unparseable header means the frame's rows cannot
-// be attributed to any group, so it must not be guessed at.
-func parseGroupHeader(raw string) (groupKey string, total int, err error) {
-	m := groupHeaderRe.FindStringSubmatch(strings.TrimSpace(raw))
-	if m == nil {
-		return "", 0, fmt.Errorf("ingest: group header %q: %w", raw, ErrUnparseable)
-	}
-	total, convErr := strconv.Atoi(m[3])
-	if convErr != nil {
-		return "", 0, fmt.Errorf("ingest: group header %q: %w", raw, ErrUnparseable)
-	}
-	return m[1], total, nil
-}
-
 // RosterRow is one parsed member-list row.
 type RosterRow struct {
 	Name            string
@@ -312,6 +291,17 @@ type RosterRow struct {
 // downstream must not be confused with that.
 type GroupTally struct {
 	Expected, Parsed int
+
+	// Name is the group's display name as read off its own sticky header
+	// (parseGroupHeader), taken from whichever frame first established this
+	// rank's tally. It is descriptive only — printRosterSummary surfaces it
+	// so a human doing review triage can tell "R3" from "Footloose" without
+	// opening a screenshot — and must never be used as a key: group names
+	// are user-editable and the group set itself varies release to release
+	// (CLAUDE.md, "Rank groups have no fixed identity"), which is exactly
+	// why GroupTally is keyed on rank (matchRankBadge's NCC read) and not on
+	// this field.
+	Name string
 }
 
 // RosterResult summarizes one IngestRoster run.
@@ -466,21 +456,44 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		if err != nil {
 			return RosterResult{}, fmt.Errorf("ingest: reading group header on screenshot %d: %w", frame.ScreenshotID, err)
 		}
-		groupKey, headerTotal, herr := parseGroupHeader(headerRes.Text)
+		hy0 := int(groupHeaderRegion.Y1 * float64(img.Bounds().Dy()))
+		hy1 := int(groupHeaderRegion.Y2 * float64(img.Bounds().Dy()))
+
+		// The count comes from OCR (it reads cleanly — task 24's brief); the
+		// rank does not (Finding 4: outlined game glyphs do not OCR under any
+		// PSM or charset tried). The two reads are independent and both must
+		// succeed before this frame's rows can be attributed to a group, so
+		// each gets its own failure path to its own review reason rather than
+		// one collapsing into the other's error message.
+		groupName, headerTotal, herr := parseGroupHeader(headerRes.Text)
 		if herr != nil {
-			hy0 := int(groupHeaderRegion.Y1 * float64(img.Bounds().Dy()))
-			hy1 := int(groupHeaderRegion.Y2 * float64(img.Bounds().Dy()))
 			if err := run.queueReview(ctx, i, frame.ScreenshotID, RowBand{Y0: hy0, Y1: hy1}, headerRes.Text, nil, "unparseable_group_header", 0); err != nil {
 				return RosterResult{}, err
 			}
 			continue
 		}
+		rankRes, rerr := matchRankBadge(img)
+		if rerr != nil {
+			// A badge matching nothing with enough confidence is exactly the
+			// case CLAUDE.md invariant #3 forbids acting on: this frame's
+			// rows would have nowhere honest to attach (see this file's
+			// package doc on rank not being supplied by roster_capture), so
+			// the whole frame goes to review rather than guessing which
+			// rank group is on screen. headerRes.Text rides along on the
+			// review row so a human sees the same count the OCR side
+			// already resolved, not just "something didn't match."
+			if err := run.queueReview(ctx, i, frame.ScreenshotID, RowBand{Y0: hy0, Y1: hy1}, headerRes.Text, nil, "unmatched_rank_badge", 0); err != nil {
+				return RosterResult{}, err
+			}
+			continue
+		}
+		groupKey := rankRes.Rank
 
 		gt, exists := run.groups[groupKey]
 		if !exists {
 			gt = &groupTracker{expected: headerTotal, lastRowY: -1}
 			run.groups[groupKey] = gt
-			run.res.PerGroup[groupKey] = GroupTally{Expected: headerTotal}
+			run.res.PerGroup[groupKey] = GroupTally{Expected: headerTotal, Name: groupName}
 		}
 
 		newGroup := !havePrev || groupKey != prevGroupKey

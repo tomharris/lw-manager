@@ -164,6 +164,12 @@ type rosterIngestHarness struct {
 	// fixture field) added, or 0 if none was added — a test can use it to
 	// confirm that frame never appears attributed to a fact or review row.
 	allianceFrameID int64
+
+	// origMatchRankBadge remembers matchRankBadge's real value the first
+	// time stubRankFor swaps it, so repeated calls (newHarness's own default,
+	// then newRosterIngestHarness's fixture-specific one) register exactly
+	// one t.Cleanup rather than a chain of them restoring each other's stub.
+	origMatchRankBadge func(image.Image) (rankMatch, error)
 }
 
 func newHarness(t *testing.T) *rosterIngestHarness {
@@ -175,12 +181,41 @@ func newHarness(t *testing.T) *rosterIngestHarness {
 	}
 	blobs := newFakeBlobs()
 	engine := &ocr.FakeEngine{}
-	return &rosterIngestHarness{
+	h := &rosterIngestHarness{
 		Ingester: New(store, blobs, engine),
 		t:        t,
 		store:    store,
 		blobs:    blobs,
 		engine:   engine,
+	}
+	// Every roster test needs rank supplied somehow: rosterFrame draws
+	// geometric cards, not real badge sprites (see its own doc comment on
+	// why pixel realism is not this package's job to fake), so the real NCC
+	// matcher would find nothing to match and route every frame to review.
+	// Default to "R1" (newRosterIngestHarness's own default group) so a test
+	// that builds a harness manually, scripts its own header OCR text, and
+	// never calls newRosterIngestHarness at all (TestIngestRosterDiscards
+	// TheOccludedTopRow) still gets a passing rank match without asking for
+	// one explicitly.
+	h.stubRankFor("R1")
+	return h
+}
+
+// stubRankFor makes matchRankBadge return rank, at a score and gap nowhere
+// near rankBadgeMinGap's floor, for every frame until the test ends — the
+// same seam preprocess_options_test.go's spyPreprocess uses for OCR
+// (visionPreprocess, roster.go). Idempotent: calling it again (as
+// newRosterIngestHarness does once it knows the fixture's actual group)
+// just swaps the active stub, and only the very first call registers the
+// t.Cleanup that restores the real vision-based matcher.
+func (h *rosterIngestHarness) stubRankFor(rank string) {
+	h.t.Helper()
+	if h.origMatchRankBadge == nil {
+		h.origMatchRankBadge = matchRankBadge
+		h.t.Cleanup(func() { matchRankBadge = h.origMatchRankBadge })
+	}
+	matchRankBadge = func(img image.Image) (rankMatch, error) {
+		return rankMatch{Rank: rank, Score: 1.0, Gap: 1.0}, nil
 	}
 }
 
@@ -238,6 +273,18 @@ func (h *rosterIngestHarness) addAllianceFrame() int64 {
 // flat trailer -- which a real frame does not have, since a short group is
 // followed immediately by the next group's header or more list content, not
 // empty page -- would dilute that signal in a way no real capture does.
+//
+// One property this sizing removed rather than fixed: nothing in this
+// package's fixture suite exercises a genuinely SPARSE region anymore (a
+// real frame whose list content runs out with several rows of blank space
+// still inside the scanned region). Round-2 review measured that curve
+// directly, artificially truncating a real frame's content: contrast
+// 91.2/78.0/65.0/51.7/38.7/25.5 for 6/5/4/3/2/1 real rows, 12.7 with none --
+// so it is a real, present behavior (see phaseContrastFloor's comment for
+// where the current floor sits on it), just not one any fixture here
+// exercises. A future test wanting to cover it would need to keep imgH
+// oversized deliberately rather than tight, which is exactly what this
+// change moved away from for the (different, also real) reason above.
 func rosterFrame(nRows int) image.Image {
 	imgH := 400
 	for {
@@ -304,6 +351,7 @@ func newRosterIngestHarness(t *testing.T, fx rosterFixture) *rosterIngestHarness
 	if group == "" {
 		group = "R1"
 	}
+	h.stubRankFor(group)
 
 	var rows []rowScript
 	for k := 0; k < fx.existing; k++ {

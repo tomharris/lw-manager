@@ -220,7 +220,15 @@ func printRosterSummary(out io.Writer, captureID int64, periodKey string, res in
 	sort.Strings(keys)
 	for _, k := range keys {
 		t := res.PerGroup[k]
-		fmt.Fprintf(out, "  group=%s parsed=%d expected=%d\n", k, t.Parsed, t.Expected)
+		// Name is printed only when present: a capture whose header never
+		// parsed a name for this rank (every frame queued to review before
+		// GroupTally.Name could be set) must not print a misleading empty
+		// quoted string.
+		if t.Name != "" {
+			fmt.Fprintf(out, "  group=%s name=%q parsed=%d expected=%d\n", k, t.Name, t.Parsed, t.Expected)
+		} else {
+			fmt.Fprintf(out, "  group=%s parsed=%d expected=%d\n", k, t.Parsed, t.Expected)
+		}
 	}
 }
 
