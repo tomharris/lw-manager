@@ -4,7 +4,9 @@ import (
 	"errors"
 	"image"
 	"image/color"
+	"math"
 	"math/rand"
+	"strings"
 	"testing"
 
 	"github.com/tomharris/lw-manager/internal/transport"
@@ -60,24 +62,65 @@ func stripedFrame(w, h, shift int) *image.RGBA {
 // row pitch, which is a property of that formula, not of real list content.
 // math/rand seeded per row has no such short period. pitch is the row height
 // in pixels, standing in for memberRowPitch/vsRowPitch.
+//
+// The marker's width and amplitude are load-bearing, and got this wrong on
+// the first pass: a full-height, full-contrast marker (255 against a 0-180
+// band, occupying a fifth of the row) makes an off-by-N-pitch placement
+// score around 0.3-0.4 — nowhere near the 0.86 a real blind-probe decoy
+// scored on the handset (see the package doc on ScrollOffset), because the
+// marker dominates the correlation instead of merely perturbing it. That
+// made every acceptance criterion this file exists to protect look
+// load-bearing without actually being exercised: a decoy that weak is
+// already rejected by score or agreement long before admissibility or the
+// geometry check get a chance to matter. markerAmp/markerW below are a
+// narrow (8px of 140), moderate (+60, additive and clamped rather than a
+// hard 255 override) perturbation instead, verified against the real
+// evidence frames' shape with the scrolldiag tool before being trusted: at
+// the real VS geometry (h=1600, pitch=128, shift=665 — see
+// docs/superpowers/specs/evidence/m4-scrolloffset-2026-08-13/) this
+// generator's own blind probe 2 scores 0.93 on its decoy, comfortably in
+// the same range recon measured on hardware, not a fixture-only 0.39.
 func listLatticeFrame(w, h, pitch, shift int) *image.RGBA {
+	const markerW = 8
+	const markerAmp = 60
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	markerW := w / 7
 	for y := 0; y < h; y++ {
 		Y := y + shift
 		within := Y % pitch
 		rowIdx := Y / pitch
-		band := uint8((within * 180) / pitch) // periodic vertical ramp: identical in every row
+		band := (within * 180) / pitch // periodic vertical ramp: identical in every row
 		markerX := rand.New(rand.NewSource(int64(rowIdx))).Intn(w)
 		for x := 0; x < w; x++ {
 			v := band
 			if x >= markerX && x < markerX+markerW {
-				v = 255
+				v += markerAmp
+				if v > 255 {
+					v = 255
+				}
 			}
-			img.Set(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
+			img.Set(x, y, color.RGBA{R: uint8(v), G: uint8(v), B: uint8(v), A: 255})
 		}
 	}
 	return img
+}
+
+// corruptPixels overwrites a frac fraction of the pixels inside rect (a
+// pixel-space image.Rectangle, not a normalized transport.Rect) with
+// independent random noise, seeded for reproducibility. It stands in for
+// whatever degrades a real crop's correlation without moving its position —
+// motion blur mid-swipe, a compression artifact, a status-bar element
+// briefly overlapping the strip — so a test can depress probe 0's own score
+// without disturbing where its argmax actually falls.
+func corruptPixels(img *image.RGBA, rect image.Rectangle, frac int, seed int64) {
+	rng := rand.New(rand.NewSource(seed))
+	for y := rect.Min.Y; y < rect.Max.Y; y++ {
+		for x := rect.Min.X; x < rect.Max.X; x++ {
+			if rng.Intn(100) < frac {
+				v := uint8(rng.Intn(256))
+				img.Set(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
+			}
+		}
+	}
 }
 
 func TestScrollOffsetMeasuresAKnownShift(t *testing.T) {
@@ -152,24 +195,29 @@ func TestScrollOffsetRejectsAnInvalidRegion(t *testing.T) {
 	}
 }
 
-// latticeRegion and latticePitch are shared by every test below that needs a
-// probe to run out of reach at different depths. Region height 800px over
-// offsetStripFrac=0.12 gives stripH=96, so the three probes' own search
-// windows can prove at most:
+// latticeRegion, latticeW/H and latticePitch reproduce the real VS-ranking
+// geometry exactly (docs/superpowers/specs/evidence/m4-scrolloffset-
+// 2026-08-13/) rather than a scaled-down stand-in: region {0.185, 0.80} at
+// h=1600 gives regionH=984, stripH=118, and probe limits
 //
-//	probe 0 (y=100, the region top): limit 704px
-//	probe 1 (y=196):                 limit 608px
-//	probe 2 (y=292):                 limit 512px
+//	probe 0 (y=296, the region top): limit 866px
+//	probe 1 (y=414):                 limit 748px
+//	probe 2 (y=532):                 limit 630px
 //
-// which is the same shape as the real VS-ranking measurement in
-// docs/superpowers/specs/evidence/m4-scrolloffset-2026-08-13/ (limits
-// 866/748/630 against a true travel of 665px) scaled down for a fast test.
-var latticeRegion = transport.Rect{X1: 0, Y1: 0.1, X2: 1, Y2: 0.9}
+// matching the evidence file's table exactly. Using the real numbers means a
+// test's shift value can be read directly off the evidence (665px, the
+// measured true travel) rather than re-derived, and it is what surfaced a
+// real bug independent of this fixture: float64(414)/float64(1600), rounded
+// back to pixels the way Crop truncates rather than the way Match rounds,
+// evaluates to 413, not 414 (confirmed directly: 414.0/1600.0*1600.0 ==
+// 413.999999999999943 in float64). That is now fixed at its source
+// (pxFrac in scroll.go), not worked around here.
+var latticeRegion = transport.Rect{X1: 0.03, Y1: 0.185, X2: 0.97, Y2: 0.80}
 
 const (
 	latticeW     = 140
-	latticeH     = 1000
-	latticePitch = 40
+	latticeH     = 1600
+	latticePitch = 128
 )
 
 // TestScrollOffsetIgnoresABlindProbe is brief item 1, and the reason this
@@ -177,19 +225,21 @@ const (
 // must not be able to decide the answer, even though — unlike a template
 // that fails to match at all — it does not error. It just returns the best
 // placement its truncated window contains, and for a uniformly-pitched list
-// that is a lattice decoy: a wrong answer with a real, sometimes-high score.
+// that is a lattice decoy: a wrong answer with a real, sometimes-high score
+// (0.93 on this fixture — see listLatticeFrame's doc comment on why that
+// realism matters).
 //
-// shift=550 sits inside probe 0's and probe 1's reach (704px, 608px) but
-// past probe 2's (512px), the same "some probes sighted, one blind"
-// situation recon measured on the real VS ranking pair (probe 2's limit of
-// 630 fell short of the true 665px travel there too). The old scheme picked
-// its one probe by variance alone, with no notion of which probes could even
-// see the answer; this asserts the new scheme's probe-0-sourced candidate
-// is correct regardless of what a blind probe would have reported on its
-// own — probe 2's wrong answer is discarded by the admissibility check
-// before it ever gets a vote, not out-argued by a stronger score.
+// shift=665 is the real VS ranking pair's own measured true offset. It sits
+// inside probe 0's and probe 1's reach (866px, 748px) but past probe 2's
+// (630px), exactly the "two probes sighted, one blind" split recon measured
+// on hardware. This is also this task's admissibility test: probe 2's own
+// argmax (a confident decoy, not a low-scoring non-answer) must be excluded
+// from voting entirely rather than out-argued by a stronger score, and it
+// was verified by deleting the admissibility check (`if pr.limit <
+// candidate`) in a scratch build and re-running this test — see the task
+// report for the exact failure it produced.
 func TestScrollOffsetIgnoresABlindProbe(t *testing.T) {
-	const shift = 550
+	const shift = 665
 	prev := listLatticeFrame(latticeW, latticeH, latticePitch, 0)
 	cur := listLatticeFrame(latticeW, latticeH, latticePitch, shift)
 
@@ -208,10 +258,20 @@ func TestScrollOffsetIgnoresABlindProbe(t *testing.T) {
 // TestScrollOffsetRefusesBeyondEveryProbesReach is brief item 2: when the
 // true travel exceeds even probe 0's reach — the largest of any probe — no
 // candidate in this frame pair is correct, and ScrollOffset must say so
-// rather than hand back whatever partial match it found. shift=750 clears
-// probe 0's own 704px limit.
+// rather than hand back whatever partial match it found. shift=3200
+// reproduces the deliberate over-swipe evidence pair's own travel (700px in
+// 250ms measured ~3200px against an 866px limit) almost exactly, rather than
+// a shift chosen only to clear the limit arithmetically. On real hardware
+// that pair refused via probe disagreement (757/629/502, a 255px spread),
+// not via the geometry message, because periodic list content always gives
+// every probe *some* placement to report; this fixture reproduces that same
+// shape (checked with -v; probe argmaxes disagree by more than
+// offsetAgreeTol here too), which is why this test asserts only
+// errors.Is(ErrOffsetUncertain) rather than a specific message — see
+// TestScrollOffsetRefusesWhenCandidateHugsProbeZerosLimit below for the
+// narrower band where the geometry message specifically fires.
 func TestScrollOffsetRefusesBeyondEveryProbesReach(t *testing.T) {
-	const shift = 750
+	const shift = 3200
 	prev := listLatticeFrame(latticeW, latticeH, latticePitch, 0)
 	cur := listLatticeFrame(latticeW, latticeH, latticePitch, shift)
 
@@ -221,27 +281,103 @@ func TestScrollOffsetRefusesBeyondEveryProbesReach(t *testing.T) {
 	}
 }
 
+// TestScrollOffsetRefusesWhenCandidateHugsProbeZerosLimit isolates the
+// geometry check specifically (candidate > limit(0)-stripH), which the brief
+// calls "the load-bearing check" and which C1 found untested: on the
+// original weak-marker fixture, shift=750 never actually reached this
+// branch (probe 0 itself already reported a low-scoring decoy at d=230,
+// refused on score alone). shift=800 here sits inside probe 0's own 866px
+// limit — so probe 0 correctly reports candidate=800, not a decoy — but past
+// limit(0)-stripH=748, which is this design's load-bearing headroom
+// requirement.
+//
+// It is also worth recording an algebraic fact this fixture exposed:
+// limit(0)-stripH equals limit(1) exactly, for any region/stripH (both
+// reduce to regionH-2*stripH). So whenever the geometry check fires, probe 1
+// (if it survived the flatness filter) is simultaneously inadmissible for
+// the same candidate, and the "no other probe's window reaches the
+// candidate" refusal a few lines below would independently produce
+// ErrOffsetUncertain too — just from a different code path, with a
+// different message. errors.Is alone cannot distinguish "geometry caught
+// this" from "agreement caught this once geometry didn't", so this test
+// checks the message text specifically. Deleting the geometry check in a
+// scratch build and re-running this test confirmed exactly that: the call
+// still returned ErrOffsetUncertain (via "no other probe's window reaches
+// candidate offset 800px"), so a bare errors.Is assertion would not have
+// caught the check's removal — see the task report for the exact output.
+func TestScrollOffsetRefusesWhenCandidateHugsProbeZerosLimit(t *testing.T) {
+	const shift = 800
+	prev := listLatticeFrame(latticeW, latticeH, latticePitch, 0)
+	cur := listLatticeFrame(latticeW, latticeH, latticePitch, shift)
+
+	_, err := ScrollOffset(prev, cur, latticeRegion)
+	if !errors.Is(err, ErrOffsetUncertain) {
+		t.Fatalf("got %v, want ErrOffsetUncertain", err)
+	}
+	if !strings.Contains(err.Error(), "reach limit") {
+		t.Fatalf("error %q does not name probe 0's own reach limit — this must be the geometry check, not a different refusal reaching the same sentinel", err.Error())
+	}
+}
+
+// TestScrollOffsetRefusesALowScoringPlacement isolates the score floor: a
+// candidate that is geometrically valid and agrees with every admissible
+// probe, but whose own placement is a poor match, must still be refused.
+// corruptPixels stands in for whatever degrades a real crop without moving
+// it — motion blur, a compression artifact, a momentary overlay — by
+// overwriting 20% of probe 0's own source pixels in cur with independent
+// noise; probe 1 and probe 2's own strips are untouched and still find and
+// agree on the true position, so this isolates the score check from
+// admissibility and agreement rather than conflating them. 20% depresses
+// probe 0's score to ~0.73, comfortably below offsetMinScore (0.75) without
+// approaching offsetMinVariance's flatness floor (noise raises variance, it
+// does not lower it). Deleting the score check in a scratch build and
+// re-running this test confirmed it then returns the correct offset instead
+// of refusing — see the task report for the exact output.
+func TestScrollOffsetRefusesALowScoringPlacement(t *testing.T) {
+	const shift = 400
+	prev := listLatticeFrame(latticeW, latticeH, latticePitch, 0)
+	cur := listLatticeFrame(latticeW, latticeH, latticePitch, shift)
+
+	regionTop := int(math.Round(latticeRegion.Y1 * float64(latticeH)))
+	regionBot := int(math.Round(latticeRegion.Y2 * float64(latticeH)))
+	stripH := int(offsetStripFrac * float64(regionBot-regionTop))
+	probe0Rect := image.Rect(0, regionTop, latticeW, regionTop+stripH)
+	corruptPixels(cur, probe0Rect, 20, 7)
+
+	_, err := ScrollOffset(prev, cur, latticeRegion)
+	if !errors.Is(err, ErrOffsetUncertain) {
+		t.Fatalf("got %v, want ErrOffsetUncertain", err)
+	}
+	if !strings.Contains(err.Error(), "scored") {
+		t.Fatalf("error %q does not name a score — this must be the score check, not a different refusal reaching the same sentinel", err.Error())
+	}
+}
+
 // TestScrollOffsetRefusesWhenProbesDisagree is brief item 3, and distinct
-// from the reach test above: here the true offset (300px) is well inside
+// from the reach test above: here the true offset (400px) is well inside
 // every probe's own limit, so an honest probe 1 would agree with probe 0.
 // This plants an exact copy of probe 1's own strip (as cut from cur) at the
 // very start of probe 1's search window in prev — a perfect, if planted,
 // decoy at d=0. Match's placement loop scans a probe's window from its own
 // row downward and keeps the first placement to reach a given score (see
 // matcher.go: `score > best.Score`, not `>=`), so a tied score at d=0 beats
-// the genuine tie at d=300 purely by being encountered first. Probe 1 then
+// the genuine tie at d=400 purely by being encountered first. Probe 1 then
 // reports d=0, which does not corroborate probe 0's (correct) candidate of
-// 300 — and because probe 2's own limit falls short of 300 here, probe 1 was
-// the only probe that could have voted at all, so no admissible probe
-// agrees and ScrollOffset must refuse rather than trust probe 0 alone.
+// 400 — and because probe 2 still agrees at 400, this now specifically
+// exercises the "EVERY admissible probe must agree" rule this fix round
+// added: under the old "any admissible probe agrees" scheme this same setup
+// would have passed, since probe 2's agreement alone used to be enough.
+// Deleting the "every" requirement (reverting to "any") in a scratch build
+// and re-running this test confirmed it: the call then succeeds and returns
+// 400 instead of refusing — see the task report for the exact output.
 func TestScrollOffsetRefusesWhenProbesDisagree(t *testing.T) {
-	const shift = 550 // probe 2 inadmissible for this candidate; only probe 1 could corroborate
+	const shift = 400
 	prev := listLatticeFrame(latticeW, latticeH, latticePitch, 0)
 	cur := listLatticeFrame(latticeW, latticeH, latticePitch, shift)
 
-	regionTop := int(latticeRegion.Y1 * float64(latticeH))
-	regionH := int(latticeRegion.Y2*float64(latticeH)) - regionTop
-	stripH := int(offsetStripFrac * float64(regionH))
+	regionTop := int(math.Round(latticeRegion.Y1 * float64(latticeH)))
+	regionBot := int(math.Round(latticeRegion.Y2 * float64(latticeH)))
+	stripH := int(offsetStripFrac * float64(regionBot-regionTop))
 	probe1Y := regionTop + 1*stripH
 
 	for y := probe1Y; y < probe1Y+stripH; y++ {
