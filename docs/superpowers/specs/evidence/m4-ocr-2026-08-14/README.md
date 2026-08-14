@@ -184,3 +184,32 @@ Two things follow:
   is the median band *height* — the card — while `pitch` is the row-to-row
   distance, card plus gap. Those differ by the gap, so the comparison is
   systematically biased even on a healthy frame.
+
+## Finding 6a: phase-locking works, verified on both screens
+
+The list is strongly periodic with a **known** pitch, so the problem is not
+"find the rows" but "find the phase". For each candidate phase in `[0, pitch)`,
+sample the row-mean profile at `phase + k*pitch` and take the mean: the correct
+phase is the one whose samples sit in the inter-card gaps, which are the
+brightest scanlines on both screens.
+
+Measured:
+
+| screen | pitch | best phase | brightness | worst phase | contrast |
+|---|---|---|---|---|---|
+| VS ranking | 128 | 108 | **246.0** | 142.5 | 103.5 |
+| member list | 112 | 95 | **246.0** | 151.5 | 94.5 |
+
+Both land on 246.0 — the brightest value present — meaning the phase falls
+exactly in the gap. Recovered boundaries are exactly one pitch apart
+(roster: 799, 911, 1023, 1135, …; VS: 404, 532, 660, 788, …).
+
+Evidence frame 08 is the band `799..911` cropped from a real frame: exactly one
+member row — avatar, `Angel 4am`, `Power: 218.7M`, `Lv.35`, `1m ago`, `Manage`
+— cleanly bounded with no bleed from its neighbours.
+
+The contrast between best and worst phase (94–103 here) is the natural validity
+check, and it is the same shape as every other acceptance rule this milestone
+arrived at: **compare the winner against its runner-up rather than against an
+absolute level.** A region that is not a periodic list has no phase that stands
+out, and its contrast collapses.
