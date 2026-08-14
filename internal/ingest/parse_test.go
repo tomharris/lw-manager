@@ -259,3 +259,54 @@ func TestParseGroupHeaderRejectsEmpty(t *testing.T) {
 		t.Errorf("parseGroupHeader(\"\") = %v, want ErrUnparseable", err)
 	}
 }
+
+// TestParseGroupHeaderRejectsAnIncoherentCount pins the structural coherence
+// check, which the unanchored pattern needs and shipped without: a token can
+// be unique, count-shaped and confident-looking while still being a truncation
+// of the real one. "10/6 4]" is not contrived -- a detached trailing digit is
+// the chevron-noise shape the evidence records, and the old anchored pattern
+// rejected it only incidentally, because "4]" sat past its "$".
+//
+// The first case is the one that matters. total feeds groupTracker.expected,
+// which gates member creation (roster.go), so a fabricated 6 against a real
+// 64-member group would stop the other 58 from ever being created. See
+// parseGroupHeader's doc comment for why N <= M closes that half and why no
+// upper bound on M is invented to chase the other.
+func TestParseGroupHeaderRejectsAnIncoherentCount(t *testing.T) {
+	for _, raw := range []string{
+		"{R3) Footloose 10/6 4]", // truncated: N > M
+		"{R3) Footloose 0/0 yi]", // no group can have a zero total
+		"R3 Footloose 5/0",       // denominator zero with a plausible numerator
+	} {
+		if _, _, err := parseGroupHeader(raw); !errors.Is(err, ErrUnparseable) {
+			t.Errorf("parseGroupHeader(%q) = %v, want ErrUnparseable", raw, err)
+		}
+	}
+}
+
+// TestParseGroupHeaderAcceptsEveryRealHeader keeps the coherence check above
+// honest in the other direction. These three are the only group headers read
+// off real frames (docs/superpowers/specs/evidence/m4-ocr-2026-08-14), and a
+// rule that rejected any of them would be worse than the fabrication it
+// prevents. N == M is included deliberately: a full group is the boundary the
+// "N <= M" check must not exclude.
+func TestParseGroupHeaderAcceptsEveryRealHeader(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want int
+	}{
+		{"{R2) I'm Alright 1/11", 11},
+		{"{R3) Footloose 10/64 yi]", 64},
+		{"(R4) This Is It 2/9 ap", 9},
+		{"{R1) Full Group 9/9", 9},
+	} {
+		_, total, err := parseGroupHeader(tc.raw)
+		if err != nil {
+			t.Errorf("parseGroupHeader(%q) = %v, want no error", tc.raw, err)
+			continue
+		}
+		if total != tc.want {
+			t.Errorf("parseGroupHeader(%q) total = %d, want %d", tc.raw, total, tc.want)
+		}
+	}
+}

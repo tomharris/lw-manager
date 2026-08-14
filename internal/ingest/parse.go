@@ -290,11 +290,38 @@ func ParsePoints(s string) (int64, error) {
 // "N/M"-shaped token anywhere in the line and fails if there are zero or
 // more than one, which tolerates arbitrary leading and trailing OCR noise
 // (the shield outline reading as "{", "(", ")"; the chevron button reading
-// as "yi]", "ap", "VN iy]" — real review-queue text, task 24's brief) without
-// ever being able to fabricate a count: two "N/M" tokens in one line (a
-// misread word that happens to contain one, or two genuine counts from a
-// merged line) have no principled way to choose between them, so this
-// refuses both rather than picking one arbitrarily.
+// as "yi]", "ap", "VN iy]" — real review-queue text, task 24's brief). Two
+// "N/M" tokens in one line (a misread word that happens to contain one, or
+// two genuine counts from a merged line) have no principled way to choose
+// between them, so this refuses both rather than picking one arbitrarily.
+//
+// Position-independence alone is not enough to stop a fabrication, and the
+// first version of this relaxation shipped believing it was. Dropping the end
+// anchor let a *truncated* token through: "{R3) Footloose 10/6 4]" has one
+// unique count-shaped token, "10/6", because the tail digit detached into the
+// chevron noise — and a detached trailing digit is exactly the noise shape the
+// evidence records ("(es Thisisit CED 4]", docs/superpowers/specs/evidence/
+// m4-ocr-2026-08-14). The old anchored pattern rejected that string only
+// incidentally, because "4]" sat past its "$". So the token must now also be
+// structurally coherent: M > 0, and N <= M, which no real header can violate
+// (the three read off real frames are 2/9, 1/11 and 10/64) and which "10/6"
+// and "0/0" both do.
+//
+// That is a shape check, not a tuned threshold, and it is deliberately not a
+// bound on how large M may be: group sizes are user-controlled and the group
+// set varies (CLAUDE.md, "Rank groups have no fixed identity"), so any cap
+// would be a number invented here that a real alliance could one day exceed.
+// The residual is stated rather than hidden, in the same spirit as ParsePoints'
+// own doc comment: a detached digit joining the *denominator* ("10/641" from a
+// true 10/64) is coherent by this rule and still gets through. Its direction of
+// harm is the survivable one — total feeds groupTracker.expected, and an
+// inflated expected leaves the group short of its own header, which
+// IngestRoster reports as status "partial". An under-count is the one that does
+// silent damage, because expected also gates member creation
+// (gt.matchedOrCreated < gt.expected in roster.go): a fabricated 6 against a
+// real 64-member group stops the other 58 from being created at all and queues
+// them as no_confident_match_group_full. N <= M is precisely the rule that
+// closes the under-counting half.
 //
 // name is whatever text precedes the matched count, trimmed — kept for
 // review triage (a human looking at a queued row benefits from seeing
@@ -312,13 +339,17 @@ func parseGroupHeader(raw string) (name string, total int, err error) {
 	loc := locs[0]
 	token := trimmed[loc[0]:loc[1]]
 	parts := strings.SplitN(token, "/", 2)
+	shown, shownErr := strconv.Atoi(parts[0])
 	total, convErr := strconv.Atoi(parts[1])
-	if convErr != nil {
+	if shownErr != nil || convErr != nil {
 		// Unreachable given groupHeaderCountRe's own \d+ shape, but a
 		// strconv failure must still route to review rather than panic --
 		// the same defensive shape every other Parse* function in this file
 		// takes on its own regex-validated capture.
 		return "", 0, fmt.Errorf("ingest: group header %q: %w", raw, ErrUnparseable)
+	}
+	if total <= 0 || shown > total {
+		return "", 0, fmt.Errorf("ingest: group header %q: count %q is not a coherent N/M: %w", raw, token, ErrUnparseable)
 	}
 	return strings.TrimSpace(trimmed[:loc[0]]), total, nil
 }

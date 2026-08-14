@@ -7,6 +7,8 @@ import (
 	"image/png"
 	"os"
 	"testing"
+
+	"github.com/tomharris/lw-manager/internal/transport"
 )
 
 // loadTestdataPNG decodes a fixture from internal/ingest/testdata. Fatal on
@@ -122,6 +124,61 @@ func TestMatchRankBadgeRefusesAnUnconvincingMatch(t *testing.T) {
 	// TestMatchRankBadgeRefusesAnUnconvincingMatch's first assertion fail:
 	// matchRankBadgeReal would return best.rank instead of ErrNoConfidentRank.
 	t.Logf("without the gap check, matchRankBadgeReal would have reported rank=%q at gap=%.3f instead of refusing", best.rank, gap)
+}
+
+// TestRankBadgeMinGapSeparatesBothDistributions pins rankBadgeMinGap from
+// both sides. The review that prompted it established that nothing did: with
+// the gap check itself intact, setting the constant to 0.001 left the entire
+// internal/ingest suite passing, because every existing assertion is either a
+// true match (gap >= 0.308) or the blank frame (gap exactly 0.000). Any value
+// in (0, 0.30] was a silent weakening.
+//
+// The lower bound is a measurement, not a preference: shifting rankBadgeRegion
+// 60px up off the sticky header makes R4 win at 0.717 over R1's 0.555 — gap
+// 0.162, the worst of the whole near-miss sweep recorded in rankBadgeMinGap's
+// doc comment, and the wrong rank. That read must be refused, so the constant
+// has to sit above it, and the sub-test below asserts the refusal behaviourally
+// rather than trusting the arithmetic.
+//
+// The upper bound is the smallest true gap ever measured, R3's cross-capture
+// 0.250. A floor at or above it would send correct reads to review.
+func TestRankBadgeMinGapSeparatesBothDistributions(t *testing.T) {
+	const (
+		worstNearMissGap = 0.162 // dy=-60, R4 0.717 over R1 0.555 -- wrong rank
+		smallestTrueGap  = 0.250 // R3, cross-capture, capture 1's real headers
+	)
+	if rankBadgeMinGap <= worstNearMissGap {
+		t.Errorf("rankBadgeMinGap = %.3f, must exceed the worst measured near-miss gap %.3f or it accepts a known wrong-rank read", rankBadgeMinGap, worstNearMissGap)
+	}
+	if rankBadgeMinGap >= smallestTrueGap {
+		t.Errorf("rankBadgeMinGap = %.3f, must stay below the smallest true gap %.3f or it sends correct reads to review", rankBadgeMinGap, smallestTrueGap)
+	}
+
+	// The bounds above are arithmetic on remembered numbers; this re-runs the
+	// probe that produced the lower one, so the test still means something if
+	// a template, a fixture or the matcher changes underneath it.
+	t.Run("the measured near-miss is actually refused", func(t *testing.T) {
+		orig := rankBadgeRegion
+		t.Cleanup(func() { rankBadgeRegion = orig })
+
+		const dy = -60.0 / rankBadgeRefHeight
+		rankBadgeRegion = transport.Rect{X1: orig.X1, Y1: orig.Y1 + dy, X2: orig.X2, Y2: orig.Y2 + dy}
+
+		img := loadTestdataPNG(t, "testdata/rankbadge_r1.png")
+		best, runnerUp, err := bestTwoRankScores(img)
+		if err != nil {
+			t.Fatalf("bestTwoRankScores on the shifted region: %v", err)
+		}
+		gap := best.score - runnerUp.score
+		t.Logf("region shifted 60px up: best=%s %.3f runner-up=%s %.3f gap=%.3f", best.rank, best.score, runnerUp.rank, runnerUp.score, gap)
+
+		if best.rank == "R1" {
+			t.Skipf("premise gone: the shifted region still picks the fixture's true rank (gap %.3f), so this is no longer a near-miss to defend against", gap)
+		}
+		if _, err := matchRankBadgeReal(img); !errors.Is(err, ErrNoConfidentRank) {
+			t.Errorf("matchRankBadgeReal on a region shifted off the header = %v, want ErrNoConfidentRank (it picked %s at gap %.3f)", err, best.rank, gap)
+		}
+	})
 }
 
 // uniformImage returns an image.Image every pixel of which is c — used for

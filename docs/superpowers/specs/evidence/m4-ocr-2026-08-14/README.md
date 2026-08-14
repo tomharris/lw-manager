@@ -289,3 +289,74 @@ Two separate defects follow:
   collides on `participation_facts`' key. Interleaving should be handled
   without corrupting per-group accounting even once the capture side is fixed,
   because a capture from before the fix must still ingest correctly.
+
+## Finding 4b: `rankBadgeMinGap` was set from one distribution, and the other one overlaps it
+
+Finding 4a established that NCC separates the four rank badges and measured the
+gaps it does so by. What it never measured is what a **wrong** region scores,
+and `rankBadgeMinGap` was set from the true gaps alone. A floor justified only
+by what it accepts has not been tested from the side that matters.
+
+Swept by shifting `rankBadgeRegion` off the sticky header across all four
+`internal/ingest/testdata/rankbadge_r*.png` fixtures — 16 vertical offsets
+(-160px to +160px) and 8 horizontal, plus a flat frame and a white-noise frame.
+Two populations came back, and they are not the same kind of thing.
+
+**Population 1 — the region lands on nothing badge-like.** This is what a gap
+floor is for, and it separates cleanly:
+
+| probe | best | runner-up | gap |
+|---|---|---|---|
+| flat frame | R1 0.000 | R2 0.000 | 0.000 |
+| white noise | R2 0.193 | R3 0.172 | 0.021 |
+| most off-header offsets | — | — | 0.002 – 0.109 |
+| **dy=-60 and dy=-40** | **R4 0.717** | R1 0.555 | **0.162** |
+
+The last row is the finding. 0.162 is above the shipped floor of 0.15, so that
+value demonstrably accepted a wrong-rank read — exactly the case it exists to
+refuse. The smallest true gap is R3's cross-capture 0.250, so the two
+distributions leave a window of 0.088 and the floor moved to its midpoint,
+**0.20**: 0.038 above the worst near-miss, 0.050 below the smallest true read.
+Less headroom on the true side than before, taken deliberately — an overtight
+floor sends a real frame to review, which is recoverable; a loose one attributes
+a whole frame's rows to the wrong rank group, which is not.
+
+**Population 2 — the region lands on a different badge, and matches it
+perfectly.** No threshold reaches this:
+
+| probe | best | runner-up | gap |
+|---|---|---|---|
+| dy=+60 | **R3 1.000** | R2 0.680 | 0.320 |
+| dy=+120 | **R2 1.000** | R3 0.692 | 0.308 |
+
+Both score a perfect 1.000 at the wrong rank, at gaps *above* every true
+cross-capture gap ever measured (0.589 / 0.264 / 0.250). They are not
+near-misses in any noise sense: these fixtures derive from evidence frame 06,
+which shows all four groups collapsed and stacked, so a one-header shift puts
+the region on the adjacent group's real badge and reads it correctly.
+
+That is the general point, and it is the same shape as the `_none` negatives in
+the M1 corpus and the "anchors detect presence, never absence" note in
+CLAUDE.md: **a gap check answers "did anything match", never "did the right
+thing match."** Nothing in `rankbadge.go` can distinguish a correct read of the
+intended badge from a correct read of a badge 60px away, and moving the constant
+cannot change that. What would is a second, independent signal that the region
+is on the header it thinks it is — `vision.Match` already returns `Center` and
+`Box`, both currently discarded, or `roster.go`'s own header-band bounds
+(`hy0`/`hy1`) constraining the search instead of a fixed rect. Neither is built.
+The exposure is bounded in practice because `roster_capture` works one expanded
+group at a time, so a collapsed stack of four adjacent badges is the
+normalization screen rather than a frame that gets ingested.
+
+Horizontal shifts produced one wrong-rank read above the new floor as well
+(dx=+40 on the R2 fixture: R1 0.718 over R3 0.515, gap 0.203). It is recorded
+rather than tuned around: `rankBadgeRegion` is a fixed normalized rect and every
+capture is 720px wide, so horizontal misplacement is not a variation production
+has. Vertical is — the sticky header is not pinned to the pixel across frames
+(see Finding 4a) — which is why the floor was set from the vertical sweep.
+
+Reproduce by temporarily reassigning `rankBadgeRegion` in a test and calling
+`bestTwoRankScores`, which applies no acceptance rule. `TestRankBadgeMinGap
+SeparatesBothDistributions` pins the dy=-60 case permanently; the rest of the
+sweep was a scratch probe and is recorded here rather than committed, since a
+72-cell table of NCC scores is a measurement, not a regression.

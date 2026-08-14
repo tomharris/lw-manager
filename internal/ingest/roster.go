@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -536,6 +537,18 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		}
 		rankRes, rerr := matchRankBadge(img)
 		if rerr != nil {
+			// Only an unconvincing *match* is review-worthy. Any other error
+			// out of matchRankBadge means the binary itself is broken -- a
+			// template that failed to embed or decode, which loadRankTemplates'
+			// own doc comment already distinguishes from "one frame's rank is
+			// unreadable" and which sync.Once makes permanent for the process.
+			// Treating that as a per-frame review row would turn a broken
+			// build into a capture-sized pile of human work reported as
+			// status "partial", which is the loudest possible way to say
+			// nothing. It fails the run instead.
+			if !errors.Is(rerr, ErrNoConfidentRank) {
+				return RosterResult{}, fmt.Errorf("ingest: capture %d frame seq %d: matching rank badge: %w", captureID, frame.Seq, rerr)
+			}
 			// A badge matching nothing with enough confidence is exactly the
 			// case CLAUDE.md invariant #3 forbids acting on: this frame's
 			// rows would have nowhere honest to attach (see this file's
@@ -550,6 +563,17 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 			continue
 		}
 		groupKey := rankRes.Rank
+		// Rank is not OCR-derived, so invariant #5's confidence-on-every-fact
+		// rule does not literally reach it and members.Rank has nowhere to
+		// carry a score. Its provenance is still worth having when a capture
+		// is being argued about after the fact -- every frame's rank decision
+		// with the numbers that produced it, against the screenshot it came
+		// from. Logged rather than stored: a schema column for it would need
+		// a migration and a supersession story of its own, and nothing has
+		// asked to query these yet.
+		slog.DebugContext(ctx, "ingest: frame rank matched",
+			"capture_id", captureID, "frame_seq", frame.Seq, "screenshot_id", frame.ScreenshotID,
+			"rank", rankRes.Rank, "score", rankRes.Score, "gap", rankRes.Gap)
 
 		gt, exists := run.groups[groupKey]
 		if !exists {

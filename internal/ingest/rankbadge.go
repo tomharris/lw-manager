@@ -38,16 +38,32 @@ const rankBadgeRefHeight = 1600
 // costing any accuracy (a search region only affects how many placements are
 // tried, never whether the true one is found — see matcher.go).
 //
-// Y1/Y2 are groupHeaderRegion's own pre-tightening margin (0.404..0.438,
-// see that var's doc comment) rather than a new measurement: the badge and
-// the header text it sits beside are the same sticky element, so the header
-// band's own vertical bounds already contain it. X1/X2 (x=30..90 of a 720px
-// frame) were measured directly off evidence frame 06 — see
-// docs/superpowers/specs/evidence/m4-ocr-2026-08-14 Finding 4a for the
-// pixel-level detail — with margin on both sides for the badge's shield
-// outline and shadow, which the digit-only templates below deliberately do
-// not include but which still needs room in the search window.
-var rankBadgeRegion = transport.Rect{X1: 30.0 / 720, Y1: 0.404, X2: 90.0 / 720, Y2: 0.438}
+// Y1/Y2 are groupHeaderRegion's own measured band plus a margin, and they are
+// derived from it rather than restated as literals: the badge and the header
+// text it sits beside are the same sticky element, so the header band's own
+// vertical bounds already contain it, and a version of this that hard-coded
+// 0.404..0.438 had already drifted once — those numbers were groupHeaderRegion's
+// pre-tightening bounds and stayed put when it moved to 0.409..0.435. Deriving
+// makes the next move propagate instead of silently decoupling.
+//
+// The margin is deliberate and not a fudge: groupHeaderRegion was tightened
+// around the *text* for OCR's benefit (see its doc comment), while NCC needs
+// room around the badge for the shield outline and shadow that the digit-only
+// templates below exclude. A search region only affects how many placements
+// are tried, never whether the true one is found (matcher.go), so erring wide
+// here costs time rather than accuracy.
+//
+// X1/X2 (x=30..90 of a 720px frame) were measured directly off evidence frame
+// 06 — see docs/superpowers/specs/evidence/m4-ocr-2026-08-14 Finding 4a for
+// the pixel-level detail — with the same margin rationale on both sides.
+const rankBadgeBandMargin = 8.0 / rankBadgeRefHeight
+
+var rankBadgeRegion = transport.Rect{
+	X1: 30.0 / 720,
+	Y1: groupHeaderRegion.Y1 - rankBadgeBandMargin,
+	X2: 90.0 / 720,
+	Y2: groupHeaderRegion.Y2 + rankBadgeBandMargin,
+}
 
 // rankBadgeMinGap is the minimum an argmax rank template must lead its
 // runner-up by to be trusted — never an absolute score floor. Finding 4a
@@ -59,31 +75,84 @@ var rankBadgeRegion = transport.Rect{X1: 30.0 / 720, Y1: 0.404, X2: 90.0 / 720, 
 // 0.589 (R4), 0.250 (R3) and 0.264 (R2) over the runner-up — nowhere near
 // the 1.000 a same-frame self-match produces, and nowhere near each other
 // either. No absolute threshold could accept 0.250 and still mean anything
-// as a floor. 0.15 sits below every real gap measured with real headroom
-// (0.10 under the smallest, R3's 0.250) while still rejecting a badge crop
-// that matches nothing in particular, where every template scores similarly
-// low and the gap collapses toward zero — the same shape of acceptance rule
-// ScrollOffset's probe agreement and phase-locking's contrast both landed
-// on, for the same reason: real variation depresses the absolute score
-// while leaving separation intact, so separation is what must gate
-// acceptance.
+// as a floor. What the floor must do instead is sit below every real gap while
+// still rejecting a badge crop that matches nothing in particular, where every
+// template scores similarly low and the gap collapses toward zero — the same
+// shape of acceptance rule ScrollOffset's probe agreement and phase-locking's
+// contrast both landed on, for the same reason: real variation depresses the
+// absolute score while leaving separation intact, so separation is what must
+// gate acceptance.
 //
-// Limitation, carried rather than hidden: only R3 and R4 have a cross-capture
-// probe (capture 1's real frames, docs/superpowers/specs/evidence/
-// m4-ocr-2026-08-14, never advanced past R2 in its 62 frames — R1 does not
-// appear in any real capture pulled so far). R2's gap above is also
-// cross-capture (capture 1 does reach R2), but R1's separation is inferred
-// from evidence frame 06's own within-frame cross-rank matrix (worst
-// off-diagonal 0.463, an R2-vs-R3 pair, not R1's own), not measured against
-// a second capture. A capture that reaches R1 would settle it; until then,
-// R1 rides on the same threshold the other three earned by measurement.
-const rankBadgeMinGap = 0.15
+// The value is set from both distributions, which is what the first version
+// of this constant got wrong: 0.15 was chosen from the true gaps alone, and a
+// floor justified only by what it accepts has never been tested from the side
+// that matters. Re-measured against deliberate near-misses — rankBadgeRegion
+// shifted off the sticky header across the four testdata fixtures, 16 vertical
+// offsets from -160px to +160px and 8 horizontal, plus a flat frame and a
+// white-noise frame — the rejected population tops out at:
+//
+//	blank frame                          gap 0.000 (every template ties at 0)
+//	white noise                          gap 0.021
+//	most off-header offsets              gap 0.002 .. 0.109
+//	dy=-60 / dy=-40, best R4 0.717       gap 0.162  <- the worst, and WRONG rank
+//
+// 0.162 is above the old 0.15, so that floor demonstrably accepted a measured
+// wrong-rank read. The smallest true gap is R3's cross-capture 0.250, so 0.20
+// is the midpoint of the two distributions: 0.038 above the worst measured
+// near-miss and 0.050 below the smallest true read. That is less headroom on
+// the true side than 0.15 had (0.100), and it is bought deliberately — an
+// overtight floor sends a real frame to review, which is recoverable, while a
+// loose one attributes a whole frame's rows to the wrong rank group, which is
+// not.
+//
+// Limitation 1, and it is not fixable by moving this number: the same sweep
+// found offsets that score a **perfect 1.000 at the wrong rank** — dy=+60 gives
+// R3 1.000 (gap 0.320) and dy=+120 gives R2 1.000 (gap 0.308), both above every
+// true cross-capture gap measured. Those are not near-misses in any noise
+// sense. The fixtures derive from evidence frame 06, which shows all four rank
+// groups collapsed and stacked, so a one-header shift lands the region on the
+// *adjacent group's real badge* and matches it correctly. A gap check answers
+// "did anything match", never "did the right thing match": nothing in this
+// file can distinguish a correct read of the intended badge from a correct
+// read of a badge 60px away. What would is a second, independent signal that
+// the region is on the header it thinks it is — vision.Match already returns
+// Center and Box and both are currently discarded — or the header-band bounds
+// (hy0/hy1 in roster.go) constraining the search rather than a fixed rect.
+// Neither is done here; the exposure is bounded in practice by roster_capture
+// working one expanded group at a time (a collapsed stack of four adjacent
+// badges is the normalization screen, not a frame that gets ingested), and it
+// is recorded so the next person does not mistake this constant for a defence
+// it cannot provide.
+//
+// Limitation 2, carried from the first version: only R2, R3 and R4 have a
+// cross-capture probe (capture 1's real frames, docs/superpowers/specs/
+// evidence/m4-ocr-2026-08-14, which never advanced past R2 in its 62 frames —
+// R1 does not appear in any real capture pulled so far). R1's separation is
+// inferred from evidence frame 06's own within-frame cross-rank matrix (worst
+// off-diagonal 0.463, an R2-vs-R3 pair, not R1's own), not measured against a
+// second capture. A capture that reaches R1 would settle it; until then, R1
+// rides on the same threshold the other three earned by measurement.
+//
+// TestRankBadgeMinGapSeparatesBothDistributions pins this value against both
+// bounds, because the previous one was silently weakenable: with the gap check
+// intact the whole internal/ingest suite still passed at 0.001.
+const rankBadgeMinGap = 0.20
 
 // rankTemplate is one rank badge's digit-only crop and the rank string it
 // stands for, in the "R\d+" shape groupKey has always taken (see
 // groupHeaderRe's old doc comment) — NCC now supplies this value instead of
 // OCR, but nothing downstream (GroupTally's map key, the review queue, the
 // per-group reconciliation loop) needed to change shape to receive it.
+//
+// The committed crops are 16x22, not the 18x22 Finding 4a measured. The
+// deviation is recorded because it is not free: Finding 4a's own cross-capture
+// R3 gap was 0.308 and these crops earn 0.250 on the same probe, so 2px
+// narrower separates measurably worse — 0.058 of the 0.088 window between the
+// near-miss and true distributions that rankBadgeMinGap has to fit inside. It
+// is not re-cut here because the current value clears the floor with headroom
+// on both sides and a recrop would invalidate every number in that constant's
+// comment for a gain nothing currently needs. A capture that lands near the
+// floor is the reason to revisit it.
 type rankTemplate struct {
 	Rank     string
 	Template image.Image

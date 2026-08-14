@@ -259,6 +259,25 @@ func (h *rosterIngestHarness) stubRankFor(rank string) {
 	}
 }
 
+// stubRankError makes matchRankBadge fail for every frame, so the two
+// branches IngestRoster takes on a rank failure can be exercised at all --
+// newHarness's default stub always succeeds, which is why neither had a test
+// before. The error is supplied by the caller rather than fixed here because
+// the whole point of those branches is that they discriminate on it:
+// ErrNoConfidentRank means this frame's badge was unreadable and routes to
+// review, anything else means the embedded template set is broken and must
+// fail the run (roster.go).
+func (h *rosterIngestHarness) stubRankError(err error) {
+	h.t.Helper()
+	if h.origMatchRankBadge == nil {
+		h.origMatchRankBadge = matchRankBadge
+		h.t.Cleanup(func() { matchRankBadge = h.origMatchRankBadge })
+	}
+	matchRankBadge = func(img image.Image) (rankMatch, error) {
+		return rankMatch{}, err
+	}
+}
+
 // stubRankSequence makes matchRankBadge return ranks[i] on the i-th call,
 // rather than stubRankFor's single constant rank -- needed to reproduce
 // capture 1's documented group-key oscillation (docs/superpowers/specs/
@@ -730,6 +749,93 @@ func TestIngestRosterDiscardsTheOccludedTopRow(t *testing.T) {
 	}
 	if res.Created != 11 {
 		t.Errorf("created %d members, want 11", res.Created)
+	}
+}
+
+// TestIngestRosterQueuesAnUnreadableBadgeWithItsFullHeaderText is task 24's
+// brief test 6, which was specified and never written. Two things are being
+// pinned, and the second is the one a human depends on.
+//
+// First: a frame whose rank badge matched nothing confidently must not have
+// its rows attributed to a guessed group. Rank is not supplied by
+// roster_capture (see roster.go's package doc) so there is no fallback to
+// take, and acting on an unidentified screen is what CLAUDE.md invariant #3
+// forbids -- the whole frame goes to review and none of its rows are parsed.
+//
+// Second: the review row carries the header's *full* raw text. A reviewer
+// opening this row needs to see what was actually read -- "{R3) Footloose
+// 10/64 yi]" tells them the OCR side resolved the count fine and only the
+// badge failed, which is a different fix from a header that came back as
+// noise. A row that said only "unmatched_rank_badge" would send them to the
+// screenshot to re-derive what the pipeline already knew.
+func TestIngestRosterQueuesAnUnreadableBadgeWithItsFullHeaderText(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankError(fmt.Errorf("badge scored 0.71 against 0.70: %w", ErrNoConfidentRank))
+
+	h.addFrame(rosterFrame(6), 0)
+
+	const headerText = "{R3) Footloose 10/64 yi]"
+	// Only the header is scripted. If the frame's rows were OCR'd anyway --
+	// the failure this test exists to catch -- FakeEngine would run out of
+	// results and IngestRoster would error rather than silently pass.
+	h.engine.Results = []ocr.Result{{Text: headerText, Confidence: 0.9}}
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Created != 0 || res.Matched != 0 {
+		t.Errorf("created %d / matched %d, want 0 / 0: no row may be attributed to a guessed rank group", res.Created, res.Matched)
+	}
+
+	var found *db.ReviewItem
+	for k := range h.store.Reviews {
+		if h.store.Reviews[k].Reason == "unmatched_rank_badge" {
+			found = &h.store.Reviews[k]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("no unmatched_rank_badge review row queued; got %d reviews", len(h.store.Reviews))
+	}
+	if found.RawText != headerText {
+		t.Errorf("review RawText = %q, want the full header text %q", found.RawText, headerText)
+	}
+	if found.ScreenshotID == 0 {
+		t.Error("review row has no screenshot reference; a reviewer cannot see the pixels it came from")
+	}
+}
+
+// TestIngestRosterFailsRatherThanQueueingABrokenTemplateSet pins the
+// discrimination the branch above depends on. loadRankTemplates' doc comment
+// already says an error from it "means the binary itself is broken, not that
+// one frame's rank is unreadable", and sync.Once makes that permanent for the
+// process -- but roster.go used to route *any* rank error to a review row, so
+// a build with a corrupt embedded template would have ingested a whole capture
+// into the review queue and reported status "partial". That is a capture-sized
+// pile of human work standing in for one build failure.
+//
+// The error deliberately does not wrap ErrNoConfidentRank, which is the only
+// thing separating the two cases.
+func TestIngestRosterFailsRatherThanQueueingABrokenTemplateSet(t *testing.T) {
+	h := newHarness(t)
+	brokenEmbed := errors.New("ingest: decoding embedded rank template rankbadges/r3.png: invalid PNG header")
+	h.stubRankError(brokenEmbed)
+
+	h.addFrame(rosterFrame(6), 0)
+	h.engine.Results = []ocr.Result{{Text: "{R3) Footloose 10/64 yi]", Confidence: 0.9}}
+
+	_, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err == nil {
+		t.Fatal("IngestRoster returned no error on a broken template set, want the run to fail")
+	}
+	if !errors.Is(err, brokenEmbed) {
+		t.Errorf("IngestRoster error = %v, want it to wrap the template-load failure", err)
+	}
+	for _, r := range h.store.Reviews {
+		if r.Reason == "unmatched_rank_badge" {
+			t.Error("a broken template set queued an unmatched_rank_badge review row; it must fail the run instead")
+		}
 	}
 }
 
