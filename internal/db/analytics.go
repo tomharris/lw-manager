@@ -118,6 +118,31 @@ func (p *Pool) UpsertAlliance(ctx context.Context, a Alliance) (int64, error) {
 	return id, nil
 }
 
+// AllianceByTagName looks up the alliance row for an exact (tag, name) pair
+// -- the same key UpsertAlliance's ON CONFLICT target uses, and a different
+// question from CurrentAlliance's "most recently observed": once more than
+// one alliance has ever been recorded, "current" and "the row this upsert
+// is about to touch" can name two different rows. `control alliance set`
+// needs this one, not CurrentAlliance, to decide whether it is refreshing
+// an existing identity (and so must carry its member_count forward) or
+// creating a new one -- conflating the two was a real bug (see
+// cmd/control/alliance.go's runAllianceSet). Returns ErrNotFound if no row
+// exists yet for this exact tag+name.
+func (p *Pool) AllianceByTagName(ctx context.Context, tag, name string) (Alliance, error) {
+	var a Alliance
+	err := p.QueryRow(ctx, `
+		SELECT id, tag, name, coalesce(server, ''), coalesce(member_count, 0), observed_at
+		FROM alliances WHERE tag = $1 AND name = $2`, tag, name).Scan(
+		&a.ID, &a.Tag, &a.Name, &a.Server, &a.MemberCount, &a.ObservedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Alliance{}, fmt.Errorf("db: alliance %s/%s: %w", tag, name, ErrNotFound)
+	}
+	if err != nil {
+		return Alliance{}, fmt.Errorf("db: looking up alliance %s/%s: %w", tag, name, err)
+	}
+	return a, nil
+}
+
 // SetAllianceMemberCount records the alliance's member_count from a fresh
 // read of the alliance screen's own "Members: 96/100" line — the roster
 // route's reconciliation ground truth (see Alliance's doc comment) — so the

@@ -21,6 +21,7 @@ import (
 type allianceStore interface {
 	UpsertAlliance(ctx context.Context, a db.Alliance) (int64, error)
 	CurrentAlliance(ctx context.Context) (db.Alliance, error)
+	AllianceByTagName(ctx context.Context, tag, name string) (db.Alliance, error)
 }
 
 // runAllianceCmd wires the real database and runs the alliance subcommand.
@@ -68,19 +69,38 @@ func runAlliance(out, errOut io.Writer, args []string, store allianceStore) int 
 // ingest failure, rather than a special case this command has to implement
 // itself.
 //
-// Before upserting, it reads the currently-recorded alliance (if any) to
-// decide two things: whether to report "created" or "refreshed", and —
-// this is the part that matters, not just cosmetics — what member_count to
-// pass through. UpsertAlliance's ON CONFLICT overwrites member_count with
-// whatever it is given, and this command has no count of its own to offer:
-// identity is declared here, but quantities are measured, by ingest's own
-// SetAllianceMemberCount call from the alliance frame's "Members: 97/100"
-// line (see this task's brief for the full reasoning). Passing zero on a
-// refresh would silently erase that measurement every time an operator
-// re-ran `set` to confirm the tag and name are still right. So: matching
-// tag and name carries the existing count forward; anything else (a fresh
-// deployment, or a genuinely different identity) starts at zero, because
-// there is nothing yet to carry.
+// Before upserting, it looks the row up by AllianceByTagName — the exact
+// (tag, name) pair UpsertAlliance's own ON CONFLICT target uses — to decide
+// two things: whether to report "created" or "refreshed", and, more than
+// cosmetics, what member_count to pass through. UpsertAlliance's ON
+// CONFLICT overwrites member_count with whatever it is given, and this
+// command has no count of its own to offer: identity is declared here, but
+// quantities are measured, by ingest's own SetAllianceMemberCount call from
+// the alliance frame's "Members: 97/100" line (see this task's brief for
+// the full reasoning). Passing zero on a refresh would silently erase that
+// measurement every time an operator re-ran `set` to confirm the tag and
+// name are still right. So: a match carries the existing count forward;
+// anything else (a fresh deployment, or a genuinely different identity)
+// starts at zero, because there is nothing yet to carry.
+//
+// This must look up by (tag, name), not by CurrentAlliance's "most recently
+// observed" row: an earlier version compared against CurrentAlliance, which
+// only agrees with AllianceByTagName's answer as long as at most one
+// alliance has ever been recorded. Switching away and back — `set A`, then
+// `set B`, then `set A` again — made CurrentAlliance report B while A's own
+// row (with A's already-observed member_count) sat unread, so the second
+// `set A` announced action=created and zeroed a count that was never lost
+// in the database, only in the lookup.
+//
+// The read and the write below are not atomic: nothing stops a concurrent
+// SetAllianceMemberCount from landing between the AllianceByTagName read
+// and the UpsertAlliance write, in which case that write's own count would
+// be the one that gets carried forward next time, not this one's. Left
+// unguarded deliberately — this is a one-off manual command an operator
+// runs interactively, not a path any scheduler or task loop calls, so the
+// window is both narrow and low-stakes. Do not copy this pattern into
+// scheduled or concurrent code without adding the locking this command
+// skips.
 func runAllianceSet(out, errOut io.Writer, args []string, store allianceStore) int {
 	fs := flag.NewFlagSet("alliance set", flag.ContinueOnError)
 	fs.SetOutput(errOut)
@@ -108,15 +128,18 @@ func runAllianceSet(out, errOut io.Writer, args []string, store allianceStore) i
 	logger := slog.New(slog.NewTextHandler(errOut, nil))
 	ctx := context.Background()
 
-	existing, err := store.CurrentAlliance(ctx)
+	existing, err := store.AllianceByTagName(ctx, *tag, *name)
 	if err != nil && !errors.Is(err, db.ErrNotFound) {
-		logger.ErrorContext(ctx, "control alliance set: checking the current alliance failed", "error", err)
+		logger.ErrorContext(ctx, "control alliance set: checking for an existing alliance failed", "tag", *tag, "name", *name, "error", err)
 		return 1
 	}
 
+	// action reflects what AllianceByTagName actually found, not an
+	// inference from some other query — see the doc comment above for why
+	// that distinction is the whole fix.
 	action := "created"
 	memberCount := 0
-	if err == nil && existing.Tag == *tag && existing.Name == *name {
+	if err == nil {
 		action = "refreshed"
 		memberCount = existing.MemberCount
 	}

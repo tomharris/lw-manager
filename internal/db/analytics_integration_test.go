@@ -85,6 +85,41 @@ func TestFactsAreAppendOnlyAndSupersede(t *testing.T) {
 	}
 }
 
+// AllianceByTagName is the lookup `control alliance set` needs and
+// CurrentAlliance cannot provide: UpsertAlliance's ON CONFLICT target is
+// (tag, name), not "whichever row was most recently observed", and those
+// two diverge the moment a second alliance has ever been recorded. See
+// cmd/control/alliance.go's runAllianceSet for the bug this fixes.
+func TestAllianceByTagNameFindsTheMatchingRow(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	suffix := testSuffix()
+	tag, name := "ABT-"+suffix, "By Tag Name "+suffix
+	id, err := pool.UpsertAlliance(ctx, Alliance{Tag: tag, Name: name, Server: "1380", MemberCount: 97})
+	if err != nil {
+		t.Fatalf("UpsertAlliance: %v", err)
+	}
+
+	got, err := pool.AllianceByTagName(ctx, tag, name)
+	if err != nil {
+		t.Fatalf("AllianceByTagName: %v", err)
+	}
+	if got.ID != id || got.Tag != tag || got.Name != name || got.Server != "1380" || got.MemberCount != 97 {
+		t.Fatalf("AllianceByTagName(%s, %s) = %+v, want id=%d server=1380 member_count=97", tag, name, got, id)
+	}
+}
+
+func TestAllianceByTagNameReturnsErrNotFoundForAnUnknownPair(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	suffix := testSuffix()
+	if _, err := pool.AllianceByTagName(ctx, "NOPE-"+suffix, "Nothing Here "+suffix); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("AllianceByTagName: got %v, want ErrNotFound", err)
+	}
+}
+
 func TestUpsertAllianceIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	pool := testPool(t)

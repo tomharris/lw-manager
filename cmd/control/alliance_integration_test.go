@@ -127,6 +127,66 @@ func TestAllianceSetAgainstARealDatabasePreservesAnObservedMemberCount(t *testin
 	}
 }
 
+// The real-database counterpart to
+// TestAllianceSetPreservesMemberCountWhenSwitchingBackToAPreviousIdentity in
+// alliance_test.go: fix-round-1's review reproduced this bug against a live
+// database, so it belongs here too, exercising the actual AllianceByTagName
+// query and UpsertAlliance's actual ON CONFLICT — not just the in-memory
+// fake's model of them. Needs three set calls across two distinct
+// alliances; the two-call idempotency test above cannot see this bug, since
+// CurrentAlliance and AllianceByTagName only disagree once a second alliance
+// has ever been recorded. Do not collapse this back to two calls.
+func TestAllianceSetAgainstARealDatabasePreservesMemberCountWhenSwitchingBackToAPreviousIdentity(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+
+	suffix := testSuffix()
+	tagA, nameA := "SWA-"+suffix, "Switch A "+suffix
+	tagB, nameB := "SWB-"+suffix, "Switch B "+suffix
+
+	var out, errOut bytes.Buffer
+	if code := runAlliance(&out, &errOut, []string{"set", "--tag", tagA, "--name", nameA}, pool); code != 0 {
+		t.Fatalf("set A: exit = %d, want 0: %s", code, errOut.String())
+	}
+
+	allianceA, err := pool.AllianceByTagName(ctx, tagA, nameA)
+	if err != nil {
+		t.Fatalf("AllianceByTagName(A): %v", err)
+	}
+	// Simulates what ingest does on every roster capture for A, before B is
+	// ever set — independently of set, per "identity is declared, quantities
+	// are measured".
+	if err := pool.SetAllianceMemberCount(ctx, allianceA.ID, 97); err != nil {
+		t.Fatalf("SetAllianceMemberCount(A, 97): %v", err)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	if code := runAlliance(&out, &errOut, []string{"set", "--tag", tagB, "--name", nameB}, pool); code != 0 {
+		t.Fatalf("set B: exit = %d, want 0: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "action=created") {
+		t.Errorf("set B stdout = %q, want action=created", out.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	if code := runAlliance(&out, &errOut, []string{"set", "--tag", tagA, "--name", nameA}, pool); code != 0 {
+		t.Fatalf("set A again: exit = %d, want 0: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "action=refreshed") {
+		t.Errorf("set A again stdout = %q, want action=refreshed — A already existed", out.String())
+	}
+
+	var got int
+	if err := pool.QueryRow(ctx, `SELECT member_count FROM alliances WHERE id = $1`, allianceA.ID).Scan(&got); err != nil {
+		t.Fatalf("reading back A's member_count: %v", err)
+	}
+	if got != 97 {
+		t.Fatalf("A's member_count after switching to B and back = %d, want 97 (preserved, not zeroed by the bug fix-round-1 caught)", got)
+	}
+}
+
 // show against the row set actually wrote — the two subcommands driven
 // together through a real database, the way an operator would use them.
 func TestAllianceShowAgainstARealDatabasePrintsWhatSetWrote(t *testing.T) {
