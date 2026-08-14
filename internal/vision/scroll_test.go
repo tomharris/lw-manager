@@ -288,6 +288,16 @@ func TestScrollOffsetRefusesBeyondEveryProbesReach(t *testing.T) {
 	if !errors.Is(err, ErrOffsetUncertain) {
 		t.Fatalf("got %v, want ErrOffsetUncertain", err)
 	}
+	// The message must name disagreement (or reach), never a score: task 26
+	// lowered offsetMinScore below the real VS range, so this refusal can no
+	// longer be riding on the score check without anyone noticing. Measured
+	// directly against this fixture (see task report): the candidate here
+	// disagrees with both other admissible probes, exactly as the real
+	// handset over-swipe pair did (757/629/502, a 255px spread against a 0-2px
+	// spread on real pairs).
+	if !strings.Contains(err.Error(), "disagreed") {
+		t.Fatalf("error %q does not name probe disagreement — with offsetMinScore lowered, this refusal must come from agreement or reach, not a coincidentally-low score", err.Error())
+	}
 }
 
 // TestScrollOffsetRefusesWhenCandidateHugsProbeZerosLimit isolates the
@@ -333,15 +343,24 @@ func TestScrollOffsetRefusesWhenCandidateHugsProbeZerosLimit(t *testing.T) {
 // probe, but whose own placement is a poor match, must still be refused.
 // corruptPixels stands in for whatever degrades a real crop without moving
 // it — motion blur, a compression artifact, a momentary overlay — by
-// overwriting 20% of probe 0's own source pixels in cur with independent
+// overwriting 45% of probe 0's own source pixels in cur with independent
 // noise; probe 1 and probe 2's own strips are untouched and still find and
 // agree on the true position, so this isolates the score check from
-// admissibility and agreement rather than conflating them. 20% depresses
-// probe 0's score to ~0.73, comfortably below offsetMinScore (0.75) without
-// approaching offsetMinVariance's flatness floor (noise raises variance, it
-// does not lower it). Deleting the score check in a scratch build and
-// re-running this test confirmed it then returns the correct offset instead
-// of refusing — see the task report for the exact output.
+// admissibility and agreement rather than conflating them.
+//
+// 45%, not the 20% this test used before task 26: measuring the real VS
+// screen (docs/superpowers/specs/evidence/m4-scrolloffset-2026-08-13/, plus
+// two handset runs' own error logs) found genuine, agreed-upon placements
+// scoring as low as 0.641 — below the old 0.75 floor, which is why
+// `vs_capture` could not complete a run. offsetMinScore moved down to clear
+// that (see its own doc comment), so 20% corruption's ~0.73 no longer
+// isolates anything: it now clears the floor and this test would pass
+// ScrollOffset instead of refusing it. 45% depresses the score to ~0.47,
+// comfortably below the new floor without approaching offsetMinVariance's
+// flatness floor (noise raises variance, it does not lower it). Deleting the
+// score check in a scratch build and re-running this test confirmed it then
+// returns the correct offset instead of refusing — see the task report for
+// the exact output.
 func TestScrollOffsetRefusesALowScoringPlacement(t *testing.T) {
 	const shift = 400
 	prev := listLatticeFrame(latticeW, latticeH, latticePitch, 0)
@@ -351,7 +370,7 @@ func TestScrollOffsetRefusesALowScoringPlacement(t *testing.T) {
 	regionBot := int(math.Round(latticeRegion.Y2 * float64(latticeH)))
 	stripH := int(offsetStripFrac * float64(regionBot-regionTop))
 	probe0Rect := image.Rect(0, regionTop, latticeW, regionTop+stripH)
-	corruptPixels(cur, probe0Rect, 20, 7)
+	corruptPixels(cur, probe0Rect, 45, 7)
 
 	_, err := ScrollOffset(prev, cur, latticeRegion)
 	if !errors.Is(err, ErrOffsetUncertain) {
@@ -359,6 +378,45 @@ func TestScrollOffsetRefusesALowScoringPlacement(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "scored") {
 		t.Fatalf("error %q does not name a score — this must be the score check, not a different refusal reaching the same sentinel", err.Error())
+	}
+}
+
+// TestScrollOffsetAcceptsTheWorstRealVSScore is task 26's core case:
+// `vs_capture` could not complete a run because offsetMinScore (0.75) was
+// calibrated on the roster and never checked against VS, whose own real
+// placements score lower. Two live handset runs each died in ScrollOffset —
+// "run 368 frame 4: probe 0's best placement scored 0.641, below 0.75" and
+// "run 369 frame 1: ... scored 0.748, below 0.75" — and both messages name
+// the score check specifically, meaning reach and agreement had already
+// passed: these were real, agreed-upon placements, not garbage that
+// happened to be caught by the wrong criterion.
+//
+// 27% corruption of probe 0's own strip (see corruptPixels) depresses its
+// score to ~0.647 at this fixture's real VS geometry (latticeRegion /
+// latticePitch reproduce the actual region and pitch exactly) — matching the
+// worse of those two live failures within the noise inherent in reproducing
+// a hand-measured number synthetically. Probes 1 and 2 are untouched and
+// still find and agree on shift=665, the real VS pair's own measured true
+// offset, so this isolates the score check exactly as
+// TestScrollOffsetRefusesALowScoringPlacement does — the only difference is
+// which side of the (now-lowered) floor the corrupted score lands on.
+func TestScrollOffsetAcceptsTheWorstRealVSScore(t *testing.T) {
+	const shift = 665
+	prev := listLatticeFrame(latticeW, latticeH, latticePitch, 0)
+	cur := listLatticeFrame(latticeW, latticeH, latticePitch, shift)
+
+	regionTop := int(math.Round(latticeRegion.Y1 * float64(latticeH)))
+	regionBot := int(math.Round(latticeRegion.Y2 * float64(latticeH)))
+	stripH := int(offsetStripFrac * float64(regionBot-regionTop))
+	probe0Rect := image.Rect(0, regionTop, latticeW, regionTop+stripH)
+	corruptPixels(cur, probe0Rect, 27, 7)
+
+	got, err := ScrollOffset(prev, cur, latticeRegion)
+	if err != nil {
+		t.Fatalf("ScrollOffset: %v — a real, agreed-upon VS placement at roughly the worst score actually observed on hardware must be accepted, not refused on score alone", err)
+	}
+	if got != shift {
+		t.Fatalf("offset = %d, want %d", got, shift)
 	}
 }
 

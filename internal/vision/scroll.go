@@ -24,21 +24,44 @@ const (
 	// offsetProbes is how many candidate strip positions are considered.
 	offsetProbes = 3
 	// offsetMinScore is the NCC below which probe 0's best placement is not
-	// believed. Measured on the handset, device run 365 (16 real frame
-	// pairs from a live roster_capture that reached frame 17, where every
-	// previous run had died at frame 1 — see docs/superpowers/specs/
-	// evidence/m4-scrolloffset-2026-08-13/): the worst real peak across
-	// those 16 pairs was 0.799, not the 0.827 an earlier, 5-pair sample
-	// suggested. 0.75 sits close to the midpoint between that 0.799 floor
-	// and the deliberate over-swipe's garbage peak (0.706), roughly 0.05
-	// either side. It is a backstop with real but modest headroom, NOT the
-	// primary defence — within a single frame pair a lattice decoy can
-	// outscore the true placement (0.86 against 0.83 was measured), so no
-	// absolute floor can separate a right answer from a wrong one on its
-	// own. The geometry check and probe agreement below do that work; this
-	// constant exists only to catch a placement so poor that nothing else
-	// could explain it.
-	offsetMinScore = 0.75
+	// believed — and, as of task 26, is deliberately no longer trying to be
+	// anything sharper than that.
+	//
+	// It was originally set at 0.75, calibrated on device run 365's 16 real
+	// roster pairs (worst real peak 0.799) sitting close to the midpoint
+	// against the roster's own over-swipe garbage peak (0.706), and then
+	// applied to VS without ever being checked against VS — which is why
+	// `vs_capture` could not complete a run: two live handset runs each died
+	// here, "run 368 frame 4: ... scored 0.641, below 0.75" and "run 369
+	// frame 1: ... scored 0.748, below 0.75". Both messages name the score
+	// check specifically, meaning reach and agreement had already passed —
+	// these were real, agreed-upon placements, not garbage that slipped past
+	// the wrong criterion.
+	//
+	// Measuring the full VS distribution (docs/superpowers/specs/evidence/
+	// m4-scrolloffset-2026-08-13/, plus device runs 368/369's own error
+	// text) found six real VS observations ranging 0.641-0.884 — genuinely
+	// lower than the roster's 0.799-0.907, not a fluke of two bad frames.
+	// And VS's own over-swipe garbage peak (0.702, rejected by the reach
+	// check before score is ever consulted — see ScrollOffset's doc comment)
+	// sits *above* VS's own real minimum (0.641). That is the same overlap
+	// that got offsetMinMargin deleted rather than tuned: a threshold with
+	// real values on both sides of it discriminates nothing, at any value.
+	// No single number can separate "correct" from "garbage" on VS, and
+	// unlike the margin check there is no cliff-edge fix available here
+	// either — VS's real range and its garbage range are not merely close,
+	// they overlap outright.
+	//
+	// So this constant has stopped doing discrimination work and started
+	// doing only backstop work: 0.5 is comfortably below every real
+	// observation measured on either screen (0.641 the tightest, ~0.14 of
+	// margin) while still refusing a placement so poor nothing else could
+	// explain it — near-zero or negative correlation, the signature of
+	// comparing genuinely unrelated content rather than a slightly weak
+	// match on the right one. The geometry check and probe agreement below
+	// are what actually do the discriminating, on both screens; this
+	// constant no longer claims to.
+	offsetMinScore = 0.5
 	// offsetAgreeTol is how many pixels apart two probes' argmax may be and
 	// still count as agreeing. Across the same 16 real pairs the three
 	// probes' argmax spread by 0-2px in every pair — probes 0 and 1 were
