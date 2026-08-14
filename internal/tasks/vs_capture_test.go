@@ -86,6 +86,14 @@ const vsStripePeriod = 419
 // the same present-iff-drawn, static-elsewhere shape rosterBaseFrame uses,
 // but shiftable so one frame builder can serve both the at-rest tests and
 // the scrolling one.
+//
+// The row content used to be v = (yy/3*37) % 251 alone, the same degenerate
+// linear-ramp-in-disguise pattern rosterBaseFrame and scrollFrame had (see
+// rosterBaseFrame's comment for the mechanism and why it only became a
+// problem once ScrollOffset started asking for a margin, not just a peak).
+// Fixed the same way: a per-band marker column, keyed off the row band
+// after the period wraparound so it stays consistent with the pattern it
+// decorates.
 func vsBaseFrame(shift int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, vsFrameW, vsFrameH))
 	flat := color.RGBA{R: 100, G: 100, B: 100, A: 255}
@@ -96,11 +104,18 @@ func vsBaseFrame(shift int) *image.RGBA {
 	}
 	y0 := int(vsListRegion.Y1 * float64(vsFrameH))
 	y1 := int(vsListRegion.Y2 * float64(vsFrameH))
+	markerW := vsFrameW/7 + 1
 	for y := y0; y < y1; y++ {
 		yy := ((y+shift)%vsStripePeriod + vsStripePeriod) % vsStripePeriod
-		v := uint8((yy / 3 * 37) % 251)
+		band := yy / 3
+		v := uint8((band * 37) % 200) // capped below 255 so the marker always stands out
+		markerX := rand.New(rand.NewSource(int64(band))).Intn(vsFrameW)
 		for x := 0; x < vsFrameW; x++ {
-			img.Set(x, y, color.RGBA{R: v, G: v, B: uint8((x / 5 * 11) % 251), A: 255})
+			px := v
+			if x >= markerX && x < markerX+markerW {
+				px = 255
+			}
+			img.Set(x, y, color.RGBA{R: px, G: px, B: uint8((x / 5 * 11) % 251), A: 255})
 		}
 	}
 	return img

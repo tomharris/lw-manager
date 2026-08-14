@@ -58,13 +58,32 @@ type frameScript struct {
 // swipes dozens of times) never has to reason about an ever-larger pixel
 // value — only the delta between two consecutive cum values is ever
 // measured, and that delta is what each test controls via shift.
+//
+// The banding alone used to be the whole pattern (v as a function of yy/3
+// only), which — like internal/vision's stripedFrame before the same fix —
+// is a plain arithmetic sequence in the row-band index within any window
+// smaller than the mod-251 wraparound. NCC normalizes out a template's own
+// mean and scale, so that shape is indistinguishable from itself at every
+// offset sharing the same local slope, which is invisible to a threshold-only
+// check but fatal to ScrollOffset's margin check (see vision/scroll_test.go's
+// stripedFrame comment for the full mechanism). The per-band marker column
+// below is the same fix: its position is a pseudo-random function of the row
+// band, so no two bands within one period look alike and only the genuinely
+// aligned placement scores well.
 func scrollFrame(cum int) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, scrollFrameW, scrollFrameH))
+	markerW := scrollFrameW/7 + 1
 	for y := 0; y < scrollFrameH; y++ {
 		yy := ((y+cum)%scrollStripePeriod + scrollStripePeriod) % scrollStripePeriod
-		v := uint8((yy / 3 * 37) % 251)
+		band := yy / 3
+		v := uint8((band * 37) % 200) // capped below 255 so the marker always stands out
+		markerX := rand.New(rand.NewSource(int64(band))).Intn(scrollFrameW)
 		for x := 0; x < scrollFrameW; x++ {
-			img.Set(x, y, color.RGBA{R: v, G: v, B: uint8((x / 5 * 11) % 251), A: 255})
+			px := v
+			if x >= markerX && x < markerX+markerW {
+				px = 255
+			}
+			img.Set(x, y, color.RGBA{R: px, G: px, B: uint8((x / 5 * 11) % 251), A: 255})
 		}
 	}
 	drawScrollAnchor(img)
@@ -286,10 +305,24 @@ func TestScrollCaptureRetriesBeforeBelievingTheBottom(t *testing.T) {
 }
 
 func TestScrollCaptureFlagsAnOvershoot(t *testing.T) {
-	// An offset larger than the usable region means rows were never on screen.
-	// Recon proved this fires on the obvious gesture: 700px over 300ms moved
-	// ~1504px against a ~990px viewport.
-	rt, _ := newScrollHarness(t, []frameScript{{shift: 5000}})
+	// An offset larger than the usable region (76px: regionH 204 - Pitch 128)
+	// means rows were never on screen. Recon proved this fires on the obvious
+	// gesture: 700px over 300ms moved ~1504px against a ~990px viewport.
+	//
+	// shift must still land inside a range vision.ScrollOffset itself will
+	// confidently measure — this test is for scrollCapture's own
+	// offset > usable check, not for vision.ScrollOffset's refusal to answer
+	// at all. A genuinely enormous overshoot (a swipe that outruns every
+	// probe's own reach, this region's being at most 180px) is now caught by
+	// ScrollOffset first, as ErrOffsetUncertain rather than a confidently
+	// wrong number — which is the fix this whole task exists to make, and is
+	// exercised directly in internal/vision/scroll_test.go
+	// (TestScrollOffsetRefusesBeyondEveryProbesReach) rather than here. 100px
+	// sits above usable (76px) but comfortably inside probe 0's own
+	// measurable range, so this test still isolates the specific behaviour
+	// it names: a real, trusted measurement that scrollCapture itself judges
+	// too large for the region.
+	rt, _ := newScrollHarness(t, []frameScript{{shift: 100}})
 
 	_, complete, err := scrollCapture(context.Background(), rt, ScrollSpec{
 		Screen: "vs_ranking_alliance",

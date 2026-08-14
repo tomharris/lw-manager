@@ -78,6 +78,18 @@ func stampPatch(img *image.RGBA, region transport.Rect, seed int) {
 // header anchor scores near zero against its template — the same
 // present-iff-drawn property runtimetest's grid gives every cell — rather
 // than however it happens to correlate with striped noise.
+//
+// The row content used to be v = (y/3*37) % 251 alone: a plain arithmetic
+// sequence in the row-band index within any window smaller than the mod-251
+// wraparound, which NCC cannot tell apart from itself at another position
+// sharing the same local slope (see internal/vision/scroll_test.go's
+// stripedFrame comment for the mechanism). That was invisible while
+// ScrollOffset only asked for the best-scoring placement, but every one of
+// this list's frames here is the same static image repeated seven times —
+// exactly the "still list, offset 0" case — and ScrollOffset's margin check
+// now also asks whether that placement is the *only* good one. A per-band
+// marker column, matching the fix already made to scrollFrame in
+// scrollcapture_test.go, is what answers that.
 func rosterBaseFrame() *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, rosterFrameW, rosterFrameH))
 	flat := color.RGBA{R: 100, G: 100, B: 100, A: 255}
@@ -88,10 +100,17 @@ func rosterBaseFrame() *image.RGBA {
 	}
 	y0 := int(memberListRegion.Y1 * float64(rosterFrameH))
 	y1 := int(memberListRegion.Y2 * float64(rosterFrameH))
+	markerW := rosterFrameW/7 + 1
 	for y := y0; y < y1; y++ {
-		v := uint8((y / 3 * 37) % 251)
+		band := y / 3
+		v := uint8((band * 37) % 200) // capped below 255 so the marker always stands out
+		markerX := rand.New(rand.NewSource(int64(band))).Intn(rosterFrameW)
 		for x := 0; x < rosterFrameW; x++ {
-			img.Set(x, y, color.RGBA{R: v, G: v, B: uint8((x / 5 * 11) % 251), A: 255})
+			px := v
+			if x >= markerX && x < markerX+markerW {
+				px = 255
+			}
+			img.Set(x, y, color.RGBA{R: px, G: px, B: uint8((x / 5 * 11) % 251), A: 255})
 		}
 	}
 	return img
