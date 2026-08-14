@@ -16,6 +16,21 @@ import (
 // superset of what a correct read is built from at all". That property holds
 // or fails independent of any particular OCR run, which is what makes it the
 // thing worth asserting here rather than only in a measurement report.
+//
+// The fix-round review (finding C1) sharpened this rule once: the superset
+// property is necessary but not sufficient, because it only reasons about
+// the *text* a correct read produces, not about what else the *crop* can
+// contain. vsPointsSpec's charset ("0123456789,") was a superset of every
+// character "101,286,241" is built from, exactly like levelSpec and
+// lastActiveSpec below -- and it still laundered, because its crop sits
+// against the alliance-name line and can catch that content on a misaligned
+// band, which the charset then has nowhere honest to put and reclassifies as
+// digits instead. levelSpec and lastActiveSpec's crops do not have another
+// field's content available to bleed in the same way (see their own
+// comments in roster.go for the field-specific reasoning); that is the part
+// of "safe" this file's superset check cannot see on its own, which is why
+// TestVSPointsSpecHasNoCharset below exists to lock in the correction rather
+// than assert the same style of property vsPointsSpec used to pass.
 
 // charsetSupersetOfSamples fails the test if any character in any sample
 // string is missing from charset. samples should be strings a correct read
@@ -43,11 +58,22 @@ func charsetSupersetOfSamples(t *testing.T, fieldName, charset string, samples [
 // TestLevelCharsetCannotLaunderACorrectRead is the "why", not just the value,
 // for keeping levelSpec's whitelist: every character a correct level read is
 // built from -- "L", "v", ".", and digits -- is already in "Lv.0123456789",
-// so the whitelist has no correct-read character available to strip. Task
-// 23's own measurement (roster.go's levelSpec doc comment) found 0/53
-// disagreements between whitelisted and unconstrained parses across real
-// capture-1 rows, which is the value-level confirmation of this same
-// structural property.
+// so the whitelist has no correct-read character available to strip.
+//
+// The real value-level basis (fix-round correction: an earlier draft of this
+// comment cited "0/53 disagreements between whitelisted and unconstrained
+// parses" as if that were reassuring; it is not, because 0/53 unconstrained
+// level reads parse at all, so there was no row on which the two conditions
+// *could* disagree, and the whitelist does 100% of this field's parsing).
+// The actual basis, from roster.go's levelSpec comment: in every one of the
+// 6/53 rows the whitelist did rescue, the raw unconstrained text already
+// carried the correct digits ("Lyi34"->"Lv34", "Evi35"->"Lv35") -- the
+// whitelist only ever repaired the "L"/"v" glyphs, never the digits that
+// determine the parsed value. A cross-field probe (this charset run over the
+// 53 power and last-active crops instead) fabricated no "Lv##" out of either
+// field's content, which is the direct check against the C1 failure mode
+// (see this file's header comment) rather than an argument for why it
+// shouldn't happen.
 // The samples are deliberately restricted to strings this field's OCR could
 // actually produce under the charset -- capital "L", lowercase "v", exactly
 // as "Lv.0123456789" spells them -- not every spelling ParseLevel's own
@@ -81,21 +107,61 @@ func TestLastActiveCharsetCannotLaunderACorrectRead(t *testing.T) {
 	charsetSupersetOfSamples(t, "lastActiveSpec", lastActiveSpec.Charset, samples)
 }
 
-// TestVSPointsCharsetCannotLaunderACorrectRead: same property, for
-// vsPointsSpec in vs.go. A correct VS points read is plain digits and commas
-// ("101,286,241"), both already in "0123456789,". Measured value-level effect
-// (vsPointsSpec's doc comment in vs.go): the whitelist recovered 14/15 real
-// rows that failed unconstrained (a leading OCR artifact like "— " or "aoc "
-// the whitelist correctly stripped), and every recovered digit sequence
-// matched the row's real value -- none was laundered into a different one.
-func TestVSPointsCharsetCannotLaunderACorrectRead(t *testing.T) {
-	samples := []string{"45,048,150", "16,831,113", "0", "1,524,375", "101,286,241"}
-	for _, s := range samples {
-		if _, err := ParsePoints(s); err != nil {
-			t.Fatalf("test fixture %q is not actually a correct ParsePoints read: %v", s, err)
+// TestVSPointsSpecHasNoCharset locks in the fix-round correction (finding
+// C1): vsPointsSpec used to carry "0123456789," on the strength of the same
+// superset argument that keeps levelSpec and lastActiveSpec below, and that
+// argument was insufficient here -- see this file's header comment and
+// vsPointsSpec's own doc comment in vs.go for why. Measured directly: 6 of
+// 11 real bands cut from a committed VS frame produced a parseable number
+// out of text that was not a number, once the whitelist was applied; 0 of
+// those failed safely without it. Mirrors TestPowerSpecHasNoCharset.
+func TestVSPointsSpecHasNoCharset(t *testing.T) {
+	if vsPointsSpec.Charset != "" {
+		t.Errorf("vsPointsSpec.Charset = %q, want empty -- see vsPointsSpec's doc comment in vs.go "+
+			"before restoring one: a charset here was measured manufacturing a parseable number "+
+			"out of non-number text on 6 of 11 real VS rows (task 23 fix-round finding C1)",
+			vsPointsSpec.Charset)
+	}
+}
+
+// TestParsePointsRejectsRealMisreads uses the exact raw OCR strings the
+// fix-round review measured from real, misaligned VS points crops (finding
+// C1) -- unconstrained text task 23's own re-audit reproduced independently
+// against a different band of the same frame (see the task report). None of
+// these are a points read at all (two rows' worth of name/points text
+// bleeding together), so all six must route to review.
+func TestParsePointsRejectsRealMisreads(t *testing.T) {
+	for _, in := range []string{
+		"24959 n459 3473", "2449 3\" 743 £70", "44357 OGLE WEF.",
+		"ia 30k JIS", "ni7 Fost nai", "Ox 377 1049",
+	} {
+		if _, err := ParsePoints(in); !errors.Is(err, ErrUnparseable) {
+			t.Errorf("ParsePoints(%q) did not route to review, want ErrUnparseable", in)
 		}
 	}
-	charsetSupersetOfSamples(t, "vsPointsSpec", vsPointsSpec.Charset, samples)
+}
+
+// TestParsePointsRejectsTheWhitelistLaunderedShapes is points' version of
+// TestParsePowerRejectsDecimalLessValues: the exact strings vsPointsSpec's
+// former charset whitelist produced from the misread crops above --
+// "24959 n459 3473" became "249594593473", and so on. pointsRe's comma-
+// grouping requirement (see its own doc comment in parse.go) is
+// defense-in-depth against these reappearing by some other route, same as
+// powerRe's mandatory decimal is for power, and with the same kind of gap:
+// it catches every multi-group fabrication here, but a garbage read that
+// happens to collapse to three or fewer digits -- "ni7 Fost nai" laundered
+// to a bare "7" -- still satisfies the single-group case structurally, the
+// same shape of survivor "36.0M" is for powerRe (see ParsePower's doc
+// comment). That case is intentionally not asserted here as a rejection;
+// asserting it would misstate what this check buys.
+func TestParsePointsRejectsTheWhitelistLaunderedShapes(t *testing.T) {
+	for _, in := range []string{
+		"249594593473", "2449374370", "44357", "3074", "73771049",
+	} {
+		if _, err := ParsePoints(in); !errors.Is(err, ErrUnparseable) {
+			t.Errorf("ParsePoints(%q) did not reject an ungrouped multi-digit run, want ErrUnparseable", in)
+		}
+	}
 }
 
 // TestPowerSpecHasNoCharset locks in task 23's fix against exactly the

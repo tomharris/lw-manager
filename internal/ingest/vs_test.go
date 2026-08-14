@@ -104,6 +104,34 @@ func vsFrame(nRows int) image.Image {
 	return cardFrame(200, imgH, top, vsRowPitch-12, 12, nRows)
 }
 
+// commaGroup formats n the way this UI actually renders VS points — comma
+// grouped, e.g. 90000000 -> "90,000,000" — rather than the bare digit run
+// strconv.Itoa would give. It exists because pointsRe no longer accepts an
+// ungrouped run of more than three digits (task 23 fix-round finding C1: an
+// ungrouped run is exactly the shape a laundered read takes, so a real
+// fixture must not look like one). Every real points value this package's
+// measurement ever observed was comma grouped (evidence Finding 3 and task
+// 23's own re-audit); a fixture using strconv.Itoa was testing a shape that
+// does not occur on real pixels.
+func commaGroup(n int) string {
+	s := strconv.Itoa(n)
+	neg := strings.HasPrefix(s, "-")
+	if neg {
+		s = s[1:]
+	}
+	var groups []string
+	for len(s) > 3 {
+		groups = append([]string{s[len(s)-3:]}, groups...)
+		s = s[:len(s)-3]
+	}
+	groups = append([]string{s}, groups...)
+	out := strings.Join(groups, ",")
+	if neg {
+		out = "-" + out
+	}
+	return out
+}
+
 // vsFixture describes one IngestVS scenario in terms of the roster and the
 // rows a single synthetic frame should carry.
 type vsFixture struct {
@@ -150,16 +178,16 @@ func newVSIngestHarness(t *testing.T, fx vsFixture) *vsIngestHarness {
 	for k := 1; k <= matched; k++ {
 		rows = append(rows, row{
 			name:   fmt.Sprintf("Member%02d", k),
-			points: strconv.Itoa(90000000 - k*100000),
+			points: commaGroup(90000000 - k*100000),
 		})
 	}
 	// Rows beyond the roster size cannot possibly match a real member —
 	// used by the "never creates a member" test.
 	for k := matched; k < fx.rankedRows; k++ {
-		rows = append(rows, row{name: "ZzUnrecognizedGhostRow99", points: "1000000"})
+		rows = append(rows, row{name: "ZzUnrecognizedGhostRow99", points: commaGroup(1000000)})
 	}
 	if fx.duplicateSelfRow {
-		rows = append(rows, row{name: "Member01", points: "5000000"})
+		rows = append(rows, row{name: "Member01", points: commaGroup(5000000)})
 	}
 
 	h.addFrame(vsFrame(len(rows)), 0)

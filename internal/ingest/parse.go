@@ -16,25 +16,55 @@ var ErrUnparseable = errors.New("ingest: field could not be parsed")
 
 // powerRe requires the decimal point, deliberately, where the shape a naive
 // reading of the UI suggests ("208M" looks like a fine abbreviation) is
-// exactly the shape task 23's audit found dangerous. Every power value on
-// both screens is rendered with exactly one decimal place -- 212.1M, 290.0M,
-// 218.7M, 155.7M, confirmed across every real row measured, both in the
-// evidence corpus and in task 23's own re-measurement of 53 real member rows
-// from capture 1 (docs/superpowers/specs/evidence/m4-ocr-2026-08-14). A
-// decimal-less K/M/B value is therefore not a rarer-but-valid render, it is
-// a corrupted one: it was either misread outright, or (before this task)
-// produced by a charset whitelist that recognized digits where the true
-// pixels were the decimal point and a following digit, off by roughly 10x.
-// Making the decimal mandatory turns that shape back into ErrUnparseable --
-// routed to review, per invariant #5 -- rather than a plausible-looking
-// fact. See ParsePower's own doc comment for the measurement that justified
-// this, and TestParsePowerRejectsTheWhitelistLaunderedShape for the
-// regression it closes.
+// exactly the shape task 23's audit found dangerous. Every power value
+// *measured* is rendered with exactly one decimal place -- 212.1M, 290.0M,
+// 218.7M, 155.7M -- across every real row task 23 sampled (53 rows, capture
+// 1) and every example in the evidence corpus, but that sample is narrower
+// than the field: every row measured falls in a single 164M-290M band, all
+// M-suffixed (no K, no B), and R1 -- 12 members, the alliance's own smallest
+// group and the one likeliest to hold a K-suffixed or sub-100M value --
+// never appears in capture 1 at all. ParsePower's own doc comment ("at most
+// four significant figures") implies a value below 100M would legitimately
+// carry *two* decimals (21.75M), which this regex would reject. So this is a
+// premise bounded by what has been measured, not a rule proven for the whole
+// field: today's quantified loss from it is 0 of 53 real rows, the failure
+// direction is safe (ErrUnparseable routes to review, never a silent drop),
+// and a capture that finally includes R1 -- or any K/B-suffixed row -- is
+// the test that would actually settle whether two-decimal sub-100M values
+// exist on this UI. A decimal-less K/M/B value is not a rarer-but-valid
+// render *within the measured band*: it was either misread outright, or
+// (before this task) produced by a charset whitelist that recognized digits
+// where the true pixels were the decimal point and a following digit, off
+// by roughly 10x. See ParsePower's own doc comment for that measurement and
+// for how much protection this regex actually buys on its own (less than
+// "independent guard" implies -- see the note there), and
+// TestParsePowerRejectsTheWhitelistLaunderedShape for the regression it
+// closes.
 var (
-	powerRe  = regexp.MustCompile(`^[0-9]+\.[0-9][KMB]$`)
-	levelRe  = regexp.MustCompile(`^(?:lv\.?|lv\s)?\s*([0-9]+)\s*$`)
-	agoRe    = regexp.MustCompile(`^([0-9]+)\s*([hmd])\s*(ago)?$`)
-	pointsRe = regexp.MustCompile(`^(?:[0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)$`)
+	powerRe = regexp.MustCompile(`^[0-9]+\.[0-9][KMB]$`)
+	levelRe = regexp.MustCompile(`^(?:lv\.?|lv\s)?\s*([0-9]+)\s*$`)
+	agoRe   = regexp.MustCompile(`^([0-9]+)\s*([hmd])\s*(ago)?$`)
+
+	// pointsRe requires comma grouping for anything longer than three digits
+	// -- it used to also accept a bare, ungrouped digit run of any length
+	// (`|[0-9]+`), which is exactly the shape vsPointsSpec's former charset
+	// whitelist laundered garbage into (task 23 fix-round finding C1): a
+	// real crop reading "7c 3240 7604" unconstrained -- correctly failing to
+	// parse -- became "3732407604" once the whitelist forced tesseract's
+	// classifier to reclassify every glyph as a digit, and the old bare
+	// branch accepted a 10-digit run with no comma exactly like that without
+	// complaint. Every real VS points value on screen is comma-grouped
+	// (Finding 3: 101,286,241; this task's own measurement: 92,334,341 and
+	// others), so an ungrouped run of more than three digits is exactly as
+	// suspicious here as a decimal-less power value is in powerRe above.
+	// This is not a complete guard: a garbage read that happens to collapse
+	// to three or fewer digits (a bare "7", say) still satisfies the first
+	// group alone, the same shape of gap powerRe's decimal check has against
+	// "36.0M" (see ParsePower's doc comment) -- but it closes every
+	// multi-group fabrication the review measured. See ParsePoints' own doc
+	// comment and vsPointsSpec in vs.go for why the whitelist was removed
+	// rather than kept alongside this.
+	pointsRe = regexp.MustCompile(`^[0-9]{1,3}(?:,[0-9]{3})*$`)
 
 	// groupHeaderCountRe finds an "N/M" token anywhere in a sticky group
 	// header's raw OCR text -- unanchored, deliberately, unlike every other
@@ -60,20 +90,44 @@ var (
 // row's raw text -- "Power: 218.7M", which OCRs unconstrained as something
 // like "Power:je18°7M" and correctly fails this regex -- into "1877M",
 // which parsed cleanly to 1,877,000,000 against a true value of 218,700,000:
-// wrong by 8.6x, with nothing downstream able to tell it from a good read.
-// Constraining tesseract's classifier to a charset does not just filter the
-// text it already recognized; it changes which glyph each blob is
-// classified as, and the decimal point -- a single small blob -- was the
-// first casualty on 33 of 53 real rows measured, even though "." is itself
-// in that charset. Removing the whitelist alone fixed 0/53 false accepts in
-// that same measurement (every unconstrained read either parsed correctly or
-// failed this regex), which is why the whitelist is gone from powerSpec
-// entirely (see roster.go) rather than merely narrowed. This regex is the
-// second, independent guard: even a decimal-less value that reaches
-// ParsePower by some other route (a different OCR path, a whitelist
-// "helpfully" re-added later, a hand-built fixture) must still fail rather
-// than silently parse, because CLAUDE.md invariant #5 does not get to
-// depend on which caller produced the string.
+// wrong by 8.6x. (Finding 7 called this "a confident wrong fact"; it was
+// not, quite -- see the fix-round correction below.) Constraining
+// tesseract's classifier to a charset does not just filter the text it
+// already recognized; it changes which glyph each blob is classified as,
+// and the decimal point -- a single small blob -- was the first casualty on
+// 33 of 53 real rows measured, even though "." is itself in that charset.
+// Removing the whitelist alone fixed 0/53 false accepts in that same
+// measurement (every unconstrained read either parsed correctly or failed
+// this regex), which is why the whitelist is gone from powerSpec entirely
+// (see roster.go) rather than merely narrowed.
+//
+// Impact, corrected: every one of those 33 laundered reads scored OCR
+// confidence 0.00 under the shipped Options (task 23's fix-round
+// re-measurement), so factConfidenceGate would have queued all of them as
+// low_confidence_power rather than writing a fact -- participation_facts
+// held zero power rows before this fix, and none of the 33 reached a
+// leaderboard. The defect was real regardless: ParsePower called a
+// laundered string well-formed, so a human landed on "1877M" in the review
+// queue rather than the visibly-broken "Power:je18°7M" it actually came
+// from, and a future confidence improvement on this field's OCR would have
+// had nothing left to catch a wrong value once it started scoring above
+// 0.80. Neither of those is "corrupted the facts table"; both are still
+// worth fixing, which is why the regex is tightened regardless of what
+// currently gates it.
+//
+// This regex is a second guard, not an independent one: measured with the
+// whitelist hypothetically restored, 3 of 53 whitelisted reads still
+// satisfy this tightened pattern, and one of them is wrong --
+// `frame_50_power_row4` reads "36.0M" against a true 236.0M (a lost leading
+// digit, task 21's own ground truth), 6.6x off in a well-formed,
+// decimal-bearing string this regex cannot distinguish from a correct read.
+// So against a re-added whitelist this catches 30 of 33, not 33 of 33: the
+// whitelist's removal is doing the real work, and this check is
+// defense-in-depth against a decimal-less value reaching ParsePower by some
+// other route (a different OCR path, a whitelist "helpfully" re-added
+// later, a hand-built fixture) -- worth having, not sufficient on its own,
+// because CLAUDE.md invariant #5 does not get to depend on which caller
+// produced the string.
 func ParsePower(s string) (int64, error) {
 	// Strip optional "Power:" label and surrounding whitespace
 	t := strings.TrimSpace(s)
@@ -177,13 +231,30 @@ func ParseLastActiveHours(s string) (float64, error) {
 //
 // An unparseable field returns ErrUnparseable so the row routes to review
 // instead of contributing a confident wrong number to a leaderboard.
+//
+// pointsRe requires comma grouping, not a bare digit run of any length --
+// task 23's fix-round review (finding C1) measured vsPointsSpec's former
+// charset whitelist ("0123456789,") manufacturing a parseable number out of
+// crops that were not a points read at all, on 6 of 11 real bands cut from a
+// committed VS frame: a crop straddling two rows, reading "7c 3240 7604"
+// unconstrained (correctly failing to parse), became "3732407604" once the
+// whitelist forced every glyph into a digit. The old bare-`[0-9]+` branch
+// accepted that outright. The whitelist is gone (see vsPointsSpec in vs.go
+// for why "the charset is a superset of a correct read" was not, by itself,
+// a safe argument here), and this regex is the same defense-in-depth
+// powerRe's decimal requirement is for power: not sufficient alone -- a
+// garbage read that happens to collapse to three or fewer digits still
+// satisfies the ungrouped first group -- but it closes every multi-group
+// fabrication measured, including the largest one (249,594,593,473 from
+// "24959 n459 3473").
 func ParsePoints(s string) (int64, error) {
 	t := strings.TrimSpace(s)
 	if t == "" {
 		return 0, fmt.Errorf("ingest: points %q: %w", s, ErrUnparseable)
 	}
 
-	// Validate shape: either a plain number or comma-separated thousands
+	// Validate shape: comma-grouped digits only -- see pointsRe's own doc
+	// comment for why a bare, ungrouped run is no longer accepted.
 	if !pointsRe.MatchString(t) {
 		return 0, fmt.Errorf("ingest: points %q: %w", s, ErrUnparseable)
 	}

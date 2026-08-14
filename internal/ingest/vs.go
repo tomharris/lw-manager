@@ -52,23 +52,32 @@ const (
 // is the floor actually applied, against each field's blended (name-match x
 // OCR) confidence.
 //
-// vsPointsSpec's charset is kept, on the same structural grounds as
-// roster.go's levelSpec/lastActiveSpec (task 23's audit): a correct read of
-// this field ("101,286,241") is built entirely from digits and commas, both
-// already in "0123456789,", so the whitelist cannot strip anything a correct
-// read would contain. Measured against 15 real VS rows (the committed
-// m4-scrolloffset-2026-08-13 frames), the unconstrained read failed 14/15 --
-// every row but one carried a leading OCR artifact ("— 113,955,154",
-// "aoc 92,730,191") that the whitelist correctly stripped, and every one of
-// those 14 recovered digit sequences matched the row's real value exactly
-// (including 101,286,241, reproducing evidence Finding 3's own reading of
-// this same field). Zero rows changed value between the two reads; the
-// whitelist only ever turned a safe failure into the same correct number,
-// never into a different, wrong one -- the opposite of what powerSpec's
-// whitelist did.
+// vsPointsSpec carries no Charset. Task 23's first pass kept "0123456789,"
+// here, reasoning that the charset is a superset of what a correct read
+// ("101,286,241") is built from -- true, but not sufficient, and the
+// fix-round review (finding C1) caught what that reasoning missed: the
+// *crop* is not always a correct read. This field's crop sits next to the
+// alliance-name line, and on a misaligned or row-straddling band it catches
+// fragments of neighboring text and digits together -- e.g. a real crop
+// reading "7c 3240 7604" unconstrained (which correctly fails to parse).
+// With the whitelist applied to that same crop, tesseract's classifier does
+// not just drop the letters, it reclassifies the whole blob into a run of
+// digits with none of them left to signal that anything was wrong --
+// "3732407604" -- which the old pointsRe's bare-digit-run branch accepted
+// outright. The review measured this directly against real pixels: 6 of 11
+// bands cut from a committed VS frame produced a parseable number out of
+// text that was not a number at all, with values ranging from a plausible
+// 5-digit read (44,357 from "44357 OGLE WEF.") to an 12-digit fabrication
+// (249,594,593,473 from "24959 n459 3473"). This is the same mechanism
+// powerSpec's whitelist had, on the field the M4 gate is actually built
+// around (evidence Finding 3) -- see powerSpec's comment in roster.go for
+// why "the charset only contains characters a correct read has" was never
+// the whole safety argument. Removing it means a row whose crop catches
+// neighboring content fails safely to review instead of manufacturing a
+// number, matching how power now behaves.
 var (
 	vsNameSpec   = ocr.Spec{MinConf: 0.4}
-	vsPointsSpec = ocr.Spec{Charset: "0123456789,", MinConf: 0.6}
+	vsPointsSpec = ocr.Spec{MinConf: 0.6}
 )
 
 // vsNameOptions and vsPointsOptions: grayscale + upscale(3), measured against
