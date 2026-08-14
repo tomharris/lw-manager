@@ -3,10 +3,12 @@ package ingest
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -194,6 +196,27 @@ func TestIngestVSWritesZeroesOnlyForACompleteCapture(t *testing.T) {
 	}
 	if res.Zeroed != 2 {
 		t.Errorf("zeroed %d, want 2 — 96 members less 94 ranked", res.Zeroed)
+	}
+}
+
+// `control ingest` routes vs_ranking captures through IngestVS the same way
+// it routes roster captures through IngestRoster, so a fresh deployment hits
+// the identical CurrentAllianceID ErrNotFound dead end here — see
+// roster_test.go's TestIngestRosterNamesTheFixWhenNoAllianceHasEverBeenSet
+// for the full reasoning; this is that same fix, applied to the other route.
+func TestIngestVSNamesTheFixWhenNoAllianceHasEverBeenSet(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	h.store.currentAllianceErr = fmt.Errorf("db: current alliance: %w", db.ErrNotFound)
+
+	_, err := h.IngestVS(context.Background(), 1, "2026-W33")
+	if err == nil {
+		t.Fatal("IngestVS: want an error when no alliance has ever been observed, got nil")
+	}
+	if !errors.Is(err, db.ErrNotFound) {
+		t.Fatalf("IngestVS error = %v, want it to still wrap db.ErrNotFound via %%w", err)
+	}
+	if !strings.Contains(err.Error(), "control alliance set") {
+		t.Fatalf("IngestVS error = %q, want it to name `control alliance set` as the fix", err.Error())
 	}
 }
 

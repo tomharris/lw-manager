@@ -101,9 +101,12 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 		return VSResult{}, fmt.Errorf("ingest: loading frames for capture %d: %w", captureID, err)
 	}
 
+	// See roster.go's IngestRoster for why this wrap names `control alliance
+	// set` rather than passing CurrentAllianceID's bare ErrNotFound through:
+	// the same fresh-deployment dead end, reached by the other ingest route.
 	allianceID, err := i.store.CurrentAllianceID(ctx)
 	if err != nil {
-		return VSResult{}, fmt.Errorf("ingest: resolving current alliance: %w", err)
+		return VSResult{}, fmt.Errorf("ingest: resolving current alliance (run `control alliance set --tag <tag> --name <name>` first): %w", err)
 	}
 	dbMembers, err := i.store.ListMembers(ctx, allianceID)
 	if err != nil {
