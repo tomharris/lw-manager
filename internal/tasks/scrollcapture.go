@@ -137,6 +137,20 @@ func scrollCapture(ctx context.Context, rt *runtime.Ctx, spec ScrollSpec) ([]Scr
 		}
 		offset, err := vision.ScrollOffset(prev, cur, spec.Region)
 		if err != nil {
+			// No retry here, considered and rejected: task 26 investigated
+			// exactly this failure (two real vs_capture runs died on this
+			// line) and found it was not a transient bad frame. Both errors
+			// named the score check specifically, meaning reach and
+			// agreement — the checks that actually catch a bad frame, an
+			// animation, or a mid-scroll capture — had already passed; the
+			// candidate was a real, agreed-upon placement that a
+			// miscalibrated offsetMinScore rejected anyway. Re-capturing and
+			// re-measuring the same static list content would have scored
+			// about the same and failed again. The fix was recalibrating
+			// vision.ScrollOffset's floor (see its doc comment), not
+			// retrying around it — a retry would have cost time without
+			// fixing anything, and would have hidden the real defect behind
+			// an occasional extra pass.
 			return frames, false, fmt.Errorf("tasks: measuring scroll frame %d on %s: %w", seq, spec.Screen, err)
 		}
 
