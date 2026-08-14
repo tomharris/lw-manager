@@ -102,3 +102,45 @@ inspected rather than inferred:
 go test -tags scrolldiag ./internal/vision -run TestPreprocProbe -v -args \
   -ppin <frame.png> -ppout /tmp/out.png -ppy1 0.404 -ppy2 0.438
 ```
+
+## Finding 4a: the rank badge IS tractable by NCC — measured
+
+Since OCR cannot read the badge, the question is whether template matching can.
+Measured on real frames, cropping three candidate regions from the
+all-collapsed header stack (evidence frame 06) and cross-correlating the four
+ranks against each other:
+
+| crop | size | var(R4) | worst cross-rank NCC |
+|---|---|---|---|
+| full badge | 46×47 | 4,214,157 | 0.870 |
+| text `R4` | 33×22 | 1,763,753 | 0.807 |
+| **digit only** | **18×22** | **951,026** | **0.680** |
+
+Digit-only separates best, which is the opposite of the instinct to crop
+generously: the shield is identical across ranks, so including it adds
+correlation that is shared by every impostor. Its variance is ~2,400 per pixel
+(stddev ≈ 49), comfortably clear of the near-degenerate band CLAUDE.md warns
+about.
+
+**Cross-capture, which is the only test that means anything** — templates cut
+from one capture, probed against sticky headers in a different one:
+
+| probe | best match | score | gap over runner-up |
+|---|---|---|---|
+| frame 00 | R4 | 1.000 | +0.534 |
+| frames 01/03/07/12 | R3 | 0.657 | +0.308 |
+
+The correct rank wins every time, but at **0.657**, not near 1.0. So the
+acceptance rule must be **argmax across the templates with a required gap over
+the runner-up**, not an absolute score threshold — the same conclusion the
+scroll-offset work reached, for the same reason: real variation depresses the
+absolute score while leaving separation intact.
+
+Frames 01, 03, 07 and 12 scored identically to three decimals, because the
+sticky header is pinned to the same pixels in all of them. That is a third
+independent confirmation of the pinning measurement.
+
+**Limitation, stated rather than assumed:** only R3 and R4 have cross-capture
+probes here. R1 and R2 were cross-correlated only within a single frame, so
+their real-world separation is inferred, not measured. A capture that expands
+those groups would settle it.
