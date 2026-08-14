@@ -49,14 +49,15 @@ var chevronSettle = 900 * time.Millisecond
 //
 // Y1 was 0.42 (y=672 of a 1600px frame), which sits inside the sticky
 // rank-group header ("R3 Footloose 15/64", pinned in place while rows scroll
-// underneath it): five scrolled frames of the same burst put that header's
-// bar at y=650..697 by eye, every one agreeing to within a pixel. 0.44
-// (y=704) clears the header's own bottom edge by 7px rather than cutting
-// through it — internal/ingest/roster.go's groupHeaderRegion is measured
-// from the same frames and the two constants are consistent by that
-// measurement, not by assumption; see its doc comment. This measurably
-// helped ScrollOffset too: probe 0's margin on the same frame pair went
-// 0.056 -> 0.117 (docs/superpowers/specs/evidence/m4-scrolloffset-2026-08-13/).
+// underneath it): scanning the mean RGB across five separately scrolled
+// frames of the same burst for a sharp transition put that header's bar at
+// y=650..697, every frame agreeing to within a pixel. 0.44 (y=704) clears
+// the header's own bottom edge by 7px rather than cutting through it —
+// internal/ingest/roster.go's groupHeaderRegion is measured from the same
+// frames and the two constants are consistent by that measurement, not by
+// assumption; see its doc comment. This measurably helped ScrollOffset too:
+// probe 0's margin on the same frame pair went 0.056 -> 0.117
+// (docs/superpowers/specs/evidence/m4-scrolloffset-2026-08-13/).
 //
 // internal/ingest/roster.go duplicates this Rect rather than importing it —
 // see that file's own comment for why — so a further change here must move

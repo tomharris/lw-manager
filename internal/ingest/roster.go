@@ -27,23 +27,36 @@ import (
 // silently misalign every row (see the package doc on SegmentRows/offset_px
 // in the design). If the capture-side region ever moves, this constant must
 // move with it.
-var memberListRegion = transport.Rect{X1: 0.03, Y1: 0.42, X2: 0.97, Y2: 0.89}
+//
+// Y1 was 0.42 (y=672 of a 1600px frame), which sits inside the sticky
+// rank-group header rather than below it — see groupHeaderRegion below for
+// how that was measured and why 0.44 (y=704) is the corrected top.
+var memberListRegion = transport.Rect{X1: 0.03, Y1: 0.44, X2: 0.97, Y2: 0.89}
 
 const memberRowPitch = 112
 
-// groupHeaderRegion is the band at the top of memberListRegion the sticky
-// rank-group header occupies once it has pinned there mid-scroll. Height is
-// recon-measured (~55px of a 1600px-tall frame, frame 03 in
-// docs/superpowers/specs/evidence/m4-recon-2026-08-12/) with margin, and is
-// UNVERIFIED on a live scroll session — the recon frame it came from was
-// captured immediately after the group's chevron was tapped, before any
-// scrolling pinned the header to this exact position. Owed to
-// `make test-device` alongside the rest of this route's hardware
-// verification (see progress.md Task 8b).
-var groupHeaderRegion = transport.Rect{
-	X1: memberListRegion.X1, X2: memberListRegion.X2,
-	Y1: memberListRegion.Y1, Y2: memberListRegion.Y1 + 0.05,
-}
+// groupHeaderRegion is the band the sticky rank-group header ("R3 Footloose
+// 15/64") occupies once it has pinned in place while rows scroll underneath
+// it. It is its own measured constant, not derived from memberListRegion as
+// it used to be: deriving Y2 as memberListRegion.Y1+0.05 meant moving the
+// region's top dragged the header band down with it, off the header, and
+// the derivation was already wrong before that move made it worse.
+//
+// Measured today, not estimated: for each row y across five separately
+// scrolled frames of the same capture burst (docs/superpowers/specs/
+// evidence/m4-scrolloffset-2026-08-13/), the mean RGB across the list's
+// x-span (x=40..680 of the 720px-wide frame) was scanned for a sharp
+// transition. All five frames agreed almost exactly — header bar top y=650
+// (one frame read 651), bottom y=697 (all five) — which is itself the
+// confirmation that the bar is genuinely pinned rather than coincidentally
+// sitting there in one frame. Normalized against the 1600px frame that is
+// 0.40625..0.435625; the constant below widens that slightly to 0.404..0.438
+// as margin around the measured band, not as a substitute for it.
+//
+// The two constants are consistent by measurement, not by assumption:
+// memberListRegion.Y1=0.44 is y=704, which clears this band's bottom edge
+// (697) by 7px. Whoever moves either one next should keep that clearance.
+var groupHeaderRegion = transport.Rect{X1: 0.03, Y1: 0.404, X2: 0.97, Y2: 0.438}
 
 // Field sub-rects, as fractions of the full frame width (X) and of one row
 // band's own height (Y) — recon-measured from frame 03
