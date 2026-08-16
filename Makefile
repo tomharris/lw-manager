@@ -43,6 +43,18 @@ test-device:
 gate:
 	$(GO) test -tags=corpus -count=1 -v -timeout 60m ./internal/vision/...
 
+# The M4 phase gate: ingest reproduces a hand-checked VS ranking capture.
+#
+# Device-free, but not dependency-free — unlike `gate` it needs three things at
+# once: the compose stack (it prepares lw_manager_test through internal/dbtest,
+# never the dev database), the blob store the capture was written to, and the
+# tesseract binary. It skips, naming what is missing, when the hand-checked
+# fixture has not been transcribed yet or its frames are not in the configured
+# blob store — see fixtures/m4gate/README.md.
+.PHONY: gate-m4
+gate-m4:
+	$(GO) test -tags m4gate -count=1 -v -timeout 20m ./internal/ingest/
+
 .PHONY: lint
 lint:
 	$(GO) vet ./...
