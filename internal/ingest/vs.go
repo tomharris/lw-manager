@@ -107,9 +107,16 @@ var (
 const zeroInferenceConfidence = 0.90
 
 // VSResult summarizes one IngestVS run.
+//
+// Unidentified counts rows whose name matched no member confidently enough to
+// attribute. It is reported rather than merely used because it is what
+// explains a run that wrote no zeroes: "nobody was absent" and "we declined to
+// guess who was absent" are different outcomes that both print Zeroed=0, and
+// an operator who cannot tell them apart cannot tell a clean capture from one
+// that needs its review queue cleared.
 type VSResult struct {
-	Matched, Queued, Zeroed int
-	Status                  string
+	Matched, Queued, Zeroed, Unidentified int
+	Status                                string
 }
 
 // vsRun carries the state one IngestVS call accumulates across frames.
@@ -210,6 +217,8 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 			}
 			if matched {
 				matchedRowCount++
+			} else {
+				run.res.Unidentified++
 			}
 		}
 	}
@@ -229,19 +238,39 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 			"capture_id", captureID, "geometric_matches", matchedRowCount, "identity_matches", len(scored))
 	}
 
-	// Absence means zero, but only on a complete capture: the weekly ranking
-	// lists only members with a nonzero score (recon measured 94 ranked rows
-	// against 96 alliance members), so a member missing from a complete
-	// capture genuinely scored nothing. On a partial capture, absence and
-	// truncation are indistinguishable, so this writes no zeroes at all — a
-	// capture wrongly treated as complete would otherwise silently zero real
-	// scores for exactly the members hardest to see.
-	if capture.Status == "complete" {
+	// Absence means zero, but only on a complete capture whose every row was
+	// attributed. The weekly ranking lists only members with a nonzero score
+	// (recon measured 94 ranked rows against 96 alliance members), so a member
+	// missing from a complete capture genuinely scored nothing.
+	//
+	// Two conditions, for two different ways that inference goes wrong:
+	//
+	// On a partial capture, absence and truncation are indistinguishable, so
+	// a capture wrongly treated as complete would silently zero real scores
+	// for exactly the members hardest to see.
+	//
+	// The second condition is subtler and was found by the resolve-then-
+	// reingest test below. "Missing from the capture" and "present but not
+	// confidently matched" are not the same claim, and this loop can only see
+	// the first: an unidentified row belongs to *some* member, and that
+	// member is not in scored, so they were being zeroed on the strength of a
+	// row we were holding in the review queue at that very moment. That is a
+	// confident number (zeroInferenceConfidence, 0.90) on a leaderboard for a
+	// read that failed, which invariant #5 exists to forbid, and it also
+	// broke the correction path: UpsertFact only overwrites on a strictly
+	// higher confidence, so the stale zero outranked the real read the
+	// re-ingest produced and the resolved review silently changed nothing.
+	//
+	// So a capture holding rows it could not attribute has not proved anyone
+	// absent, and infers nothing. The zeroes are not lost, only deferred:
+	// clear the review queue and re-ingest, and this same capture writes them
+	// once every row is accounted for.
+	if capture.Status == "complete" && run.res.Unidentified == 0 {
 		for _, m := range members {
 			if scored[m.ID] {
 				continue
 			}
-			if _, err := i.store.InsertFact(ctx, db.Fact{
+			if _, _, err := i.store.UpsertFact(ctx, db.Fact{
 				MemberID: m.ID, Metric: "vs_points", Value: 0,
 				ObservedAt: observedAt, PeriodKey: periodKey,
 				Source: "ocr:vs_ranking", ScreenshotID: lastFrameShotID,
@@ -302,7 +331,16 @@ func (run *vsRun) processRow(ctx context.Context, i *Ingester, img image.Image, 
 		if conf < factConfidenceGate {
 			return true, run.queueReview(ctx, i, screenshotID, band, pointsRes.Text, nil, "low_confidence_points", conf)
 		}
-		if _, err := i.store.InsertFact(ctx, db.Fact{
+		// UpsertFact, not InsertFact, for the reason IngestRoster's
+		// writeFacts already documents at length: observed_at is pinned to
+		// the capture's own started_at, so re-running ingest over this same
+		// capture recomputes the identical (member_id, metric, period_key,
+		// source, observed_at) key and a plain INSERT rejects it. That is not
+		// hypothetical here — resolving a review in studio tells the operator
+		// to ingest the capture again, so the second run is the whole point
+		// of the review loop, and it died on a unique-constraint violation
+		// before it could correct anything.
+		if _, _, err := i.store.UpsertFact(ctx, db.Fact{
 			MemberID: memberID, Metric: "vs_points", Value: float64(points),
 			ObservedAt: run.observedAt, PeriodKey: run.periodKey,
 			Source: "ocr:vs_ranking", ScreenshotID: screenshotID,

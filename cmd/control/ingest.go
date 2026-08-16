@@ -235,7 +235,20 @@ func printRosterSummary(out io.Writer, captureID int64, periodKey string, res in
 // printVSSummary mirrors printRosterSummary for the VS route: matched,
 // queued, zeroed (VS-only — the roster route never infers a fact), and the
 // final capture status.
+//
+// unidentified is printed alongside because it is what makes zeroed readable.
+// Zero inference is suppressed entirely while any row remains unattributed
+// (see internal/ingest/vs.go), so "zeroed=0" means either that nobody was
+// absent or that the run declined to guess who was — and only unidentified
+// tells the two apart. The follow-up line names the action, since deferred
+// zeroes are recovered by clearing the queue and ingesting the same capture
+// again, not by re-capturing.
 func printVSSummary(out io.Writer, captureID int64, periodKey string, res ingest.VSResult) {
-	fmt.Fprintf(out, "capture=%d route=vs_ranking period=%s matched=%d queued=%d zeroed=%d status=%s\n",
-		captureID, periodKey, res.Matched, res.Queued, res.Zeroed, res.Status)
+	fmt.Fprintf(out, "capture=%d route=vs_ranking period=%s matched=%d queued=%d zeroed=%d unidentified=%d status=%s\n",
+		captureID, periodKey, res.Matched, res.Queued, res.Zeroed, res.Unidentified, res.Status)
+
+	if res.Unidentified > 0 && res.Status == "complete" {
+		fmt.Fprintf(out, "  no zeroes inferred: %d rows could not be attributed to a member, so absence is not proof of a zero score.\n", res.Unidentified)
+		fmt.Fprintf(out, "  resolve them in `agent studio` and re-run `control ingest --capture %d`.\n", captureID)
+	}
 }

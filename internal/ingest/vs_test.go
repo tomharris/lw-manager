@@ -149,6 +149,13 @@ type vsFixture struct {
 	// unrelated screen position, which is a VS-ranking-specific phenomenon
 	// (see CLAUDE.md and the recon findings §2).
 	duplicateSelfRow bool
+	// ghostRows appends N rows reading a name that matches nobody, on top of
+	// rankedRows. It exists because rankedRows alone cannot express "some
+	// members absent AND some rows unattributed" — pushing rankedRows past
+	// rosterSize to get an unmatched row necessarily matches every member,
+	// leaving nobody to be absent. That combination is exactly the state the
+	// zero-inference rule turns on.
+	ghostRows int
 }
 
 func newVSIngestHarness(t *testing.T, fx vsFixture) *vsIngestHarness {
@@ -184,6 +191,9 @@ func newVSIngestHarness(t *testing.T, fx vsFixture) *vsIngestHarness {
 	// Rows beyond the roster size cannot possibly match a real member —
 	// used by the "never creates a member" test.
 	for k := matched; k < fx.rankedRows; k++ {
+		rows = append(rows, row{name: "ZzUnrecognizedGhostRow99", points: commaGroup(1000000)})
+	}
+	for range fx.ghostRows {
 		rows = append(rows, row{name: "ZzUnrecognizedGhostRow99", points: commaGroup(1000000)})
 	}
 	if fx.duplicateSelfRow {
@@ -226,6 +236,64 @@ func TestIngestVSWritesZeroesOnlyForACompleteCapture(t *testing.T) {
 	}
 	if res.Zeroed != 2 {
 		t.Errorf("zeroed %d, want 2 — 96 members less 94 ranked", res.Zeroed)
+	}
+}
+
+// A complete capture still holding a row it could not attribute has not
+// proved anyone absent from the ranking: that row belongs to some member, and
+// zeroing every unscored member on the strength of it puts a 0.90-confidence
+// number on a leaderboard for a read that failed. The zeroes are deferred,
+// not lost — clear the review queue, re-ingest, and they get written.
+//
+// See vs_integration_test.go for the other half of why this matters: against
+// a real store the stale zero also outranked the corrected read a resolved
+// review produced, so the review loop silently changed nothing.
+func TestIngestVSInfersNoZeroesWhileAnyRowIsUnidentified(t *testing.T) {
+	h := newVSIngestHarness(t, vsFixture{
+		captureComplete: true,
+		rosterSize:      3,
+		rankedRows:      2,
+		ghostRows:       1,
+	})
+
+	res, err := h.IngestVS(context.Background(), 1, "2026-W33")
+	if err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if res.Unidentified != 1 {
+		t.Fatalf("unidentified %d, want 1 — the fixture's ghost row matches nobody", res.Unidentified)
+	}
+	if res.Zeroed != 0 {
+		t.Errorf("zeroed %d while a row was unidentified, want 0", res.Zeroed)
+	}
+	// Member03 is the absent one. The count alone would not catch a zero
+	// written under a different member's id.
+	for _, f := range h.store.Facts {
+		if f.Value == 0 {
+			t.Errorf("an inferred zero was written for member %d while a row was unattributed: %+v", f.MemberID, f)
+		}
+	}
+}
+
+// The complement: with every row attributed, the inference is sound again and
+// the absent member is zeroed. Without this, the test above would pass just as
+// well against an implementation that never infers a zero at all.
+func TestIngestVSInfersZeroesOnceEveryRowIsIdentified(t *testing.T) {
+	h := newVSIngestHarness(t, vsFixture{
+		captureComplete: true,
+		rosterSize:      3,
+		rankedRows:      2,
+	})
+
+	res, err := h.IngestVS(context.Background(), 1, "2026-W33")
+	if err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if res.Unidentified != 0 {
+		t.Fatalf("unidentified %d, want 0", res.Unidentified)
+	}
+	if res.Zeroed != 1 {
+		t.Errorf("zeroed %d, want 1 — 3 members less 2 ranked", res.Zeroed)
 	}
 }
 
