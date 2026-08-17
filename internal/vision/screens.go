@@ -11,10 +11,9 @@ const (
 	ScreenAllianceTech       = "alliance_tech"
 	ScreenAllianceTechDonate = "alliance_tech_donate"
 	ScreenAllianceMembers    = "alliance_members"
-	ScreenVS                 = "vs"
+	ScreenAllianceDuel       = "alliance_duel"
 	ScreenVSRanking          = "vs_ranking"
 	ScreenVSRankingWeekly    = "vs_ranking_weekly"
-	ScreenVSRankingAlliance  = "vs_ranking_alliance"
 	ScreenMail               = "mail"
 	ScreenMailAlliance       = "mail_alliance"
 	ScreenMailEvent          = "mail_event"
@@ -37,10 +36,12 @@ const (
 // the gate, and the gate simply stops checking the screen you just added.
 //
 // A screen belongs here when the recognizer must name it, which is not the
-// same as the graph navigating to it. alliance_members and vs_ranking have no
-// DefaultGraph edges and are still listed: they are labeled in the corpus for
-// M4, and a labeled screen with no identifying anchor is scored wrong on every
-// run, forever. Recognition and navigation are separate concerns.
+// same as the graph navigating to it. stamina_prompt and alliance_tech_donate
+// appear in DefaultGraph with out-edges only — entered by tapping something
+// whose effect the graph cannot predict, never routed to — and are listed
+// here regardless: a labeled screen with no identifying anchor is scored
+// wrong on every run, forever. Recognition and navigation are separate
+// concerns.
 //
 // Two of these are trees rather than single screens, and both are modelled the
 // same way: one screen per state a task must act *from*. Invariant #3 requires
@@ -55,11 +56,36 @@ const (
 // down into its own screen carrying the message list and the claim-all button.
 // Only the three mailboxes we act on are modelled.
 //
-// VS ranking: base -> vs -> vs_ranking -> "weekly ranking" tab -> select your
-// alliance. It is NOT reachable from Alliance; docs that describe the route as
-// "Alliance -> Members -> VS Ranking" are wrong. vs_ranking_alliance is the
-// screen M4 parses; the three above it exist because the task has to tap its
-// way down and confirm each landing.
+// VS ranking: base -> alliance_duel -> vs_ranking -> "weekly ranking" tab.
+// base's VS button lands on Alliance Duel, not on a ranking screen, so the
+// screen the button actually opens gets its own name rather than being
+// folded into the tree it merely leads to. It is NOT reachable from Alliance;
+// docs that describe the route as "Alliance -> Members -> VS Ranking" are
+// wrong.
+//
+// alliance_duel used to be labelled vs. That name came from base's VS
+// button — the thing that opens the screen — rather than from anything on
+// the screen itself, and it was never reconciled once corpus frames showed
+// what the screen actually says: "ALLIANCE DUEL" across the top, the same
+// three-tab strip, the same Ranking button at the bottom. A mislabelled
+// screen that only ever gets one label is self-consistent and gives no
+// signal that anything is wrong — vs was wrong for three weeks and nothing
+// broke, because nothing was comparing it to a second name for the same
+// pixels. It only became visible once alliance_duel was added under its
+// correct name and the two started competing for the same frames. Two
+// screen names for one screen is worse than a bad name for one, because a
+// task that navigates to alliance_duel and waits for it to be recognized can
+// legitimately see a frame the recognizer calls vs instead — invariant #3
+// refusing to act on an unmatched anchor, for a reason that was never real.
+//
+// The filtered and unfiltered weekly views are one screen, vs_ranking_weekly,
+// not two. They used to be modelled separately, but they differ only by
+// whether a checkbox is ticked, and template matching cannot express the
+// absence of something: a crop of the empty checkbox correlates with any
+// smooth region, so it is not an identifying anchor, it is a threshold that
+// happens to pass. The filter is a state within the screen, confirmed by
+// querying for the your_alliance_checked anchor after tapping the filter
+// button, not a screen a task navigates to.
 //
 // alliance_tech_donate is the dialog reached from the recommended tech.
 // stamina_prompt is the buy/refill dialog Quick Execute raises when stamina is
@@ -78,10 +104,9 @@ var ScreenNames = []string{
 	ScreenAllianceTech,
 	ScreenAllianceTechDonate,
 	ScreenAllianceMembers,
-	ScreenVS,
+	ScreenAllianceDuel,
 	ScreenVSRanking,
 	ScreenVSRankingWeekly,
-	ScreenVSRankingAlliance,
 	ScreenMail,
 	ScreenMailAlliance,
 	ScreenMailEvent,

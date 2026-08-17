@@ -16,7 +16,7 @@ The two reference systems solve halves of the same problem:
 
 The architectural thesis of this build: **the bot is the collection tier for the analytics tier.** A bot that can already navigate to the alliance roster and the VS ranking can screenshot them on a schedule and feed the parser directly. That closes the manual-upload loop that limits the alliance manager, and it's the reason to build one system rather than glue two together.
 
-Those are two separate routes, not one chain. The roster is Alliance → Members. The VS ranking is **not reachable from Alliance**: it is base → VS → Ranking → "weekly ranking" tab → select your alliance. This document originally described the collection target as "Alliance → Members → VS Ranking", which is a route that does not exist; corrected 2026-07-26 after walking it on hardware.
+Those are two separate routes, not one chain. The roster is Alliance → Members. The VS ranking is **not reachable from Alliance**: it is base → VS → Alliance Duel → Ranking → "weekly ranking" tab → select your alliance (§5 has the full route, confirmed on hardware). VS is the button on base, not the ranking screen's name — it opens a screen titled ALLIANCE DUEL first. This document originally described the collection target as "Alliance → Members → VS Ranking", which is a route that does not exist; corrected 2026-07-26 after walking it on hardware.
 
 ### Constraints worth stating up front
 - Automation of this kind is against Last War's ToS. Accounts can be banned. Design accordingly: run alts, not your main, on aggressive schedules; humanize timing; keep a kill switch. This document assumes you've accepted that trade.
@@ -198,13 +198,19 @@ An `alliance_data`-role account runs scripted capture routes on a cadence. Each 
 | Route | Screen path | Cadence | Yields |
 |---|---|---|---|
 | `roster` | Alliance → Members | daily | name, rank, power, last-active, join date |
-| `vs_ranking` | Events → VS Duel → Ranking | daily @ server-reset−30m | per-member VS points, day index |
-| `alliance_duel` | Events → Alliance Duel | per event | per-member contribution |
+| `vs_ranking` | base → VS → Alliance Duel → Ranking → Weekly Rank tab → Your Alliance checkbox | daily @ server-reset−30m | per-member VS points, day index |
+| `alliance_duel` | base → VS → Alliance Duel → Duel Progress tab → Today's Duel | per event | per-member contribution |
 | `gift_chest` | Alliance → Gifts | daily | chest level history (activity proxy) |
 | `tech_donation` | Alliance → Tech | daily | donation counts |
 | `rally_log` | Alliance → War → History | 4× daily | rally participation events |
 
 Scroll-and-stitch is the tricky part: capture with ~30% overlap, dedupe rows by `(name_hash, row_signature)` rather than by position, and reconcile against the known roster size to detect missed rows. If parsed row count ≠ expected member count, flag the capture as `partial` rather than silently under-reporting someone's participation.
+
+`alliance_duel` was written as "Events → Alliance Duel" and that route does not exist. Events is a separate hub whose tab strip is Arms Race, Canyon Battlefield, Desert Battlefield, General's Trial, Wanted Boss, Community — Alliance Duel is not among them, and the Ranking button on the General's Trial tab belongs to that event, not to the duel. Alliance Duel is reachable only from base's VS button, the same first hop `vs_ranking` takes; the two routes diverge at the Alliance Duel screen itself, one going to Ranking and the other to the Duel Progress tab. This is the third documented instance of the same mistake — a route inferred from a plausible-sounding menu name rather than walked — after "Alliance → Members → VS Ranking" and the `vs` screen label.
+
+One property of Duel Progress that its future route will have to solve: the contribution list interleaves **both** alliances, ours and the opponent's, and carries no "Your Alliance" filter of the kind the weekly ranking has. Filtering has to happen at ingest, from the alliance tag OCR'd in each row, rather than being arranged in the UI beforehand.
+
+The weekly ranking is not a full roster projection: it lists only members with a nonzero score for the week — 94 ranked rows against 96 alliance members, confirmed on hardware. Reconciling `vs_ranking` against the roster's member count therefore has to expect fewer rows than the roster holds, and the gap between the two isn't itself a defect to flag. It also means absence has to be read carefully: a member missing from a ranking capture means zero only on a capture proven to have scrolled to the bottom, since a genuinely `partial` capture and a complete one that legitimately omits zero-score members look identical from row count alone.
 
 ### Ingest pipeline
 ```

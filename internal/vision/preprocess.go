@@ -10,8 +10,26 @@
 //
 // The preprocessing pipeline is the reference alliance-manager's recipe
 // (docs/superpowers/specs M0 §Corrections): crop → grayscale → equalize →
-// adaptive threshold → invert → upscale. Its accuracy came from preprocessing
-// and validation, not the OCR engine, so these steps are load-bearing.
+// adaptive threshold → invert → upscale. That recipe's claimed accuracy does
+// not hold on this game's UI: measured against the first real capture
+// (docs/superpowers/specs/evidence/m4-ocr-2026-08-14), the full chain read a
+// clean header crop as "(es Thisisit CED 4]" — adaptive thresholding
+// normalizes local contrast, so on a nearly-flat region (a header's flat
+// background, a card's flat fill) it invents edges out of noise instead of
+// finding real ones. This is the same trap CLAUDE.md documents for NCC
+// template matching on flat crops, in a different algorithm: a normalizing
+// step amplifies whatever variance is there, real or not.
+//
+// What replaced "the recipe is load-bearing" is per-field measurement
+// (internal/vision/zz_preproc_probe_test.go's TestPreprocMeasure, run
+// against real frames): every field internal/ingest reads was fastest and
+// most accurate with grayscale-and-upscale alone, threshold and equalize
+// included or not depending on the field. Preprocess's own default (Options{})
+// still runs the full chain unchanged for any caller that does not opt out —
+// callers may depend on it, and this file changes no behavior, only the
+// claim about why it works. internal/ingest's readField is the caller that
+// now opts out, per field, with the measured Options recorded beside each
+// field's ocr.Spec in roster.go and vs.go.
 package vision
 
 import (
@@ -147,8 +165,13 @@ type Options struct {
 }
 
 // Preprocess runs crop → grayscale → equalize → adaptive threshold → invert →
-// upscale, the recipe whose accuracy came from these steps rather than the OCR
-// engine. Steps can be skipped via Options for callers that only need part.
+// upscale when Options is the zero value. That full chain is kept as the
+// default for backward compatibility, not because it is generally correct —
+// see the package doc comment: on this game's UI, threshold and equalize
+// are each wrong often enough that every field internal/ingest reads now
+// opts out of at least one of them via Options, measured per field rather
+// than assumed. Steps can be skipped via Options for callers that only need
+// part.
 func Preprocess(img image.Image, opts Options) *image.Gray {
 	if opts.ThresholdBlock == 0 {
 		opts.ThresholdBlock = 25

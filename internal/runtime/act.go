@@ -31,6 +31,33 @@ func (c *Ctx) verifyScreen(ctx context.Context, screen string) (image.Image, err
 	return frame, nil
 }
 
+// VerifyFrame confirms img shows the named screen — the same anchor check
+// verifyScreen performs against a live screenshot, but against a frame the
+// caller already holds. It exists for callers that need to verify and store
+// the exact same pixels, rather than paying for a second, separate
+// screenshot to do each job — which is what let a scroll capture's offset
+// measurement drift from the frame that actually got a ScreenshotID.
+//
+// Unlike CurrentScreen and verifyScreen, a mismatch here never invokes the
+// panic route: img is an already-captured artifact, not the device's live
+// display, so there is nothing for a back-press or a restart to recover.
+func (c *Ctx) VerifyFrame(ctx context.Context, screen string, img image.Image) error {
+	if err := c.ks.Check(ctx); err != nil {
+		return err
+	}
+	got, _, err := c.rec.Recognize(img)
+	if err != nil {
+		if errors.Is(err, vision.ErrNoScreenRecognized) {
+			return fmt.Errorf("runtime: frame recognizes no screen, want %q: %w", screen, ErrWrongScreen)
+		}
+		return err
+	}
+	if got != screen {
+		return fmt.Errorf("runtime: frame shows %q, want %q: %w", got, screen, ErrWrongScreen)
+	}
+	return nil
+}
+
 // findAnchor verifies the screen and matches one of its anchors, returning the
 // match box. A below-threshold match is ErrAnchorNotFound, carrying the score
 // and threshold so a miss can be tuned without re-running the matcher by hand.

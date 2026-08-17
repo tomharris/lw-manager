@@ -1,0 +1,48 @@
+accuracy 0.9931 (572/576) gate 0.9800
+
+true \ predicted      alliance  alliance_members  alliance_tech  alliance_tech_donate  base  mail  mail_alliance  mail_event  mail_system  radar  stamina_prompt  vs  vs_ranking  vs_ranking_alliance  vs_ranking_weekly  world_map  <none>
+alliance              25        .                 .              .                     .     .     .              .           .            .      .               .   .           .                    .                  .          .
+alliance_members      .         25                .              .                     .     .     .              .           .            .      .               .   .           .                    .                  .          .
+alliance_tech         .         .                 52             .                     .     .     .              .           .            .      .               .   .           .                    .                  .          .
+alliance_tech_donate  .         .                 .              47                    .     .     .              .           .            .      .               .   .           .                    .                  .          .
+base                  .         .                 .              .                     102   .     .              .           .            .      .               .   .           .                    .                  .          2
+mail                  .         .                 .              .                     .     25    .              .           .            .      .               .   .           .                    .                  .          .
+mail_alliance         .         .                 .              .                     .     .     23             .           .            .      .               .   .           .                    .                  .          1
+mail_event            .         .                 .              .                     .     .     .              25          .            .      .               .   .           .                    .                  .          .
+mail_system           .         .                 .              .                     .     .     .              .           27           .      .               .   .           .                    .                  .          .
+radar                 .         .                 .              .                     .     .     .              .           .            34     .               .   .           .                    .                  .          .
+stamina_prompt        .         .                 .              .                     .     .     .              .           .            .      15              .   .           .                    .                  .          .
+vs                    .         .                 .              .                     .     .     .              .           .            .      .               19  .           .                    .                  .          .
+vs_ranking            .         .                 .              .                     .     .     .              .           .            .      .               .   17          .                    .                  .          .
+vs_ranking_alliance   .         .                 .              .                     .     .     .              .           .            .      .               .   1           55                   .                  .          .
+vs_ranking_weekly     .         .                 .              .                     .     .     .              .           .            .      .               .   .           .                    10                 .          .
+world_map             .         .                 .              .                     .     .     .              .           .            .      .               .   .           .                    .                  14         .
+_none                 .         .                 .              .                     .     .     .              .           .            .      .               .   .           .                    .                  .          57
+
+anchor                      screen                in   out  worst-in  best-out  gap     suggested  action
+alliance                    alliance              25   551  1.000     0.985     +0.015  0.993      narrow margin
+alliance_members            alliance_members      25   551  0.994     0.459     +0.535  0.727      ok
+alliance_tech               alliance_tech         52   524  0.918     0.999     -0.081  -          RECROP (distributions overlap)
+alliance_tech_donate        alliance_tech_donate  47   529  1.000     0.302     +0.698  0.651      ok
+base                        base                  104  472  0.131     1.000     -0.869  -          RECROP (distributions overlap)
+base_button                 world_map             14   562  1.000     0.409     +0.591  0.704      ok
+daily_tab                   vs_ranking            17   559  0.998     0.889     +0.109  0.944      ok
+delete_all_button           mail_alliance         24   552  0.995     1.000     -0.005  -          RECROP (distributions overlap)
+mail                        mail                  25   551  0.991     0.713     +0.278  0.852      ok
+mail_alliance               mail_alliance         24   552  0.811     0.987     -0.176  -          RECROP (distributions overlap)
+mail_event                  mail_event            25   551  0.723     0.573     +0.150  0.648      ok
+mail_system                 mail_system           27   549  0.981     0.553     +0.428  0.767      ok
+radar                       radar                 34   542  0.912     0.556     +0.356  0.734      ok
+radar_button                base                  104  472  0.499     0.998     -0.499  -          RECROP (distributions overlap)
+stamina_prompt              stamina_prompt        15   561  0.973     0.447     +0.526  0.710      ok
+tech_button                 alliance              25   551  0.968     0.228     +0.739  0.598      ok
+theme_tab                   vs                    19   557  0.983     0.563     +0.419  0.773      ok
+vs                          vs                    19   557  1.000     1.000     +0.000  1.000      narrow margin
+vs_ranking                  vs_ranking            17   559  1.000     1.000     -0.000  -          RECROP (distributions overlap)
+vs_ranking_alliance         vs_ranking_alliance   56   520  1.000     1.000     -0.000  -          RECROP (distributions overlap)
+vs_ranking_alliance_button  vs_ranking_weekly     10   566  1.000     1.000     +0.000  -          RECROP (distributions overlap)
+vs_ranking_weekly           vs_ranking_weekly     10   566  1.000     1.000     -0.000  -          RECROP (distributions overlap)
+vs_ranking_weekly_button    vs_ranking_alliance   56   520  0.790     1.000     -0.210  -          RECROP (distributions overlap)
+weekly_tab                  vs_ranking_alliance   56   520  1.000     1.000     +0.000  -          RECROP (distributions overlap)
+weekly_tab                  vs_ranking_weekly     10   566  1.000     1.000     +0.000  -          RECROP (distributions overlap)
+

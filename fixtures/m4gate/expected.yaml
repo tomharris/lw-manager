@@ -1,0 +1,352 @@
+# The M4 gate's hand-checked capture.
+#
+# Transcribed by eye from the 21 frames of capture 6, read out of the blob
+# store one at a time — not from `control ingest`'s summary, not from a
+# participation_facts query, and not from a previous run of this gate. See
+# README.md in this directory for why that distinction is the whole point of
+# the file.
+#
+# The list runs 1..86 and ends there: frame 20 shows rank 86 with the pinned
+# "Unlisted" self row directly below it and no further list content, which is
+# what makes this capture usable as ground truth at all (a partial one cannot
+# distinguish a member who scored nothing from one the scroll never reached).
+#
+# Most rows were legible in two or three overlapping frames and read the same
+# each time. Thirteen carry decorative glyphs around an ASCII core — ranks 1,
+# 3, 6, 13, 27, 31, 33, 36, 39, 47, 66, 71 and 86. Those are transcribed as
+# closely as the rendering allows, and a few of the ornaments are a best
+# reading rather than a certain one; the ASCII cores are not in doubt. They
+# are recorded rather than dropped because dropping them would be editing the
+# ground truth to suit the parser.
+capture: 6
+period_key: "2026-W34"
+game_version: "1.0.358"
+
+alliance:
+  tag: "OrCa"
+  name: "Organized Chaos"
+
+frames:
+  - seq: 0
+    sha256: "251fa469137d92418be6b65e9ac25779514df6d526f57e73fa44e984de521c42"
+    offset_px: 0
+  - seq: 1
+    sha256: "60f07b15f4beec3afa6b0e50704fd13bb64100fd934ba08a9377bbc3ff012410"
+    offset_px: 341
+  - seq: 2
+    sha256: "b5a0d0ab5d35ac907e3557999291e8cfa4c22e1c4da24436a79316fb30912509"
+    offset_px: 493
+  - seq: 3
+    sha256: "ce37ee938cda8fac002c132154cefb12de19233dc5965bb9986532d09d04090e"
+    offset_px: 508
+  - seq: 4
+    sha256: "6f6dcd386be3550ea4a5d795eb193a50669547f0cde7d686b337a98a995e465a"
+    offset_px: 576
+  - seq: 5
+    sha256: "e1c6bfab54b7c579b6f286300d16c44b0a9fb153df29d3d535914db3293cd50a"
+    offset_px: 522
+  - seq: 6
+    sha256: "b21306373372a90551018a25476fe1e607bdb1252fa59bcd803077597ddb50d3"
+    offset_px: 458
+  - seq: 7
+    sha256: "56d91c787f855388c78dfccc5c74475e9e729305ea63c84a6e05884e57334342"
+    offset_px: 590
+  - seq: 8
+    sha256: "51f3e7a5422bb6c3be47058957a1b569dfe3b4e010925921cb409c90fc426526"
+    offset_px: 464
+  - seq: 9
+    sha256: "8f349ea3281f217100dcddf1e5b9d3d639f7febcc91ee909ee0da111d6745100"
+    offset_px: 423
+  - seq: 10
+    sha256: "ee99e922115aa02491558601db19ee8d84ed303c8c10a11cdf06480e76c40017"
+    offset_px: 483
+  - seq: 11
+    sha256: "146919818664de9acaa8dab0be79fef98b58b382bdee697f80c16a19f88cceae"
+    offset_px: 711
+  - seq: 12
+    sha256: "8fe5c46e45fe995d888477c16ea53bfc295fa3a199db36773f6141b3b093b867"
+    offset_px: 532
+  - seq: 13
+    sha256: "f9a3a3583666851a6c128cb509479b2261a7da2724f5d27c1e36024ac1dc055f"
+    offset_px: 558
+  - seq: 14
+    sha256: "a97d0d4cb57e55f175854498bc34ab5e6a941bf0c6c4084ed44569abd669ce92"
+    offset_px: 547
+  - seq: 15
+    sha256: "3069d258181036a61a55fd6d7dfba4d4e330638d2b0417a624b60e6bbdf1d98d"
+    offset_px: 489
+  - seq: 16
+    sha256: "8da9d580d7cc5b3c900249a4824c74b39d95b110d2d7feddc5179a217f7441e4"
+    offset_px: 648
+  - seq: 17
+    sha256: "5ee45e6a09ef0ab533b9c676ee65a655d81684cdbd97f6699697f04c5992bb75"
+    offset_px: 372
+  - seq: 18
+    sha256: "e9c4af688b349db758779d25712a9f3f2e744d697ecc556425dc2a1c70d27148"
+    offset_px: 440
+  - seq: 19
+    sha256: "2e43ee159c5a66b721660da2be3e4941b872463735753105418d4c9ae60ac049"
+    offset_px: 454
+  - seq: 20
+    sha256: "a8fbb945ca1c5658dd621d8d249b76ac82072896b49a08569ad618aa6a77bde0"
+    offset_px: 424
+
+rows:
+  - rank: 1
+    name: "ΔKΔŽΔ"
+    points: 31606444
+  - rank: 2
+    name: "Drizzlers12"
+    points: 27387326
+  - rank: 3
+    name: "OrCasKillerBunny"
+    points: 25013218
+  - rank: 4
+    name: "GersonGamer"
+    points: 21068049
+  - rank: 5
+    name: "K4RAZOR1"
+    points: 19661507
+  - rank: 6
+    name: "ZãP ꙅઉ"
+    points: 19247540
+  - rank: 7
+    name: "Mar 89"
+    points: 18356804
+  - rank: 8
+    name: "Stoininger"
+    points: 17219876
+  - rank: 9
+    name: "ArmArak"
+    points: 17125557
+  - rank: 10
+    name: "Leroy Jenkins 0914"
+    points: 16958260
+  - rank: 11
+    name: "MQ the Beast"
+    points: 16535985
+  - rank: 12
+    name: "HAL 9000"
+    points: 16247226
+  - rank: 13
+    name: "한씨아저씨"
+    points: 15464817
+  - rank: 14
+    name: "Kun Tsunami"
+    points: 15330810
+  - rank: 15
+    name: "BobLeeSwagger44"
+    points: 15241586
+  - rank: 16
+    name: "King SiUuUU"
+    points: 14489993
+  - rank: 17
+    name: "AA91AA"
+    points: 13946540
+  - rank: 18
+    name: "Mush Dias"
+    points: 13936222
+  - rank: 19
+    name: "Innovo"
+    points: 13819601
+  - rank: 20
+    name: "Carlito Buttson Esq"
+    points: 12090000
+  - rank: 21
+    name: "M I C H E L L"
+    points: 11996319
+  - rank: 22
+    name: "Bujangann"
+    points: 11777462
+  - rank: 23
+    name: "IamIronman2025"
+    points: 11666921
+  - rank: 24
+    name: "Commander Ponce"
+    points: 11463295
+  - rank: 25
+    name: "Quindici Lune"
+    points: 10974346
+  - rank: 26
+    name: "Beangraff"
+    points: 10649400
+  - rank: 27
+    name: "Danny 狂"
+    points: 10618354
+  - rank: 28
+    name: "Otogen VS"
+    points: 10304156
+  - rank: 29
+    name: "Your Target"
+    points: 9678439
+  - rank: 30
+    name: "KIRCHO"
+    points: 9620528
+  - rank: 31
+    name: "ϟϟ Leo ϟϟ"
+    points: 9511645
+  - rank: 32
+    name: "Angel 4am"
+    points: 9340971
+  - rank: 33
+    name: "S a n d m a n"
+    points: 9171966
+  - rank: 34
+    name: "Nawtzz"
+    points: 9119308
+  - rank: 35
+    name: "Beinsee"
+    points: 9075909
+  - rank: 36
+    name: "Guts ツ"
+    points: 9018787
+  - rank: 37
+    name: "ALBAN80"
+    points: 9001353
+  - rank: 38
+    name: "Handbol"
+    points: 8835180
+  - rank: 39
+    name: "٣١٢ A l i ٣١٢"
+    points: 8671806
+  - rank: 40
+    name: "Delio1"
+    points: 8524023
+  - rank: 41
+    name: "B52RN10"
+    points: 8400375
+  - rank: 42
+    name: "MARVINNN"
+    points: 8385839
+  - rank: 43
+    name: "W Ana"
+    points: 8215903
+  - rank: 44
+    name: "katd178"
+    points: 7998734
+  - rank: 45
+    name: "AnthraxVIII"
+    points: 7933125
+  - rank: 46
+    name: "Kalor13"
+    points: 7866148
+  - rank: 47
+    name: "Aureum ⊂6М"
+    points: 7698401
+  - rank: 48
+    name: "Luis Volpe"
+    points: 7534757
+  - rank: 49
+    name: "tomx1000"
+    points: 7509619
+  - rank: 50
+    name: "Stephenator"
+    points: 7508315
+  - rank: 51
+    name: "Bubs1000"
+    points: 7129982
+  - rank: 52
+    name: "OD15"
+    points: 6751813
+  - rank: 53
+    name: "TearsOfDragon"
+    points: 6729919
+  - rank: 54
+    name: "SHERLOCK Holmes"
+    points: 6372328
+  - rank: 55
+    name: "Lothar232"
+    points: 6100839
+  - rank: 56
+    name: "KimmyTX"
+    points: 5805783
+  - rank: 57
+    name: "Bwiz21"
+    points: 5779088
+  - rank: 58
+    name: "event2k5"
+    points: 5745342
+  - rank: 59
+    name: "JPA9"
+    points: 5275168
+  - rank: 60
+    name: "Tirry69"
+    points: 5140284
+  - rank: 61
+    name: "Mc1999"
+    points: 4641740
+  - rank: 62
+    name: "Dankenstein151"
+    points: 4621250
+  - rank: 63
+    name: "Chief 2469"
+    points: 4436225
+  - rank: 64
+    name: "xLIFERUINERx"
+    points: 4347884
+  - rank: 65
+    name: "Kapton Banana"
+    points: 4295018
+  - rank: 66
+    name: "Syłar"
+    points: 4239631
+  - rank: 67
+    name: "Mr Lazy"
+    points: 4101693
+  - rank: 68
+    name: "Recon13Bravo"
+    points: 3891593
+  - rank: 69
+    name: "MoreBallsThanBrains"
+    points: 3770850
+  - rank: 70
+    name: "silentdrummer"
+    points: 3749995
+  - rank: 71
+    name: "ZeroOrca"
+    points: 3678376
+  - rank: 72
+    name: "MadMan7"
+    points: 3156472
+  - rank: 73
+    name: "RobElr"
+    points: 2792023
+  - rank: 74
+    name: "Battlestar Em"
+    points: 2663358
+  - rank: 75
+    name: "Biias Fortes"
+    points: 2661898
+  - rank: 76
+    name: "2Rule"
+    points: 2613585
+  - rank: 77
+    name: "albambet"
+    points: 2609299
+  - rank: 78
+    name: "Foskiitus"
+    points: 2518066
+  - rank: 79
+    name: "ZeL1"
+    points: 2328001
+  - rank: 80
+    name: "Smileypwns"
+    points: 1788577
+  - rank: 81
+    name: "19GENERALS68"
+    points: 1732970
+  - rank: 82
+    name: "Thanos474"
+    points: 1391251
+  - rank: 83
+    name: "Nichoj"
+    points: 1242375
+  - rank: 84
+    name: "Ravenna Morrigan"
+    points: 755880
+  - rank: 85
+    name: "Rudester17"
+    points: 652500
+  - rank: 86
+    name: "Kyra ♡"
+    points: 504000

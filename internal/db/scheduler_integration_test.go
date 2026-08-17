@@ -5,6 +5,7 @@ package db
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestSchedulerSnapshotSeedRows(t *testing.T) {
@@ -42,6 +43,59 @@ func TestSchedulerSnapshotSeedRows(t *testing.T) {
 		if _, ok := byName[gone]; ok {
 			t.Errorf("%s still present; migration 00004 should have deleted it", gone)
 		}
+	}
+}
+
+// The vs_ranking route reaches the weekly ranking through the Alliance Duel
+// screen (base -> VS -> Alliance Duel -> Ranking -> Weekly Rank), and that
+// screen does not exist on Sunday: the duel does not run. Scheduling the task
+// there drives the route into a screen the game will not show, once a week,
+// forever. It fails safely rather than blindly — invariant #3 means no anchor
+// match is a refusal to act, not a wrong tap — but it fails, burns a device
+// slot and books a consecutive failure against the account's backoff.
+//
+// Migration 00006 registered it for all seven days. The same commit's design
+// notes had already scoped the separate alliance_duel contribution route out
+// of M4 for exactly this reason ("event-gated in a way that would let the
+// milestone stall on a screen the game will not show on demand"), and the
+// radar task above has encoded a VS-day subset since migration 00004; the
+// vs_ranking route routes through the same event and was missed.
+func TestSchedulerSnapshotDoesNotScheduleVSCaptureOnSunday(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	seedAccount(t, pool)
+
+	snap, err := pool.SchedulerSnapshot(ctx, []string{"test-runtime-5554"})
+	if err != nil {
+		t.Fatalf("SchedulerSnapshot: %v", err)
+	}
+	byName := map[string]ScheduledTask{}
+	for _, tk := range snap.Tasks {
+		byName[tk.Name] = tk
+	}
+
+	vs, ok := byName["vs_capture"]
+	if !ok {
+		t.Fatal("vs_capture not in snapshot")
+	}
+	for _, d := range vs.DaysOfWeek {
+		if time.Weekday(d) == time.Sunday {
+			t.Errorf("vs_capture is scheduled on Sunday (days %v); the Alliance Duel screen its route walks through does not exist that day", vs.DaysOfWeek)
+		}
+	}
+	if len(vs.DaysOfWeek) != 6 {
+		t.Errorf("vs_capture days: got %v, want the six non-Sunday days", vs.DaysOfWeek)
+	}
+
+	// The gate must stay specific to the route that needs it. roster_capture
+	// walks Alliance -> Members, which is present every day, so narrowing it
+	// too would cost a day of roster history for no reason.
+	roster, ok := byName["roster_capture"]
+	if !ok {
+		t.Fatal("roster_capture not in snapshot")
+	}
+	if len(roster.DaysOfWeek) != 7 {
+		t.Errorf("roster_capture days: got %v, want all seven — its route has no event gate", roster.DaysOfWeek)
 	}
 }
 

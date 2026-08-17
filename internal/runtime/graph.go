@@ -117,8 +117,12 @@ func (g *Graph) Path(from, to string) ([]Edge, error) {
 // stays fully recognizable, so nothing is ever stranded on it and NavigateTo
 // is never confused by it.
 //
-// alliance_members and the vs tree stay unrouted: they are recognized for
-// M4's benefit, and navigating them is M4's problem.
+// alliance_members and the vs tree are routed: M4 needs to reach them, not
+// just recognize them, so DefaultGraph carries edges down to
+// vs_ranking_weekly. There is no edge for ticking the "Your Alliance" filter,
+// because the filtered and unfiltered weekly views are one screen, not two —
+// a task taps vs_ranking_alliance_button and confirms with a Sees query for
+// your_alliance_checked, rather than navigating to a screen the graph names.
 func DefaultGraph() *Graph {
 	return &Graph{
 		Entry: vision.ScreenBase,
@@ -145,6 +149,16 @@ func DefaultGraph() *Graph {
 			{From: vision.ScreenRadar, To: vision.ScreenBase, Action: ActionBack},
 
 			{From: vision.ScreenStaminaPrompt, To: vision.ScreenRadar, Action: ActionBack},
+
+			{From: vision.ScreenAlliance, To: vision.ScreenAllianceMembers, Action: ActionTap, AnchorID: "members_button"},
+			{From: vision.ScreenAllianceMembers, To: vision.ScreenAlliance, Action: ActionBack},
+
+			{From: vision.ScreenBase, To: vision.ScreenAllianceDuel, Action: ActionTap, AnchorID: "vs_button"},
+			{From: vision.ScreenAllianceDuel, To: vision.ScreenBase, Action: ActionBack},
+			{From: vision.ScreenAllianceDuel, To: vision.ScreenVSRanking, Action: ActionTap, AnchorID: "ranking_button"},
+			{From: vision.ScreenVSRanking, To: vision.ScreenAllianceDuel, Action: ActionBack},
+			{From: vision.ScreenVSRanking, To: vision.ScreenVSRankingWeekly, Action: ActionTap, AnchorID: "weekly_tab"},
+			{From: vision.ScreenVSRankingWeekly, To: vision.ScreenVSRanking, Action: ActionBack},
 		},
 	}
 }

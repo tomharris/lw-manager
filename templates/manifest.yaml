@@ -11,6 +11,15 @@ screens:
                 - 0.11474
               threshold: 0.85
               identifies_screen: true
+            - id: members_button
+              template: alliance/members_button.png
+              region:
+                - 0.52
+                - 0.46499999999999997
+                - 0.89
+                - 0.5650000000000001
+              threshold: 0.85
+              identifies_screen: false
             - id: tech_button
               template: alliance/tech_button.png
               region:
@@ -20,6 +29,35 @@ screens:
                 - 0.63974
               threshold: 0.85
               identifies_screen: true
+    alliance_duel:
+        anchors:
+            - id: alliance_duel
+              template: alliance_duel/alliance_duel.png
+              region:
+                - 0
+                - 0.026000000000000002
+                - 0.37
+                - 0.122
+              threshold: 0.85
+              identifies_screen: true
+            - id: duel_progress_tab
+              template: alliance_duel/duel_progress_tab.png
+              region:
+                - 0.31999999999999995
+                - 0.085
+                - 0.655
+                - 0.178
+              threshold: 0.85
+              identifies_screen: false
+            - id: ranking_button
+              template: alliance_duel/ranking_button.png
+              region:
+                - 0.625
+                - 0.898
+                - 0.8150000000000001
+                - 1
+              threshold: 0.85
+              identifies_screen: false
     alliance_members:
         anchors:
             - id: alliance
@@ -40,6 +78,24 @@ screens:
                 - 0.11366
               threshold: 0.85
               identifies_screen: true
+            - id: chevron_collapsed
+              template: alliance_members/chevron_collapsed.png
+              region:
+                - 0.855
+                - 0.36
+                - 1
+                - 0.9
+              threshold: 0.85
+              identifies_screen: false
+            - id: chevron_expanded
+              template: alliance_members/chevron_expanded.png
+              region:
+                - 0.855
+                - 0.36
+                - 1
+                - 0.9
+              threshold: 0.85
+              identifies_screen: false
     alliance_tech:
         anchors:
             - id: alliance_tech
@@ -148,10 +204,10 @@ screens:
             - id: vs_button
               template: base/vs_button.png
               region:
-                - 0.84619
-                - 0.21545
-                - 0.98714
-                - 0.30008999999999997
+                - 0.854
+                - 0.174
+                - 0.978
+                - 0.219
               threshold: 0.85
               identifies_screen: false
             - id: world_map_button
@@ -409,44 +465,6 @@ screens:
                 - 0.23045
               threshold: 0.85
               identifies_screen: true
-    vs:
-        anchors:
-            - id: base_button
-              template: vs/base_button.png
-              region:
-                - 0
-                - 0.90545
-                - 0.1419
-                - 1
-              threshold: 0.85
-              identifies_screen: false
-            - id: theme_tab
-              template: vs/theme_tab.png
-              region:
-                - 0.00571
-                - 0.08795
-                - 0.34429
-                - 0.17366
-              threshold: 0.85
-              identifies_screen: true
-            - id: vs
-              template: vs/vs.png
-              region:
-                - 0
-                - 0.03116
-                - 0.36571
-                - 0.10938
-              threshold: 0.85
-              identifies_screen: true
-            - id: vs_ranking_button
-              template: vs/vs_ranking_button.png
-              region:
-                - 0.62952
-                - 0.91403
-                - 0.78476
-                - 1
-              threshold: 0.85
-              identifies_screen: false
     vs_ranking:
         anchors:
             - id: daily_tab
@@ -476,44 +494,15 @@ screens:
                 - 0.10938
               threshold: 0.85
               identifies_screen: true
-    vs_ranking_alliance:
-        anchors:
-            - id: vs_button
-              template: vs_ranking_alliance/vs_button.png
+            - id: weekly_tab
+              template: vs_ranking/weekly_tab.png
               region:
-                - 0.0009499999999999995
-                - 0.8883099999999999
-                - 0.15619
-                - 0.9826
+                - 0.30300000000000005
+                - 0.08600000000000001
+                - 0.666
+                - 0.178
               threshold: 0.85
               identifies_screen: false
-            - id: vs_ranking_alliance
-              template: vs_ranking_alliance/vs_ranking_alliance.png
-              region:
-                - 0
-                - 0.027950000000000003
-                - 0.25143
-                - 0.11044999999999999
-              threshold: 0.85
-              identifies_screen: true
-            - id: vs_ranking_weekly_button
-              template: vs_ranking_alliance/vs_ranking_weekly_button.png
-              region:
-                - 0.86286
-                - 0.89367
-                - 0.9895200000000001
-                - 0.9847400000000001
-              threshold: 0.85
-              identifies_screen: true
-            - id: weekly_tab
-              template: vs_ranking_alliance/weekly_tab.png
-              region:
-                - 0.33904999999999996
-                - 0.09116
-                - 0.63476
-                - 0.17259
-              threshold: 0.85
-              identifies_screen: true
     vs_ranking_weekly:
         anchors:
             - id: vs_button
@@ -528,12 +517,12 @@ screens:
             - id: vs_ranking_alliance_button
               template: vs_ranking_weekly/vs_ranking_alliance_button.png
               region:
-                - 0.86286
-                - 0.89474
-                - 0.9919
-                - 0.9858100000000001
+                - 0.7999999999999999
+                - 0.895
+                - 1
+                - 0.986
               threshold: 0.85
-              identifies_screen: true
+              identifies_screen: false
             - id: vs_ranking_weekly
               template: vs_ranking_weekly/vs_ranking_weekly.png
               region:
@@ -552,6 +541,15 @@ screens:
                 - 0.17366
               threshold: 0.85
               identifies_screen: true
+            - id: your_alliance_checked
+              template: vs_ranking_weekly/your_alliance_checked.png
+              region:
+                - 0.873
+                - 0.899
+                - 0.988
+                - 0.981
+              threshold: 0.85
+              identifies_screen: false
     world_map:
         anchors:
             - id: base_button

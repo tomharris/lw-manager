@@ -19,5 +19,9 @@ func TestMain(m *testing.M) {
 	claimPollInterval = time.Millisecond
 	claimPollBudget = 2 * time.Second
 	executeSettle = time.Millisecond
+	swipeSettleMin = time.Millisecond
+	swipeSettleMax = 2 * time.Millisecond
+	chevronSettle = time.Millisecond
+	rankingButtonSettle = time.Millisecond
 	os.Exit(m.Run())
 }

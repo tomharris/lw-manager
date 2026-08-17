@@ -22,6 +22,8 @@ func runScore(ctx context.Context, cfg config.Config, args []string) error {
 	rescale := fs.String("rescale", "", "comma-separated scale factors to also score, e.g. 0.75,1.25")
 	asJSON := fs.Bool("json", false, "emit machine-readable output")
 	apply := fs.Bool("apply-thresholds", false, "write suggested thresholds back to the manifest")
+	actions := fs.Bool("actions", false, "score action anchors (tap targets) instead of running recognition")
+	screenFilter := fs.String("screen", "", "with --actions, restrict the scan to one screen's action anchors")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -36,6 +38,13 @@ func runScore(ctx context.Context, cfg config.Config, args []string) error {
 	}
 	if len(frames) == 0 {
 		return fmt.Errorf("corpus %s is empty; run `agent corpus pull` first", *root)
+	}
+
+	if *actions {
+		return runScoreActions(reg, frames, *screenFilter, *asJSON)
+	}
+	if *screenFilter != "" {
+		return fmt.Errorf("--screen only applies together with --actions")
 	}
 
 	preds, obs, err := vision.Evaluate(reg, frames)
@@ -124,6 +133,42 @@ func runScore(ctx context.Context, cfg config.Config, args []string) error {
 	if report.Accuracy() < *gate {
 		return fmt.Errorf("accuracy %.4f is below the gate of %.4f", report.Accuracy(), *gate)
 	}
+	return nil
+}
+
+// runScoreActions is the --actions branch of `agent score`: it measures
+// action anchors — the tap targets a task aims at, never the anchors that
+// decide which screen a frame shows — instead of running recognition.
+//
+// Action anchors are invisible to the ordinary scoring pass by design
+// (recognizer.go skips any anchor whose IdentifiesScreen is false, so
+// Evaluate never produces an AnchorObservation for one). That leaves
+// invariant #3 — no task acts without a matched anchor — resting entirely on
+// anchors nothing measures. This is the separate, opt-in path that measures
+// them, reusing Separations exactly as the recognition report does so the
+// same worst-in/best-out/gap reading applies to both.
+//
+// There is no accuracy figure or gate here: Score/Report answer "did
+// recognition call the right screen", which has no meaning for a tap target.
+// The separation table is the whole answer for this path.
+func runScoreActions(reg *vision.Registry, frames []vision.Frame, screen string, asJSON bool) error {
+	obs, err := vision.EvaluateActions(reg, frames, screen)
+	if err != nil {
+		return err
+	}
+	seps := vision.Separations(obs)
+
+	if asJSON {
+		out := map[string]any{
+			"screen":      screen,
+			"separations": seps,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+
+	fmt.Println(vision.FormatSeparations(seps))
 	return nil
 }
 

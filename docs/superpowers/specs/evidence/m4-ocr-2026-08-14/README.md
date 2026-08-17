@@ -1,0 +1,362 @@
+# First real ingest: what OCR does to actual frames, 2026-08-14
+
+The first end-to-end ingest of a real capture (capture 1, 62 frames, run 366)
+produced **`matched=0 created=0 queued=61`** — every list frame failed at the
+group-header parse, so row segmentation never ran at all.
+
+The review queue's raw text is the tell:
+
+```
+(es Thisisit CED 4]        <- "This Is It"
+[By Footloose SSs—~S       <- "Footloose"
+(Bz) Foctioese ges BY      <- "Footloose"
+co ~ | SCS | (empty)
+```
+
+The group names are *in there*, wrapped in noise. So the crop geometry is
+right and something downstream is destroying legibility.
+
+## Finding 1: `vision.Preprocess` is what destroys it
+
+Frame 01 shows the crop the region produces: a clean, crisp
+`R4 | This Is It | 2/9 | ▲` bar. Frame 02 shows what the OCR engine is
+actually handed after `Preprocess` — `Equalize → AdaptiveThreshold → Invert →
+Upscale(3)`. Note the **spurious white bar** across the middle right: adaptive
+thresholding has manufactured structure out of the header's flat background
+gradient.
+
+Measured on that same crop:
+
+| variant | tesseract output |
+|---|---|
+| full `Preprocess` (ships today) | `(es Thisisit CED 4]` |
+| raw crop, no preprocessing | `RA This Is It an B` |
+| **grayscale + upscale only** | **`This Is It an B`** |
+
+Across all 17 stored frames of a real run, the group-name sub-crop with
+grayscale+4x reads cleanly on **11 of 17**, against **0 of 61 parseable** for
+the shipped chain.
+
+This is the flat-region trap CLAUDE.md already documents for NCC, in a
+different algorithm: a normalizing operation applied to a nearly-flat area
+amplifies noise into structure. There it made a template match everywhere;
+here it makes a threshold invent edges.
+
+## Finding 2: crops must be tight to ONE text line
+
+Frame 05 is a header band that is a few pixels too tall: the header text is
+perfectly legible but the next row's top edge bleeds into the bottom, and
+PSM 7 (single text line) merges the two into garbage (`Se`). The same effect
+turns a VS name crop into `[Yewtarset` when the alliance-tag line below is
+included.
+
+The sticky header is *not* pinned to the pixel across every frame — it varies
+by a few pixels — so the band needs a margin at the top and a tighter bottom
+edge, not just a shift.
+
+## Finding 3: the gate's key field already works
+
+VS ranking, grayscale + 4x, no adaptive threshold:
+
+```
+rank    -> 6
+points  -> 101,286,241     (exact, separators and all)
+```
+
+Points is the field the M4 gate is built around, and it reads perfectly off a
+real frame. That is the strongest evidence so far that the pipeline is sound
+and the preprocessing is the blocker.
+
+## Finding 4: stylized outlined glyphs do not OCR at all
+
+Frame 03 is the group header's `2/9` member count: grey fill, heavy black
+outline, light grey background. Tesseract returns nothing usable from it under
+any PSM or charset whitelist tried:
+
+```
+plain psm 7            -> "a |;"
+digits-only whitelist  -> (empty)
+rank badge "R4", psm 8 -> "R"
+```
+
+This is not a tuning problem. Outlined game glyphs are a different recognition
+problem from anti-aliased UI text, and the rank badge and member count are both
+drawn that way. Rank attribution at ingest — reading the group's rank from each
+frame's own sticky header — cannot be done by OCR as built.
+
+## Finding 5: `allianceMemberCountRegion` cuts off the value
+
+Its `X2` is `0.60` (x=432), but on the alliance screen the label `Members:`
+sits at x≈270–390 and its **value** `97/100` at x≈600–680. The region captures
+the label and misses the number, which is why the run warned with
+`raw_text="4 ES"`. The constant's own comment already conceded it was
+"unverified pending a device session".
+
+## Reproducing
+
+`internal/vision/zz_preproc_probe_test.go` (build tag `scrolldiag`) writes what
+the OCR engine is handed for any frame and region, so the chain can be
+inspected rather than inferred:
+
+```bash
+go test -tags scrolldiag ./internal/vision -run TestPreprocProbe -v -args \
+  -ppin <frame.png> -ppout /tmp/out.png -ppy1 0.404 -ppy2 0.438
+```
+
+## Finding 4a: the rank badge IS tractable by NCC — measured
+
+Since OCR cannot read the badge, the question is whether template matching can.
+Measured on real frames, cropping three candidate regions from the
+all-collapsed header stack (evidence frame 06) and cross-correlating the four
+ranks against each other:
+
+| crop | size | var(R4) | worst cross-rank NCC |
+|---|---|---|---|
+| full badge | 46×47 | 4,214,157 | 0.870 |
+| text `R4` | 33×22 | 1,763,753 | 0.807 |
+| **digit only** | **18×22** | **951,026** | **0.680** |
+
+Digit-only separates best, which is the opposite of the instinct to crop
+generously: the shield is identical across ranks, so including it adds
+correlation that is shared by every impostor. Its variance is ~2,400 per pixel
+(stddev ≈ 49), comfortably clear of the near-degenerate band CLAUDE.md warns
+about.
+
+**Cross-capture, which is the only test that means anything** — templates cut
+from one capture, probed against sticky headers in a different one:
+
+| probe | best match | score | gap over runner-up |
+|---|---|---|---|
+| frame 00 | R4 | 1.000 | +0.534 |
+| frames 01/03/07/12 | R3 | 0.657 | +0.308 |
+
+The correct rank wins every time, but at **0.657**, not near 1.0. So the
+acceptance rule must be **argmax across the templates with a required gap over
+the runner-up**, not an absolute score threshold — the same conclusion the
+scroll-offset work reached, for the same reason: real variation depresses the
+absolute score while leaving separation intact.
+
+Frames 01, 03, 07 and 12 scored identically to three decimals, because the
+sticky header is pinned to the same pixels in all of them. That is a third
+independent confirmation of the pinning measurement.
+
+**Limitation, stated rather than assumed:** only R3 and R4 have cross-capture
+probes here. R1 and R2 were cross-correlated only within a single frame, so
+their real-world separation is inferred, not measured. A capture that expands
+those groups would settle it.
+
+## Finding 6: `SegmentRows` has no valid signal on real frames
+
+Found after the preprocessing fix removed the header failure that had been
+masking it — segmentation had never once run on real pixels.
+
+`SegmentRows` splits rows on scanline mean brightness, assuming the signal is
+bimodal: "cards are darker than the page background on both screens, so below
+the midpoint is card and above is gap." It sets the split at the midpoint
+between the darkest and brightest scanline.
+
+Measured on a real member-list frame (region 0.44–0.89):
+
+```
+scanline means: min=149  p10=179  median=200  p90=223  max=246
+midpoint used  = 198        <- almost exactly the median
+first scanlines: 221 221 220 216 214 205 213 212 209 209 207 200 197 192 ...
+```
+
+There are not two populations. Each row contains light card background *and*
+dark text, which average together, so the row-mean signal oscillates around 200
+with no gap between "card" and "gap". The midpoint therefore lands in the middle
+of the noise, and the result is **30 detected bands with a median height of
+3px** against a real row pitch of 112.
+
+That also explains the `ErrPitchMismatch` on all 62 frames, and shows the check
+doing its job: it refused rather than handing 3px slivers downstream.
+
+Two things follow:
+
+- **This needs a different algorithm, not a tuned threshold.** There is no
+  threshold that separates populations that do not exist. The list is strongly
+  periodic with a known pitch, so phase-finding (autocorrelation against the
+  known pitch, or edge/separator detection in an x-band free of text) is the
+  natural approach — measure the offset of a known-period signal rather than
+  hunt for a level.
+- **`observedPitch` measures the wrong quantity even when bands are found.** It
+  is the median band *height* — the card — while `pitch` is the row-to-row
+  distance, card plus gap. Those differ by the gap, so the comparison is
+  systematically biased even on a healthy frame.
+
+## Finding 6a: phase-locking works, verified on both screens
+
+The list is strongly periodic with a **known** pitch, so the problem is not
+"find the rows" but "find the phase". For each candidate phase in `[0, pitch)`,
+sample the row-mean profile at `phase + k*pitch` and take the mean: the correct
+phase is the one whose samples sit in the inter-card gaps, which are the
+brightest scanlines on both screens.
+
+Measured:
+
+| screen | pitch | best phase | brightness | worst phase | contrast |
+|---|---|---|---|---|---|
+| VS ranking | 128 | 108 | **246.0** | 142.5 | 103.5 |
+| member list | 112 | 95 | **246.0** | 151.5 | 94.5 |
+
+Both land on 246.0 — the brightest value present — meaning the phase falls
+exactly in the gap. Recovered boundaries are exactly one pitch apart
+(roster: 799, 911, 1023, 1135, …; VS: 404, 532, 660, 788, …).
+
+Evidence frame 08 is the band `799..911` cropped from a real frame: exactly one
+member row — avatar, `Angel 4am`, `Power: 218.7M`, `Lv.35`, `1m ago`, `Manage`
+— cleanly bounded with no bleed from its neighbours.
+
+The contrast between best and worst phase (94–103 here) is the natural validity
+check, and it is the same shape as every other acceptance rule this milestone
+arrived at: **compare the winner against its runner-up rather than against an
+absolute level.** A region that is not a periodic list has no phase that stands
+out, and its contrast collapses.
+
+## Finding 7: a charset whitelist launders a bad read into a confident wrong fact
+
+The most serious finding of this pass, and it is a data-corruption path rather
+than an accuracy ceiling.
+
+`powerSpec` carries `Charset: "0123456789.KMB"`. On a real member row reading
+**`Power: 218.7M`**:
+
+```
+no whitelist        -> "Power:je18°7M"   fails ParsePower's anchored regex -> review queue
+shipped whitelist   -> "1877M"           parses cleanly -> 1,877,000,000
+```
+
+True value 218,700,000. The whitelisted read is wrong by **8.6x** and arrives
+with nothing to distinguish it from a good one.
+
+The mechanism: the whitelist strips exactly the characters — `:`, `°`, stray
+letters — that would have made the string fail to parse. `ParsePower`'s regex
+`^([0-9]+(?:\.[0-9]+)?)([KMB])$` is doing its job perfectly; the input has been
+laundered into validity before it arrives.
+
+This is the same class of defect as the earlier "parsers fabricated confident
+wrong numbers", fixed then by anchoring every pattern — arriving again by a
+route the anchors cannot see. It defeats invariant #5: the review queue exists
+so an uncertain read never reaches a leaderboard, and a whitelist removes the
+uncertainty rather than the error.
+
+**The general rule this earns:** a character whitelist is safe only where every
+character it removes would also have been removed by a correct read. Where a
+whitelist can *repair* a malformed string into a well-formed one, it converts a
+detectable failure into an undetectable one and must not be used.
+
+`levelSpec` (`Lv.0123456789`) and `lastActiveSpec` (`0123456789hmdagoOnline `)
+carry the same shape of whitelist and have **not** been tested — the crops used
+for this check were misaligned, so their behaviour is unknown rather than
+cleared.
+
+## Finding 10: the capture interleaves two groups, because one was already open
+
+The first ingest run to get past the header gate crashed on a duplicate key.
+The cause is not in ingest's arithmetic — it is that capture 1 genuinely
+contains two rank groups interleaved.
+
+Matching every frame's badge in capture order gives:
+
+```
+-- R4 R3 R3 ... R3 R2 R2 R2 R3 R3 R3 R2 R2 R3 R3 R3 R2 R2 R2 R3 R3 R2 R2 ...
+                    ^ frame 22 onward oscillates every 2-3 frames
+```
+
+That looks like a misread, and it is not. Evidence frames 09 and 10 are the
+header bands from frames 23 and 26: `R2 | I'm Alright | 1/11` and
+`R3 | Footloose | 10/64`, both with a **down** chevron — both groups expanded
+at once. The badge matcher scored 0.960 with a 0.250 gap throughout; it was
+right every time.
+
+`roster_capture` opens a collapsed group, captures it, and collapses it again.
+It only ever closes groups **it** opened. R2 was already expanded before the
+run began, so it stayed open, and scrolling through R3's 64 members eventually
+crossed into R2's rows.
+
+Two separate defects follow:
+
+- **Capture tier (root cause):** the task assumes every group starts collapsed
+  rather than establishing that. It should normalize the starting state —
+  collapse everything first — so each group's capture is isolated and the frame
+  sequence is deterministic. This is the third instance in this milestone of a
+  task assuming a starting state instead of reading it, after `vs_capture`'s
+  filter toggle and its Alliance Duel tab.
+- **Ingest tier (robustness):** `roster.go` resets `gt.contentY = 0` whenever
+  the header differs from the previous frame, so returning to a group wipes its
+  accumulated scroll offset and reprocesses rows already seen — which is what
+  collides on `participation_facts`' key. Interleaving should be handled
+  without corrupting per-group accounting even once the capture side is fixed,
+  because a capture from before the fix must still ingest correctly.
+
+## Finding 4b: `rankBadgeMinGap` was set from one distribution, and the other one overlaps it
+
+Finding 4a established that NCC separates the four rank badges and measured the
+gaps it does so by. What it never measured is what a **wrong** region scores,
+and `rankBadgeMinGap` was set from the true gaps alone. A floor justified only
+by what it accepts has not been tested from the side that matters.
+
+Swept by shifting `rankBadgeRegion` off the sticky header across all four
+`internal/ingest/testdata/rankbadge_r*.png` fixtures — 16 vertical offsets
+(-160px to +160px) and 8 horizontal, plus a flat frame and a white-noise frame.
+Two populations came back, and they are not the same kind of thing.
+
+**Population 1 — the region lands on nothing badge-like.** This is what a gap
+floor is for, and it separates cleanly:
+
+| probe | best | runner-up | gap |
+|---|---|---|---|
+| flat frame | R1 0.000 | R2 0.000 | 0.000 |
+| white noise | R2 0.193 | R3 0.172 | 0.021 |
+| most off-header offsets | — | — | 0.002 – 0.109 |
+| **dy=-60 and dy=-40** | **R4 0.717** | R1 0.555 | **0.162** |
+
+The last row is the finding. 0.162 is above the shipped floor of 0.15, so that
+value demonstrably accepted a wrong-rank read — exactly the case it exists to
+refuse. The smallest true gap is R3's cross-capture 0.250, so the two
+distributions leave a window of 0.088 and the floor moved to its midpoint,
+**0.20**: 0.038 above the worst near-miss, 0.050 below the smallest true read.
+Less headroom on the true side than before, taken deliberately — an overtight
+floor sends a real frame to review, which is recoverable; a loose one attributes
+a whole frame's rows to the wrong rank group, which is not.
+
+**Population 2 — the region lands on a different badge, and matches it
+perfectly.** No threshold reaches this:
+
+| probe | best | runner-up | gap |
+|---|---|---|---|
+| dy=+60 | **R3 1.000** | R2 0.680 | 0.320 |
+| dy=+120 | **R2 1.000** | R3 0.692 | 0.308 |
+
+Both score a perfect 1.000 at the wrong rank, at gaps *above* every true
+cross-capture gap ever measured (0.589 / 0.264 / 0.250). They are not
+near-misses in any noise sense: these fixtures derive from evidence frame 06,
+which shows all four groups collapsed and stacked, so a one-header shift puts
+the region on the adjacent group's real badge and reads it correctly.
+
+That is the general point, and it is the same shape as the `_none` negatives in
+the M1 corpus and the "anchors detect presence, never absence" note in
+CLAUDE.md: **a gap check answers "did anything match", never "did the right
+thing match."** Nothing in `rankbadge.go` can distinguish a correct read of the
+intended badge from a correct read of a badge 60px away, and moving the constant
+cannot change that. What would is a second, independent signal that the region
+is on the header it thinks it is — `vision.Match` already returns `Center` and
+`Box`, both currently discarded, or `roster.go`'s own header-band bounds
+(`hy0`/`hy1`) constraining the search instead of a fixed rect. Neither is built.
+The exposure is bounded in practice because `roster_capture` works one expanded
+group at a time, so a collapsed stack of four adjacent badges is the
+normalization screen rather than a frame that gets ingested.
+
+Horizontal shifts produced one wrong-rank read above the new floor as well
+(dx=+40 on the R2 fixture: R1 0.718 over R3 0.515, gap 0.203). It is recorded
+rather than tuned around: `rankBadgeRegion` is a fixed normalized rect and every
+capture is 720px wide, so horizontal misplacement is not a variation production
+has. Vertical is — the sticky header is not pinned to the pixel across frames
+(see Finding 4a) — which is why the floor was set from the vertical sweep.
+
+Reproduce by temporarily reassigning `rankBadgeRegion` in a test and calling
+`bestTwoRankScores`, which applies no acceptance rule. `TestRankBadgeMinGap
+SeparatesBothDistributions` pins the dy=-60 case permanently; the rest of the
+sweep was a scratch probe and is recorded here rather than committed, since a
+72-cell table of NCC scores is a measurement, not a regression.

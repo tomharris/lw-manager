@@ -12,11 +12,11 @@ func TestScreenNamesContainsEveryDeclaredConstant(t *testing.T) {
 	// gate's per-label frame-count check, which is exactly the silent
 	// drift screens.go exists to prevent.
 	want := []string{
-		vision.ScreenAlliance, vision.ScreenAllianceMembers, vision.ScreenAllianceTech,
-		vision.ScreenAllianceTechDonate, vision.ScreenBase, vision.ScreenMail,
-		vision.ScreenMailAlliance, vision.ScreenMailEvent, vision.ScreenMailSystem,
-		vision.ScreenRadar, vision.ScreenStaminaPrompt, vision.ScreenVS,
-		vision.ScreenVSRanking, vision.ScreenVSRankingAlliance, vision.ScreenVSRankingWeekly,
+		vision.ScreenAlliance, vision.ScreenAllianceDuel, vision.ScreenAllianceMembers,
+		vision.ScreenAllianceTech, vision.ScreenAllianceTechDonate, vision.ScreenBase,
+		vision.ScreenMail, vision.ScreenMailAlliance, vision.ScreenMailEvent,
+		vision.ScreenMailSystem, vision.ScreenRadar, vision.ScreenStaminaPrompt,
+		vision.ScreenVSRanking, vision.ScreenVSRankingWeekly,
 		vision.ScreenWorldMap,
 	}
 	got := make(map[string]bool, len(vision.ScreenNames))

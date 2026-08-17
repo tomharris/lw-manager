@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/tomharris/lw-manager/internal/blob"
 	"github.com/tomharris/lw-manager/internal/corpus"
 	"github.com/tomharris/lw-manager/internal/transport"
 )
@@ -45,6 +46,19 @@ type Options struct {
 	// that used to pass and now does not. CapturedAt is stamped fresh per
 	// capture, not taken from this static value. Zero when Transport is nil.
 	Meta corpus.Meta
+	// Review, when set, registers the human review surface for uncertain OCR
+	// reads (GET /review, GET /review/{id}/crop, POST /review/{id}/resolve,
+	// POST /review/{id}/reject). Optional: corpus labelling is studio's
+	// original job and needs no database, so a nil Review must leave that
+	// path completely unaffected -- the review routes are then simply never
+	// registered, rather than registered and erroring at request time.
+	Review ReviewStore
+	// Blobs backs GET /review/{id}/crop: a review item's screenshot lives in
+	// the production blob store, resolved via ReviewStore.ScreenshotObjectKey,
+	// never in the Corpus store above -- that is a separate, content-addressed
+	// local directory built for labelling fixtures, and cannot serve a real
+	// capture's screenshots. Required whenever Review is set.
+	Blobs blob.Store
 }
 
 // Server serves the studio UI.
@@ -56,6 +70,8 @@ type Server struct {
 	token     string
 	log       *slog.Logger
 	meta      corpus.Meta
+	review    ReviewStore
+	blobs     blob.Store
 }
 
 // New validates options and builds a server.
@@ -76,6 +92,9 @@ func New(opts Options) (*Server, error) {
 	if opts.RefHeight <= 0 {
 		return nil, fmt.Errorf("studio: reference height must be positive, got %d", opts.RefHeight)
 	}
+	if opts.Review != nil && opts.Blobs == nil {
+		return nil, fmt.Errorf("studio: a blob store is required when a review store is configured")
+	}
 	log := opts.Logger
 	if log == nil {
 		log = slog.Default()
@@ -88,6 +107,8 @@ func New(opts Options) (*Server, error) {
 		token:     opts.Token,
 		log:       log,
 		meta:      opts.Meta,
+		review:    opts.Review,
+		blobs:     opts.Blobs,
 	}, nil
 }
 
@@ -128,6 +149,25 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /capture", s.handleCapture)
 	mux.HandleFunc("GET /crop", s.handleCropView)
 	mux.HandleFunc("POST /crop", s.handleCrop)
+	// Task 14: the review routes register only when a review store is
+	// configured, so corpus-only use of studio (no database) is unaffected.
+	// GET /review itself still gets a registered pattern either way: without
+	// one, Go's ServeMux would route it through the "GET /" catch-all above
+	// into handleUnsorted, returning 200 with the corpus page and no signal
+	// that review is off -- fine for an arbitrary unmatched path, wrong for
+	// this task's own advertised interface. An operator hitting it expecting
+	// the review queue deserves a 404 that says why, not a page that quietly
+	// isn't what they asked for.
+	if s.review != nil {
+		mux.HandleFunc("GET /review", s.handleReviewList)
+		mux.HandleFunc("GET /review/{id}/crop", s.handleReviewCrop)
+		mux.HandleFunc("POST /review/{id}/resolve", s.handleReviewResolve)
+		mux.HandleFunc("POST /review/{id}/reject", s.handleReviewReject)
+	} else {
+		mux.HandleFunc("GET /review", func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "review unavailable: no review store configured; serving corpus routes only", http.StatusNotFound)
+		})
+	}
 	return s.authenticate(mux)
 }
 

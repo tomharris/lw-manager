@@ -18,6 +18,7 @@ import (
 	"github.com/tomharris/lw-manager/internal/capture"
 	"github.com/tomharris/lw-manager/internal/config"
 	"github.com/tomharris/lw-manager/internal/db"
+	"github.com/tomharris/lw-manager/internal/ingest"
 	"github.com/tomharris/lw-manager/internal/logging"
 	"github.com/tomharris/lw-manager/internal/runtime"
 	"github.com/tomharris/lw-manager/internal/scheduler"
@@ -330,13 +331,14 @@ func runTask(ctx context.Context, cfg config.Config, args []string) error {
 	defer tr.Close()
 
 	rt, err := runtime.New(runtime.Options{
-		Transport: tr,
-		Registry:  reg,
-		Graph:     graph,
-		Kill:      runtime.NewDBKillSwitch(pool, *accountID),
-		Capture:   capture.New(pool, blobs, nil),
-		AccountID: *accountID,
-		Rand:      rand.New(rand.NewSource(time.Now().UnixNano())),
+		Transport:       tr,
+		Registry:        reg,
+		Graph:           graph,
+		Kill:            runtime.NewDBKillSwitch(pool, *accountID),
+		Capture:         capture.New(pool, blobs, nil),
+		CaptureRecorder: ingest.NewCaptureStore(pool),
+		AccountID:       *accountID,
+		Rand:            rand.New(rand.NewSource(time.Now().UnixNano())),
 	})
 	if err != nil {
 		return err
@@ -381,13 +383,14 @@ func (e *runtimeExecutor) Execute(ctx context.Context, accountID int64, taskName
 	defer tr.Close()
 
 	rt, err := runtime.New(runtime.Options{
-		Transport: tr,
-		Registry:  e.reg,
-		Graph:     e.graph,
-		Kill:      runtime.NewDBKillSwitch(e.pool, accountID),
-		Capture:   capture.New(e.pool, e.blobs, nil),
-		AccountID: accountID,
-		Rand:      rand.New(rand.NewSource(time.Now().UnixNano())),
+		Transport:       tr,
+		Registry:        e.reg,
+		Graph:           e.graph,
+		Kill:            runtime.NewDBKillSwitch(e.pool, accountID),
+		Capture:         capture.New(e.pool, e.blobs, nil),
+		CaptureRecorder: ingest.NewCaptureStore(e.pool),
+		AccountID:       accountID,
+		Rand:            rand.New(rand.NewSource(time.Now().UnixNano())),
 	})
 	if err != nil {
 		return err
