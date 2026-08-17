@@ -995,6 +995,53 @@ func (i *Ingester) readField(ctx context.Context, img image.Image, rect transpor
 	return res, nil
 }
 
+// readPlan is one way of reading a field: how the pixels are prepared and how
+// the engine is configured. Naming the pair matters because the two are only
+// meaningful together — options fitted for one page-segmentation mode are not
+// evidence about another, which is the same lesson vs.go's crop comment
+// records about options fitted through the wrong rectangle.
+//
+// Not to be confused with fieldRead above, which is one numeric field's
+// *outcome*; this is the recipe, that is the result.
+type readPlan struct {
+	spec ocr.Spec
+	opts vision.Options
+}
+
+// readFieldWithRetry reads a field, and on an EMPTY read only, reads it a
+// second time with a different preparation.
+//
+// The retry exists for a measured tesseract defect: its layout analysis
+// rejects some crops outright, and every layout-analysing mode then returns
+// the empty string for text a human reads without effort. Over the 142 row
+// bands of capture 6, 15 bands read empty at PSM 7 and every one of them reads
+// at PSM 13 — those 15 bands were 12 of the gate's 86 members, none matchable
+// at any threshold, because an empty string is not a near miss.
+//
+// Three properties are deliberate:
+//
+//   - It retries only on the empty string. A weak read is still evidence and
+//     the caller's threshold judges it; an empty one is the specific symptom
+//     of layout analysis refusing the crop. Retrying everything is much worse:
+//     PSM 13 alone resolves 31/86 members where PSM 7 resolves 62/86.
+//   - The retry re-prepares the pixels rather than only changing the mode.
+//     Measured over the same bands, retrying with the primary's own options
+//     reaches 69/86 and retrying with grayscale+invert at upscale 4 reaches
+//     71/86 — the primary's options were fitted for a mode whose layout
+//     analysis works, so inheriting them was an assumption, not a result.
+//   - It lives here rather than inside the engine, because whether a poor
+//     read is safer than no read is a property of the FIELD. A name has a
+//     known roster behind it and a bad read simply fails to match; a number
+//     has no such guard, and a retry could manufacture a plausible value out
+//     of a crop that caught neighbouring content.
+func (i *Ingester) readFieldWithRetry(ctx context.Context, img image.Image, rect transport.Rect, primary, retry readPlan) (ocr.Result, error) {
+	res, err := i.readField(ctx, img, rect, primary.spec, primary.opts)
+	if err != nil || res.Text != "" {
+		return res, err
+	}
+	return i.readField(ctx, img, rect, retry.spec, retry.opts)
+}
+
 // visionPreprocess is vision.Preprocess behind a package-level variable
 // rather than a direct call, solely so a test can substitute a spy that
 // records the Options each readField call actually received. ocr.FakeEngine

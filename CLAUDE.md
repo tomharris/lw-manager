@@ -50,6 +50,10 @@ make build                    # bin/agent, bin/control
 ./bin/agent score                                 # the M1 gate, with diagnostics
 ./bin/agent score --json                          # + per-frame predictions, to localize a failure
 make gate                                         # the same gate, as a test
+
+make gate-m4                                      # the M4 gate: ingest vs a hand-checked capture
+make probe-m4                                     # measure the name field; not a gate, read the output
+make probe-m4 PROBE_ARGS='-probe.detail'          # per-member, to localize
 ```
 
 `register` probes the device over adb rather than taking a resolution flag:
@@ -103,6 +107,15 @@ instead of creating a duplicate account.
   `//go:build device`, kept separate from `integration` because the
   infrastructure differs: adb, not Docker. Skips when no device is attached.
   This is the only place `ADBTransport` is exercised for real.
+- `make probe-m4` — **not a gate**: a measuring instrument for the VS name
+  field, which asserts nothing and always passes. It reads every row band of
+  the gate's capture through the production read path and scores it against
+  the 86 hand-transcribed names. Reach for it before changing any crop,
+  preprocessing option, page-segmentation mode or matcher constant — and after,
+  because "re-measure, do not re-reason" applies to all of them. Tagged
+  `m4probe`, needs the blob store and tesseract, no database.
+  `-probe.detail` is the per-member view, `-probe.sweep` and `-probe.fbsweep`
+  the option grids for the primary read and the retry.
 - `make gate` — the M1 phase gate: recognizer accuracy against the real
   corpus. Tagged `//go:build corpus`, device-free but slow, so it stays out
   of `make test`. Skips when the corpus has not been pulled. Carries an
@@ -363,6 +376,63 @@ reason was gone — so the obvious move was to turn thresholding back on. Measur
 across all eight skip-flag shapes at three upscale factors: it is still worse,
 by eight members. Re-measure after moving a crop; do not re-reason.
 
+### Two aggregates side by side are not a causal claim
+
+The M4 spec recorded that "15 row bands read empty" and "this roster has ~10
+non-Latin names", and concluded the empty bands *were* the non-Latin names —
+so the fix was tesseract language packs. Both aggregates were accurate. The
+conclusion was wrong: per member, the empty bands were almost all plain ASCII
+(`Drizzlers12`, `2Rule`, `Mc1999`, `Delio1`), and the non-Latin names were
+never empty at all — `Danny 狂` read as "Danny 3t", `Guts ツ` as "Guts ‘V". No
+language pack would have moved a single empty band.
+
+This is the `worst-in` lesson above reached from another direction: **an
+aggregate can be perfectly accurate and still support the wrong story, and
+only a per-item view can say which.** `make probe-m4 PROBE_ARGS=-probe.detail`
+is the per-item view for the name field; it names each member, its best read,
+and whether the read was empty, too weak, or beaten by a rival.
+
+### A broken instrument reports agreement, not noise
+
+The probe's fallback-preprocessing sweep once returned 24 identical rows across
+shapes that differ enormously elsewhere. That reads as a clean negative result
+("preprocessing doesn't matter here") and is far more persuasive than a bad
+number. It was measuring nothing: the retry was happening inside the engine
+before the probe ever saw an empty string.
+
+The tell was *implausible* uniformity — `full x2` and `gray x4` cannot produce
+identical results on the same crops. Treat suspicious agreement with the same
+scrutiny as suspicious disagreement, especially when it confirms that a thing
+you did not want to do is unnecessary.
+
+### Tesseract's layout analysis is blind to some perfectly legible crops
+
+Not a preprocessing problem and not a contrast problem. A crop can be bold
+black text on light grey, correctly framed, with generous margins, and PSM 3,
+4, 6, 7, 11 and 12 all return the **empty string**. PSM 8 ("single word") and
+PSM 13 ("raw line", which bypasses tesseract's layout hacks) read it. The
+failure is in layout analysis, before recognition runs.
+
+Measured over the M4 gate's 142 row bands: 15 read empty at PSM 7 and every
+one reads at PSM 13 — 12 of 86 members, unmatchable at any threshold, because
+an empty string is not a near miss. But PSM 13 *alone* resolves 31/86 members
+against PSM 7's 62/86, so it is only ever a retry, confined to crops that
+produced nothing at all.
+
+Three consequences worth keeping:
+
+- **The retry belongs in `ingest`, not in the engine** (`readFieldWithRetry`).
+  Whether a poor read beats no read is a property of the field: a name has a
+  known roster behind it and a bad read simply fails to match, while a number
+  has no such guard and a raw-line retry can *manufacture* a plausible value
+  from a crop that caught neighbouring content. Names retry; points do not.
+- **The retry's preprocessing is its own measurement.** Inheriting the
+  primary's options is an assumption — those were fitted for a mode whose
+  layout analysis works. Fitting them for the retry was worth two members
+  (`make probe-m4 PROBE_ARGS=-probe.fbsweep`).
+- `internal/ocr/testdata/psm7_layout_blind.png` is the whole defect in 2KB,
+  and its test is a canary: if PSM 7 ever reads it, the retry can be revisited.
+
 ### OCR reads the glyph, not the codepoint
 
 Two consequences that look alike and need opposite fixes.
@@ -379,7 +449,32 @@ it *to*. An English-only tesseract returns empty for these at every
 preprocessing setting (15 of 142 bands, measured), which is a missing language
 pack, not a tuning problem.
 
-The tempting third response to both is lowering `roster.AutoAccept`. Don't.
+A **confusable** is the third case and needs its own mechanism: the player
+typed what the roster records and the *engine* returned a different character,
+because the two are drawn alike (`ALBAN80` read as "ALBANSO", `AA91AA` as
+"AASIAA"). Unlike a homoglyph it is never folded — the two must stay distinct
+keys or two members collapse into one row — so only the *scoring* treats them
+as near-equal. `internal/roster/confusable.go` charges 2 tenths of an edit for
+a confusable substitution against 10 for anything else, and cheapens
+substitution only: a confusable pair is evidence the engine saw the right
+glyph and named it wrongly, while an insertion or deletion is evidence it saw
+something absent or missed something present.
+
+**Cheapening substitutions spends separation between real members, so show the
+budget.** `roster.ClosestPairScore` reports the highest score between any two
+distinct names on a roster; `make probe-m4` prints it and fails if it reaches
+`AutoAccept`. On the M4 capture it sits at 60 against a threshold of 92. Any
+change to `confusableCost` or the pair table is read against that number, not
+against the accuracy count alone.
+
+Related, and found while fitting that constant: `ratio()` used to divide a
+**rune** distance by a **byte** length, which inflated the score of every
+multi-byte name — `한씨아저씨` scored 66 against the unrelated read "AKAZA". It
+made false near-misses likeliest on exactly the names hardest to read. If a
+score involving non-Latin text looks surprisingly generous, check the units
+before the algorithm.
+
+The tempting third response to all of these is lowering `roster.AutoAccept`. Don't.
 The threshold is what stops a misread row being attributed to the wrong
 member, and that is the one failure mode here a review queue cannot undo: a
 queued row is recoverable, one member's score written onto another's row is

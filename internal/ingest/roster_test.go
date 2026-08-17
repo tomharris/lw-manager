@@ -400,9 +400,18 @@ type rosterFixture struct {
 	// parsedRows, if the fixture has specified none of the above, fills the
 	// frame with N generic rows that each create a new member.
 	parsedRows int
-	// ambiguousName appends one row, "kaln445", scored against a registered
+	// ambiguousName appends one row, "kaen445", scored against a registered
 	// "kain445" -- one substitution in a 7-char name lands at 85, squarely
-	// in the 75-92 review band (see roster.TokenSetRatio's own fixture).
+	// in the 75-92 review band.
+	//
+	// The read used to be "kaln445". That stopped being ambiguous when the
+	// matcher learned OCR's confusable pairs: l/i is one of them, so the same
+	// row now scores 97 and auto-accepts, which is the new scoring working
+	// rather than a regression. The fixture moved to a substitution that is
+	// genuinely a different character (i/e) so the test keeps asserting what
+	// it was written to assert -- that a score in the review band is queued
+	// rather than guessed -- instead of quietly becoming a test of the
+	// confusable table.
 	ambiguousName bool
 	// unparseablePower appends one row whose power field is not
 	// shape-valid, so ParsePower returns ErrUnparseable.
@@ -464,7 +473,7 @@ func newRosterIngestHarness(t *testing.T, fx rosterFixture) *rosterIngestHarness
 			NameNormalized: roster.Normalize("kain445"), Rank: group, Active: true,
 		})
 		rows = append(rows, rowScript{
-			name: "kaln445", power: "Power: 200.0M", level: "Lv.30", lastActive: "Online",
+			name: "kaen445", power: "Power: 200.0M", level: "Lv.30", lastActive: "Online",
 			nameConf: 0.8, powerConf: 0.9, levelConf: 0.9, lastConf: 0.9,
 		})
 	}

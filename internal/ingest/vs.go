@@ -150,6 +150,40 @@ var (
 	vsPointsOptions = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 3}
 )
 
+// vsName is how a ranking row's name is read, and vsNameRetry is how it is
+// read again when the first attempt returns nothing at all. See
+// readFieldWithRetry for why the retry exists and why it re-prepares the
+// pixels instead of only changing the mode.
+//
+// The retry's options are measured, not inherited. Sweeping all eight
+// preprocess shapes at upscale 2/3/4 for the retry alone, with the primary
+// held fixed, over all 142 row bands of capture 6:
+//
+//	gray+inv  x4   71/86 distinct   (117/142 bands)  <- chosen
+//	gray      x4   70/86            (116/142)
+//	gray      x2   69/86            (114/142)        <- what inheriting gives
+//	gray+eq   x3   66/86            (110/142)
+//	full      x2   66/86            (110/142)
+//
+// Upscale 4 is most of it — both x4 shapes clear 70 — and inverting is worth
+// one further member. The margin over inheriting is two members on fifteen
+// bands, so it is a real result on this capture rather than a large one; if a
+// later capture disagrees, re-run `make probe-m4 PROBE_ARGS=-probe.fbsweep`
+// and believe the newer measurement.
+//
+// The points field has no retry at all, and the asymmetry is the point: a name
+// that reads badly fails to match a known roster and goes to review, while a
+// number has no such guard — a raw-line retry on a crop that caught
+// neighbouring content could manufacture a plausible value, which is exactly
+// the failure the vsPointsSpec charset comment above describes.
+var (
+	vsName      = readPlan{spec: vsNameSpec, opts: vsNameOptions}
+	vsNameRetry = readPlan{
+		spec: ocr.Spec{MinConf: vsNameSpec.MinConf, PSM: ocr.PSMRawLine},
+		opts: vision.Options{SkipEqualize: true, SkipThreshold: true, UpscaleFactor: 4},
+	}
+)
+
 // zeroInferenceConfidence is the confidence an inferred (not read) zero
 // carries. The weekly ranking lists only members with a nonzero score, so a
 // member absent from a *complete* capture can be inferred to have scored
@@ -357,7 +391,7 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 // still counts toward the caller's matchedRowCount, or the disagreement it
 // represents would cancel itself out and the cross-check would never fire.
 func (run *vsRun) processRow(ctx context.Context, i *Ingester, img image.Image, band RowBand, screenshotID int64, members []roster.Member, scored map[int64]bool) (bool, error) {
-	nameRes, err := i.readField(ctx, img, fieldRect(band, img, vsNameXFrac0, vsNameXFrac1, vsNameYFrac0, vsNameYFrac1), vsNameSpec, vsNameOptions)
+	nameRes, err := i.readFieldWithRetry(ctx, img, fieldRect(band, img, vsNameXFrac0, vsNameXFrac1, vsNameYFrac0, vsNameYFrac1), vsName, vsNameRetry)
 	if err != nil {
 		return false, err
 	}
