@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -47,6 +48,18 @@ const (
 // the swipe was swallowed (or the list has already hit bottom).
 type frameScript struct {
 	shift int
+	// unsettled is how many post-swipe screenshots of this step return a
+	// frame vision.ScrollOffset refuses to measure, before the settled frame
+	// at +shift is served. Zero is the ordinary case: the first look
+	// measures.
+	//
+	// This stands in for what the handset produced on capture 5 frame 11: a
+	// frame taken while the fling was still decelerating, which the list
+	// then moved a further 25px past. It does not attempt to reproduce fling
+	// optics — a synthetic striped list has none — only the precondition the
+	// behaviour under test turns on, which is a post-swipe frame whose
+	// region cannot be measured followed by one that can.
+	unsettled int
 }
 
 // scrollFrame renders a synthetic vs_ranking_alliance frame: a fixed header
@@ -92,6 +105,28 @@ func scrollFrame(cum int) image.Image {
 				px = 255
 			}
 			img.Set(x, y, color.RGBA{R: px, G: px, B: uint8((x / 5 * 11) % 251), A: 255})
+		}
+	}
+	drawScrollAnchor(img)
+	return img
+}
+
+// scrollUnmeasurableFrame renders a frame whose header anchor still matches —
+// so the screen is recognized exactly as a real mid-fling frame would be —
+// over a list region of seeded noise, which no probe can place against the
+// striped list in the previous frame. Recognition and measurability are
+// separate properties, and only the second one is broken here.
+//
+// The seed is fixed, so "no probe can place it" is a property of a specific
+// image rather than of chance; expandScrollScript asserts it holds.
+func scrollUnmeasurableFrame() image.Image {
+	img := image.NewRGBA(image.Rect(0, 0, scrollFrameW, scrollFrameH))
+	rng := rand.New(rand.NewSource(20260817))
+	for y := 0; y < scrollFrameH; y++ {
+		for x := 0; x < scrollFrameW; x++ {
+			img.Set(x, y, color.RGBA{
+				R: uint8(rng.Intn(256)), G: uint8(rng.Intn(256)), B: uint8(rng.Intn(256)), A: 255,
+			})
 		}
 	}
 	drawScrollAnchor(img)
@@ -229,7 +264,24 @@ func expandScrollScript(script []frameScript) []image.Image {
 		pos += script[i].shift
 		cur = scrollFrame(pos)
 		imgs = append(imgs, prev) // swipeOnce's pre-swipe verify
-		imgs = append(imgs, cur)  // the post-swipe frame: measured, and — if kept — stored
+		if n := script[i].unsettled; n > 0 {
+			// The unmeasurable frames are served first, to the post-swipe
+			// screenshot and to each re-measure; cur then goes to whichever
+			// look comes after them. Asserted rather than assumed, so this
+			// fixture cannot quietly become a measurable frame and leave a
+			// test passing for the wrong reason.
+			noise := scrollUnmeasurableFrame()
+			if _, err := vision.ScrollOffset(prev, noise, scrollTestRegion); !errors.Is(err, vision.ErrOffsetUncertain) {
+				panic("scrollcapture_test: the unsettled fixture is measurable, so it cannot exercise a re-measure: " + fmt.Sprint(err))
+			}
+			for k := 0; k < n; k++ {
+				imgs = append(imgs, noise)
+			}
+			if n > offsetRemeasureAttempts {
+				return imgs // scrollCapture gives up without ever reaching cur
+			}
+		}
+		imgs = append(imgs, cur) // the post-swipe frame: measured, and — if kept — stored
 
 		offset, err := vision.ScrollOffset(prev, cur, scrollTestRegion)
 		if err != nil {
@@ -338,6 +390,82 @@ func TestScrollCaptureRetriesBeforeBelievingTheBottom(t *testing.T) {
 	}
 	if tr.SwipeCount() < 5 {
 		t.Errorf("swipes = %d — the swallowed swipe must have been retried", tr.SwipeCount())
+	}
+}
+
+// A fling that has not finished produces a frame vision.ScrollOffset refuses
+// to measure, and the fix for that is another screenshot, not another swipe:
+// swiping again would advance the list a second time and skip every row in
+// between. Capture 5 died here on the handset — frame 11 measured 387px while
+// two probes disagreed at 3px, and the list moved a further 25px afterwards
+// with no input at all, which is what proves it was still moving when the
+// screenshot was taken.
+func TestScrollCaptureRemeasuresAnUnsettledFrameWithoutSwipingAgain(t *testing.T) {
+	rt, tr := newScrollHarness(t, []frameScript{
+		{shift: 40, unsettled: 1},          // caught mid-fling, then settled at 40
+		{shift: 0}, {shift: 0}, {shift: 0}, // three zeroes: the real bottom
+	})
+
+	frames, complete, err := scrollCapture(context.Background(), rt, ScrollSpec{
+		Screen:    "vs_ranking_alliance",
+		Region:    transport.Rect{X1: 0, Y1: 0.2, X2: 1, Y2: 0.8},
+		Pitch:     128,
+		SwipeFrac: 0.35,
+	})
+	if err != nil {
+		t.Fatalf("scrollCapture: %v", err)
+	}
+	if !complete {
+		t.Error("want complete = true — the bottom was reached")
+	}
+	if len(frames) != 2 {
+		t.Fatalf("got %d frames, want 2 (frame 0 and the re-measured frame 1)", len(frames))
+	}
+	// The settled frame's own offset, not the mid-fling one's: the re-measure
+	// must describe the frame it actually stored.
+	if frames[1].OffsetPx != 40 {
+		t.Errorf("frame 1 recorded offset %d, want 40", frames[1].OffsetPx)
+	}
+	// One swipe per sequence step and not one more. This is the assertion
+	// that separates a re-measure from the zero-offset retry above, which
+	// deliberately does swipe again.
+	if got := tr.SwipeCount(); got != 4 {
+		t.Errorf("swipes = %d, want 4 — a re-measure must not swipe again", got)
+	}
+}
+
+// The re-measure is a way to out-wait a fling, not a way to stop failing. A
+// frame that never becomes measurable must still end the capture, and end it
+// as partial: an unmeasurable offset means the rows between the last two
+// frames are unaccounted for, and reporting that as a finished list is the
+// silent truncation invariant #4 exists to catch.
+func TestScrollCaptureGivesUpOnAFrameThatNeverSettles(t *testing.T) {
+	rt, tr := newScrollHarness(t, []frameScript{
+		{shift: 40, unsettled: offsetRemeasureAttempts + 1}, // every look refuses
+	})
+
+	frames, complete, err := scrollCapture(context.Background(), rt, ScrollSpec{
+		Screen:    "vs_ranking_alliance",
+		Region:    transport.Rect{X1: 0, Y1: 0.2, X2: 1, Y2: 0.8},
+		Pitch:     128,
+		SwipeFrac: 0.35,
+	})
+	if !errors.Is(err, vision.ErrOffsetUncertain) {
+		t.Fatalf("got %v, want an error wrapping vision.ErrOffsetUncertain", err)
+	}
+	if complete {
+		t.Error("a capture that could not measure its last swipe is never complete")
+	}
+	// Frame 0 is still handed back: its pixels are evidence, and vsCapture
+	// persists what it got as a partial capture.
+	if len(frames) != 1 {
+		t.Errorf("got %d frames, want 1 — only the pre-swipe frame was measurable", len(frames))
+	}
+	// Bounded, not unbounded: one swipe, and exactly the looks the bound
+	// allows. Without a bound this test would hang on ReplayTransport's
+	// held last frame rather than fail.
+	if got := tr.SwipeCount(); got != 1 {
+		t.Errorf("swipes = %d, want 1", got)
 	}
 }
 

@@ -238,6 +238,14 @@ func (c *Ctx) Screenshot(ctx context.Context) (image.Image, error) {
 	return frame, nil
 }
 
+// Log exposes the runtime's logger, already tagged with the component and
+// account every task-side line would otherwise have to re-attach by hand.
+// Task code that recovers from something — rather than failing on it — needs
+// somewhere to say so: a recovery nobody can see is indistinguishable from
+// the fault never having happened, which is how a degrading device stays
+// invisible until it fails outright.
+func (c *Ctx) Log() *slog.Logger { return c.log }
+
 // CheckKillSwitch exposes the kill-switch check directly, for task code that
 // needs to bail out of a multi-step loop between steps that otherwise never
 // touch Ctx (invariant #8: checked between every task step).

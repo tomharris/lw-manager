@@ -44,6 +44,14 @@ const (
 	// bottom is believed. Three, matching startExecution, and for the same
 	// reason: a swallowed gesture and a real end look identical.
 	zeroOffsetRetries = 3
+
+	// offsetRemeasureAttempts is how many extra screenshots one post-swipe
+	// frame may take before its offset is given up on. Two, so a frame gets
+	// up to three looks spanning roughly 1.8-2.8s of extra settling on top
+	// of the original swipeSettle. The handset's one observed case needed a
+	// single re-look — the list was 25px from rest — and the cost of the
+	// bound being generous is paid only on frames that already failed once.
+	offsetRemeasureAttempts = 2
 )
 
 // swipeSettleMin/Max are the pause after a swipe, before capturing. Fling has
@@ -131,27 +139,9 @@ func scrollCapture(ctx context.Context, rt *runtime.Ctx, spec ScrollSpec) ([]Scr
 			return frames, false, err
 		}
 
-		cur, err := rt.Screenshot(ctx)
+		cur, offset, err := measureAfterSwipe(ctx, rt, prev, spec, seq)
 		if err != nil {
-			return frames, false, fmt.Errorf("tasks: capturing scroll frame %d: %w", seq, err)
-		}
-		offset, err := vision.ScrollOffset(prev, cur, spec.Region)
-		if err != nil {
-			// No retry here, considered and rejected: task 26 investigated
-			// exactly this failure (two real vs_capture runs died on this
-			// line) and found it was not a transient bad frame. Both errors
-			// named the score check specifically, meaning reach and
-			// agreement — the checks that actually catch a bad frame, an
-			// animation, or a mid-scroll capture — had already passed; the
-			// candidate was a real, agreed-upon placement that a
-			// miscalibrated offsetMinScore rejected anyway. Re-capturing and
-			// re-measuring the same static list content would have scored
-			// about the same and failed again. The fix was recalibrating
-			// vision.ScrollOffset's floor (see its doc comment), not
-			// retrying around it — a retry would have cost time without
-			// fixing anything, and would have hidden the real defect behind
-			// an occasional extra pass.
-			return frames, false, fmt.Errorf("tasks: measuring scroll frame %d on %s: %w", seq, spec.Screen, err)
+			return frames, false, err
 		}
 
 		switch {
@@ -180,6 +170,76 @@ func scrollCapture(ctx context.Context, rt *runtime.Ctx, spec ScrollSpec) ([]Scr
 	}
 	// Ran out of frames without a proven bottom.
 	return frames, false, nil
+}
+
+// measureAfterSwipe takes the post-swipe frame and measures how far the list
+// travelled, re-capturing when the frame turns out not to be measurable.
+//
+// It returns the frame the returned offset was actually measured against, so
+// the caller still stores the one image its OffsetPx describes.
+//
+// What is being retried matters, because the previous version of this code
+// carried a comment rejecting a retry outright and that reasoning still
+// holds for the case it was written about. Task 26 investigated two
+// vs_capture runs that died measuring a *static* list: both errors named
+// vision.ScrollOffset's score check specifically, meaning reach and
+// agreement had already passed and the candidate was a real, agreed-upon
+// placement that a miscalibrated floor rejected anyway. Re-capturing static
+// content would have scored the same and failed the same way; the fix was
+// recalibrating the floor, and a retry there would only have hidden it.
+//
+// This is the other case. On capture 5 the handset returned a frame taken
+// while the fling was still decelerating: two probes measured 387px, probe 0
+// — whose strip sits in the thinnest-margin band at the top of the list —
+// locked onto a decoy exactly three row pitches off at 3px, and the
+// unanimity check refused, correctly. The list then moved a further 25px
+// with no input at all, which is what proves it was still moving when the
+// screenshot was taken. That content is not static, so re-measuring it is
+// not asking the same question twice: the settled pair measures cleanly on
+// all three probes.
+//
+// Another screenshot, never another swipe. Swiping again would advance the
+// list a second time and skip every row between the two positions — a
+// silently short capture, which is the failure this whole milestone exists
+// to prevent.
+//
+// A refusal that survives every attempt is still returned. The point is to
+// out-wait a fling, not to keep asking until an answer arrives.
+func measureAfterSwipe(ctx context.Context, rt *runtime.Ctx, prev image.Image, spec ScrollSpec, seq int) (image.Image, int, error) {
+	var lastErr error
+	for attempt := 0; attempt <= offsetRemeasureAttempts; attempt++ {
+		if attempt > 0 {
+			// Settle again before looking. rt.Screenshot checks the kill
+			// switch itself, so the loop stays interruptible (invariant #8)
+			// without a separate check.
+			if err := rt.Sleep(ctx, swipeSettleMin, swipeSettleMax); err != nil {
+				return nil, 0, err
+			}
+		}
+
+		cur, err := rt.Screenshot(ctx)
+		if err != nil {
+			return nil, 0, fmt.Errorf("tasks: capturing scroll frame %d: %w", seq, err)
+		}
+
+		offset, err := vision.ScrollOffset(prev, cur, spec.Region)
+		if err == nil {
+			if attempt > 0 {
+				rt.Log().Warn("scroll offset measured after re-capturing an unsettled frame",
+					"screen", spec.Screen, "seq", seq, "attempts", attempt+1, "offset", offset)
+			}
+			return cur, offset, nil
+		}
+		// Only an unmeasurable frame is worth another look. Anything else —
+		// a malformed region, mismatched frame sizes — is a defect that more
+		// screenshots cannot fix.
+		if !errors.Is(err, vision.ErrOffsetUncertain) {
+			return nil, 0, fmt.Errorf("tasks: measuring scroll frame %d on %s: %w", seq, spec.Screen, err)
+		}
+		lastErr = err
+	}
+	return nil, 0, fmt.Errorf("tasks: measuring scroll frame %d on %s across %d attempts: %w",
+		seq, spec.Screen, offsetRemeasureAttempts+1, lastErr)
 }
 
 // usableHeight is the region's height less one row pitch: the furthest the
