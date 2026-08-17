@@ -80,6 +80,27 @@ probe-m4: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
 probe-m4:
 	LW_BLOB_FS_ROOT="$(LW_BLOB_FS_ROOT)" $(GO) test -tags m4probe -count=1 -v -timeout 60m ./internal/ingest/ -run TestM4NameProbe $(PROBE_ARGS)
 
+# The M4 points probe: the same instrument for the *points* field.
+#
+# It is separate from probe-m4 rather than a flag on it because the two answer
+# different questions and share only a fixture. The gate's row count moves when
+# the name fails and when the points fail, and those need opposite fixes: of the
+# gate's 21 failures, 8 are rows whose name reads perfectly.
+#
+# Its headline number is roster-free — parsed values scored against the known
+# points, with no name matching — so the points field can be measured
+# independently of the name field's accuracy. -points.detail adds the name, and
+# is the only mode that can attribute an empty or unparseable read to a row.
+#
+#	make probe-points                              # the shipped setting
+#	make probe-points PROBE_ARGS='-points.detail'  # per-row, to localize
+#	make probe-points PROBE_ARGS='-points.sweep'   # the full options sweep
+#	make probe-points PROBE_ARGS='-points.charset=0123456789,'  # re-measure the no-charset decision
+.PHONY: probe-points
+probe-points: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
+probe-points:
+	LW_BLOB_FS_ROOT="$(LW_BLOB_FS_ROOT)" $(GO) test -tags m4probe -count=1 -v -timeout 60m ./internal/ingest/ -run TestM4PointsProbe $(PROBE_ARGS)
+
 .PHONY: lint
 lint:
 	$(GO) vet ./...

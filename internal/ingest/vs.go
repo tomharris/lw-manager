@@ -106,8 +106,57 @@ const (
 // the whole safety argument. Removing it means a row whose crop catches
 // neighboring content fails safely to review instead of manufacturing a
 // number, matching how power now behaves.
+// vsNameLanguages is the tesseract language list for the member-name field, on
+// the primary read and the retry alike. It is one constant rather than two
+// literals because the two plans were measured together: a list changed on one
+// and not the other is not the configuration any number below describes.
+//
+// The points field deliberately has none. It is digits, and every additional
+// language is another way to misread a numeral into something that still
+// parses — the same argument as the missing charset above, reached from the
+// other side.
+//
+// Measured over all 142 row bands of capture 6, scored by distinct members
+// auto-accepted against the 86 hand-transcribed names:
+//
+//	eng                    71/86 distinct   (117/142 bands)  <- previous
+//	eng+ara                71/86            (117/142)
+//	eng+kor                71/86            (116/142)
+//	eng+jpn                71/86            (119/142)
+//	eng+ell                70/86            (114/142)
+//	eng+rus                69/86            (113/142)
+//	eng+guj                69/86            (115/142)
+//	eng+chi_sim            73/86            (118/142)
+//	eng+chi_sim+jpn        73/86            (120/142)
+//	eng+kor+chi_sim+jpn    73/86            (120/142)  <- chosen
+//	all seven installed    70/86            (116/142)
+//
+// The whole gain is CJK. Three of the packs this roster's scripts appear to
+// call for actively cost members, and rus is the clearest: Cyrillic's capitals
+// are drawn like Latin's, so the pack adds hypotheses nothing in the image can
+// discriminate between. It turned the auto-accepted "Mar 89" into "Маг 89" and
+// dropped "Mc1999" from 76 to 33 on the same read. ara is inert because
+// "٣١٢ A l i ٣١٢" is Arabic-Indic *digits* used as decoration, not words, so a
+// model carrying word-level priors has nothing to offer it. Install only what
+// is listed here; the loaded list is not a free superset.
+//
+// kor is the one judgement call, since eng+chi_sim+jpn reaches the same 73 on
+// the same 120 bands. It trades "OD15" (which drops to a harmless "0015" and
+// goes to review) for "한씨아저씨", which without it scores 0 and reads back
+// "AKAZA" — what "ΔKΔŽΔ" normalizes to, and that member is auto-accepted. A
+// band impersonating another member is worse than a band that matches nobody,
+// so kor stays. It does not remove that hazard from the capture, only from
+// this row: "2Rule" still loses to "B52RN10" at 100, as it did before any of
+// this, and that is a matching problem rather than an OCR one.
+//
+// This has to be the primary read, not a retry. readFieldWithRetry fires on an
+// empty string and there are no empty bands left; the reads these packs fix
+// were never empty, only wrong ("Danny 狂" read as "Danny 3t"). Gating a retry
+// on a low *match* score instead would put the matcher upstream of OCR.
+const vsNameLanguages = "eng+kor+chi_sim+jpn"
+
 var (
-	vsNameSpec   = ocr.Spec{MinConf: 0.4}
+	vsNameSpec   = ocr.Spec{MinConf: 0.4, Languages: vsNameLanguages}
 	vsPointsSpec = ocr.Spec{MinConf: 0.6}
 )
 
@@ -143,8 +192,16 @@ var (
 // Only the upscale factor moved, x3 to x2, and it is worth one member rather
 // than a breakthrough. What the sweep really establishes is a ceiling: at the
 // best setting 24 of 86 members still never auto-accept, and 15 bands read
-// back empty — those are the names rendered in Korean, Arabic and CJK, which
-// an English-only tesseract cannot return at any preprocessing setting.
+// back empty.
+//
+// This comment used to attribute those 15 empty bands to the names rendered in
+// Korean, Arabic and CJK. That was wrong twice over, and both corrections are
+// load-bearing for anyone re-fitting these constants. Per member, the empty
+// bands were nearly all plain ASCII and the non-Latin names were never empty —
+// see the language-pack table above, where the packs that would have fixed a
+// script problem cost members instead. The empties were tesseract's layout
+// analysis giving up, which is what the PSM 13 retry below now recovers: at
+// this setting there are no empty bands left at all.
 var (
 	vsNameOptions   = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 2}
 	vsPointsOptions = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 3}
@@ -179,7 +236,7 @@ var (
 var (
 	vsName      = readPlan{spec: vsNameSpec, opts: vsNameOptions}
 	vsNameRetry = readPlan{
-		spec: ocr.Spec{MinConf: vsNameSpec.MinConf, PSM: ocr.PSMRawLine},
+		spec: ocr.Spec{MinConf: vsNameSpec.MinConf, PSM: ocr.PSMRawLine, Languages: vsNameLanguages},
 		opts: vision.Options{SkipEqualize: true, SkipThreshold: true, UpscaleFactor: 4},
 	}
 )

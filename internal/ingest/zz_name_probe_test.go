@@ -42,7 +42,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -95,8 +94,9 @@ type probeFrame struct {
 }
 
 type probeRow struct {
-	Rank int    `yaml:"rank"`
-	Name string `yaml:"name"`
+	Rank   int    `yaml:"rank"`
+	Name   string `yaml:"name"`
+	Points int64  `yaml:"points"`
 }
 
 // probeResult is one configuration's score.
@@ -218,15 +218,7 @@ func probePSMList(t *testing.T, def int) []int {
 	if *probePSMs == "" {
 		return []int{def}
 	}
-	var out []int
-	for _, s := range strings.Split(*probePSMs, ",") {
-		n, err := strconv.Atoi(strings.TrimSpace(s))
-		if err != nil {
-			t.Fatalf("-probe.psm: %q is not a number: %v", s, err)
-		}
-		out = append(out, n)
-	}
-	return out
+	return parsePSMList(t, *probePSMs)
 }
 
 type probeConfig struct {
