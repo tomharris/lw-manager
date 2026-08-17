@@ -33,18 +33,49 @@ var vsListRegion = transport.Rect{X1: 0.03, Y1: 0.185, X2: 0.97, Y2: 0.80}
 const vsRowPitch = 128
 
 // Field sub-rects, as fractions of the frame (X) and of one row band's own
-// height (Y) — recon-estimated from frame 05
-// (docs/superpowers/specs/evidence/m4-recon-2026-08-12/05-weekly-your-alliance-checked.png).
-// Task 21 verified these against eight real rows of the committed
-// m4-scrolloffset-2026-08-13 VS frames while measuring vsNameOptions and
-// vsPointsOptions below (each row read back by eye before OCR ran) — the
-// crop geometry held; the missing per-field Options did not.
+// height (Y).
+//
+// These were recon-estimated from a single frame, then "verified" against
+// eight rows by eye, and both readings missed what the first real gate run
+// made obvious: every one of the 86 rows failed, 50 of them with an OCR read
+// like "at GersonGamer" or "ry} Leroy Jenkins 0914" and 15 with points read
+// as "— 17,219,876". Eight rows checked by a reader who already knew what
+// they said is not a measurement, and a crop wrong by 40px looks perfectly
+// plausible next to a name a human recognizes anyway.
+//
+// So these are now set from an ink profile over all 142 row bands of the 21
+// frames in capture 6 (fixtures/m4gate/expected.yaml's capture), binned at
+// 0.02 of frame width and 1/32 of band height:
+//
+//	rank number      x 0.10..0.16      (then a zero-ink gutter to 0.22)
+//	avatar           x 0.22..0.32      full row height, ornate frames included
+//	name line        x 0.33..~0.66     y 0.25..0.47
+//	alliance line    x 0.34..0.70      y 0.56..0.78
+//	points number    x 0.76..0.92      y 0.41..0.61
+//
+// Three corrections come out of that, and it is worth naming which one each
+// symptom needed, because two of them were invisible in the old fixtures:
+//
+//  1. The name's left edge was 0.26, which is 43px inside the avatar — that
+//     is the "at" and "ry}" prefix. Names are left-aligned at 0.333, so 0.33
+//     clips no name while leaving at most a sliver of an ornate avatar frame.
+//  2. The name's right edge was 0.63, which *truncates* the longest names in
+//     this alliance: "MoreBallsThanBrains" runs to 0.66. Nothing occupies
+//     0.63..0.72 on the name's own line, so widening costs nothing.
+//  3. The points' left edge was 0.65, inside the alliance line's text — the
+//     "haos" of "Organized Chaos" is what became a leading dash. 0.74 sits in
+//     the middle of a gutter carrying zero ink in all 142 bands.
+//
+// The points Y range is tightened to bracket the number's own line as well.
+// That is defence in depth rather than the fix: with X starting at 0.74 there
+// is no alliance text left to catch, but a band that drifts by a few pixels
+// should not start reading a neighbouring line.
 const (
-	vsNameXFrac0, vsNameXFrac1     = 0.26, 0.63
-	vsPointsXFrac0, vsPointsXFrac1 = 0.65, 0.97
+	vsNameXFrac0, vsNameXFrac1     = 0.33, 0.72
+	vsPointsXFrac0, vsPointsXFrac1 = 0.74, 0.97
 
 	vsNameYFrac0, vsNameYFrac1     = 0.05, 0.50
-	vsPointsYFrac0, vsPointsYFrac1 = 0.25, 0.75
+	vsPointsYFrac0, vsPointsYFrac1 = 0.34, 0.68
 )
 
 // See roster.go's Spec-value doc comment: these MinConf values document each
@@ -88,8 +119,34 @@ var (
 // rows too, unlike roster.go's powerOptions: VS points are plain digits and
 // commas with no decimal point to lose, which is the field difference that
 // explains the gap between the two numeric fields' results.
+// Re-measured after the crop corrections above, because options fitted to a
+// crop that turned out to include 43px of avatar are not evidence about the
+// crop that does not. The sweep ran all eight skip-flag shapes at upscale
+// 2/3/4 over all 142 row bands of capture 6, scoring each by how many
+// distinct members its reads auto-accepted against the 86 hand-transcribed
+// names — the quantity the gate actually turns on, rather than a substring
+// count that has to be aligned to rows by hand.
+//
+//	gray          x2   62/86 distinct   (103/142 bands, 15 empty)  <- chosen
+//	gray          x3   61/86            ( 99/142,       15 empty)  <- previous
+//	gray+inv      x2   62/86            (103/142,       15 empty)
+//	gray+thr      x2   54/86            ( 85/142,       21 empty)
+//	full          x2   22/86            ( 32/142,       56 empty)
+//
+// The expectation going in was that thresholding would now help — it had been
+// skipped because it destroyed a crop dominated by a colourful avatar, and
+// that reason was gone. The measurement says otherwise: thresholding costs 8
+// members and doubles the empty reads even on the clean crop, and the full
+// chain is catastrophic. Recorded because it is a plausible thing to try
+// again; it has been tried, on real rows, and it is worse.
+//
+// Only the upscale factor moved, x3 to x2, and it is worth one member rather
+// than a breakthrough. What the sweep really establishes is a ceiling: at the
+// best setting 24 of 86 members still never auto-accept, and 15 bands read
+// back empty — those are the names rendered in Korean, Arabic and CJK, which
+// an English-only tesseract cannot return at any preprocessing setting.
 var (
-	vsNameOptions   = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 3}
+	vsNameOptions   = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 2}
 	vsPointsOptions = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 3}
 )
 
