@@ -330,6 +330,62 @@ cannot express the bimodality that would distinguish "correctly absent" from
 that is not conclusive either way; it takes the per-frame view, not the
 aggregate, to settle.
 
+### A crop "verified by eye" against a handful of rows is not measured
+
+The M4 ingest crops were recon-estimated from one frame, then checked against
+eight real rows with each row read back by eye before OCR ran, and recorded as
+holding. All three of them were wrong. The name crop started 43px inside the
+avatar, its right edge truncated the longest names in the alliance, and the
+points crop started inside the alliance line. The first run against a real
+capture scored **0 of 86 rows**.
+
+The reason the review passed is worth keeping, because it is not carelessness:
+**a human reading a crop already knows what the name says.** A rectangle
+containing `[avatar fragment]GersonGamer` reads as "GersonGamer, fine" to a
+person and as `at GersonGamer` to OCR, and eight of those in a row look like
+eight confirmations. The check confirmed the reader could identify the member,
+which was never in doubt; it could not confirm what the engine would be
+handed.
+
+What works instead is an ink profile over every row band available — bin the
+crop region by column and by row, sum dark pixels, and read the gutters off
+the histogram. Capture 6's 142 bands put the points column's left edge in a
+gutter carrying *zero* ink in all of them, which is a different quality of
+claim from "looked right on eight rows." The same profile is what showed the
+name crop had been clipping `MoreBallsThanBrains`, a defect nobody had thought
+to look for at all.
+
+The corollary applies to anything fitted downstream of a crop: **options
+measured through the wrong rectangle are not evidence about the right one.**
+`vsNameOptions` skipped thresholding because thresholding destroyed a crop
+dominated by a colourful avatar. Once the avatar was out of the crop that
+reason was gone — so the obvious move was to turn thresholding back on. Measured
+across all eight skip-flag shapes at three upscale factors: it is still worse,
+by eight members. Re-measure after moving a crop; do not re-reason.
+
+### OCR reads the glyph, not the codepoint
+
+Two consequences that look alike and need opposite fixes.
+
+A **homoglyph** — Cyrillic `о`, Greek `Ο`, a `ł` — is drawn exactly like a
+Latin character, so OCR returns the Latin one and has no way not to. The
+stored and read forms then share no characters at all, and no threshold helps:
+`δkδzδ` and `akaza` are not a near miss, they are disjoint. `roster.Normalize`
+folds these, and that is the only reason a name like `ΔKΔŽΔ` is matchable.
+
+A **decoration in another script** — `한씨아저씨`, `Danny 狂`, `٣١٢ A l i ٣١٢` —
+is not a homoglyph and must never be folded, because there is nothing to fold
+it *to*. An English-only tesseract returns empty for these at every
+preprocessing setting (15 of 142 bands, measured), which is a missing language
+pack, not a tuning problem.
+
+The tempting third response to both is lowering `roster.AutoAccept`. Don't.
+The threshold is what stops a misread row being attributed to the wrong
+member, and that is the one failure mode here a review queue cannot undo: a
+queued row is recoverable, one member's score written onto another's row is
+not. Raise the score of reads that are genuinely the same name (folding,
+confusable-aware distance); do not lower the bar for everything.
+
 ## Layout
 
 ```
@@ -372,6 +428,21 @@ fixtures/       recorded screenshots for device-free tests
   of `Wake`, which is evidence a mid-transition frame doesn't have. The
   conclusion was correct for that evidence; it just no longer generalizes to
   "black frame implies asleep" on its own.
+- **A gate that reads the blob store must be given an absolute
+  `LW_BLOB_FS_ROOT`.** The fs backend defaults to the relative `./data/blobs`
+  and `go test` runs each package binary in *its own source directory*, so a
+  test in `internal/ingest` looks under `internal/ingest/data/blobs` and finds
+  nothing. It skips reporting a missing frame, which reads as a bad capture
+  rather than a mislocated store. `make gate-m4` defaults it with `?=`.
+- **A swipe's fling is not always finished when the settle expires.** The
+  900-1400ms `swipeSettle` is usually enough and occasionally is not: a real
+  `vs_capture` frame was screenshotted while the list was still decelerating,
+  and the list moved a further 25px afterwards with no input at all. A
+  mid-fling frame does not fail obviously — it inverts the thinnest probe's
+  lattice margin in `vision.ScrollOffset`, which then refuses (correctly)
+  rather than returning a wrong offset. The fix is another screenshot, never
+  another swipe: swiping again advances the list a second time and skips every
+  row in between.
 - **Rank groups have no fixed identity.** Group names are user-editable, the
   group set itself varies — there was no R4 group three weeks before there
   was one — and the rank badges differ from one another by a single digit,
