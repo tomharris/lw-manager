@@ -44,6 +44,36 @@ type Spec struct {
 	Strip string
 	// MinConf is the confidence a read must reach to be Accepted.
 	MinConf float64
+	// Languages is the tesseract language list for this field, in tesseract's
+	// own "+"-joined form ("eng+kor+ara+chi_sim+jpn"). Empty means the
+	// engine's default, which is English.
+	//
+	// It belongs on the field spec rather than on the engine because the two
+	// fields this project reads want opposite things. A VS points field is
+	// digits behind a character whitelist, and every extra language only adds
+	// ways to misread a numeral. A member name is free text that this
+	// alliance renders in Korean, Arabic, CJK and katakana, which an
+	// English-only tesseract returns as the empty string at every
+	// preprocessing setting — measured, 15 of 142 row bands.
+	//
+	// Note the interaction with Charset: a whitelist is expressed in
+	// characters, so combining one with a non-Latin language is close to
+	// meaningless. Nothing enforces that here, because the useful
+	// combinations are per-field decisions and this type only carries them.
+	Languages string
+
+	// PSM overrides the engine's page-segmentation mode for this field. Zero
+	// means the engine's own default (PSMSingleLine), which is right for
+	// every field read directly.
+	//
+	// It exists for retry reads. Tesseract's layout analysis sometimes
+	// rejects a crop outright, and every layout-analysing mode (3, 4, 6, 7,
+	// 11, 12) then returns the empty string for text a human reads without
+	// effort — see internal/ocr/testdata/psm7_layout_blind.png, and
+	// PSMRawLine, which reads it. Whether to retry such a crop, and with what
+	// preprocessing, is a decision only the caller can make; this field is
+	// how the caller expresses the second attempt.
+	PSM int
 }
 
 // Clean removes every character in spec.Strip from raw.

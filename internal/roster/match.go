@@ -75,16 +75,31 @@ func TokenSetRatio(a, b string) int {
 
 // ratio scores two non-empty, already-normalized strings in 0..100 by
 // Levenshtein distance relative to the longer string's length.
+//
+// Distances are in tenths of an edit (see confusable.go), so the denominator
+// is scaled to match. A substitution between two characters OCR interchanges
+// costs a fraction of an edit rather than a whole one, which is what lets a
+// member called ALBAN80 match a row read as "ALBANSO" without lowering the
+// threshold that protects every other row.
+//
+// Lengths are counted in RUNES, not bytes. That is a correction, not a
+// refinement: the distance has always been computed over []rune while the
+// denominator used len(), so any name with a multi-byte character was scored
+// against a denominator up to three times too large — which INFLATES the
+// score. Measured on capture 6, the Korean name "한씨아저씨" scored 66 against
+// the unrelated read "AKAZA" for no reason but this. Byte lengths made false
+// near-misses on exactly the non-Latin names hardest to read, and any cost
+// constant fitted against those numbers would have been fitted to an artifact.
 func ratio(a, b string) int {
 	if a == b {
 		return 100
 	}
-	d := levenshtein(a, b)
-	longest := len(a)
-	if len(b) > longest {
-		longest = len(b)
+	longest := len([]rune(a))
+	if n := len([]rune(b)); n > longest {
+		longest = n
 	}
-	score := 100 * (longest - d) / longest
+	d := levenshtein(a, b)
+	score := 100 * (longest*fullEditCost - d) / (longest * fullEditCost)
 	if score < 0 {
 		score = 0
 	}
@@ -108,22 +123,30 @@ func Rank(raw string, members []Member) []Candidate {
 	return out
 }
 
-// levenshtein is the standard two-row edit distance.
+// levenshtein is the standard two-row edit distance, in tenths of an edit.
+//
+// Insertion and deletion cost a full edit; substitution costs whatever
+// substitutionCost says, which is less than a full edit for a pair OCR
+// interchanges. Only substitution is cheapened, and deliberately so: a
+// confusable pair is evidence that the engine saw the right glyph and named it
+// wrongly, whereas an inserted or dropped character is evidence that it saw
+// something that was not there, or missed something that was. Those are not
+// the same claim and must not carry the same discount.
 func levenshtein(a, b string) int {
 	ra, rb := []rune(a), []rune(b)
 	prev := make([]int, len(rb)+1)
 	cur := make([]int, len(rb)+1)
 	for j := range prev {
-		prev[j] = j
+		prev[j] = j * fullEditCost
 	}
 	for i := 1; i <= len(ra); i++ {
-		cur[0] = i
+		cur[0] = i * fullEditCost
 		for j := 1; j <= len(rb); j++ {
-			cost := 1
-			if ra[i-1] == rb[j-1] {
-				cost = 0
-			}
-			cur[j] = min3(cur[j-1]+1, prev[j]+1, prev[j-1]+cost)
+			cur[j] = min3(
+				cur[j-1]+fullEditCost,
+				prev[j]+fullEditCost,
+				prev[j-1]+substitutionCost(ra[i-1], rb[j-1]),
+			)
 		}
 		prev, cur = cur, prev
 	}

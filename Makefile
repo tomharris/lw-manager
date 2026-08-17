@@ -63,6 +63,23 @@ gate-m4: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
 gate-m4:
 	LW_BLOB_FS_ROOT="$(LW_BLOB_FS_ROOT)" $(GO) test -tags m4gate -count=1 -v -timeout 20m ./internal/ingest/
 
+# The M4 name probe: a measuring instrument for the name field, not a gate.
+#
+# It asserts nothing and always passes; its output is the point. Use it to
+# decide anything about the name crop, the preprocessing options, the language
+# packs or the matcher's scoring — the numbers that set today's vsNameOptions
+# came from a harness like this that was NOT committed, and rebuilding it cost
+# a session. Needs the blob store and tesseract; no database.
+#
+#	make probe-m4                                # the shipped setting
+#	make probe-m4 PROBE_ARGS='-probe.detail'     # per-member, to localize
+#	make probe-m4 PROBE_ARGS='-probe.sweep'      # the full options sweep
+#	make probe-m4 PROBE_ARGS='-probe.langs=eng+kor+ara+chi_sim+jpn -probe.detail'
+.PHONY: probe-m4
+probe-m4: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
+probe-m4:
+	LW_BLOB_FS_ROOT="$(LW_BLOB_FS_ROOT)" $(GO) test -tags m4probe -count=1 -v -timeout 60m ./internal/ingest/ -run TestM4NameProbe $(PROBE_ARGS)
+
 .PHONY: lint
 lint:
 	$(GO) vet ./...
