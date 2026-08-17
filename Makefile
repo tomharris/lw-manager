@@ -51,9 +51,17 @@ gate:
 # tesseract binary. It skips, naming what is missing, when the hand-checked
 # fixture has not been transcribed yet or its frames are not in the configured
 # blob store — see fixtures/m4gate/README.md.
+#
+# LW_BLOB_FS_ROOT is defaulted to an absolute path here because the fs
+# backend's own default is the relative ./data/blobs, and `go test` runs each
+# package binary in its own source directory — so the gate would look for the
+# capture's frames under internal/ingest/data/blobs and skip, reporting a
+# missing frame rather than a mislocated store. ?= so an explicitly configured
+# store still wins, and it is simply ignored when the backend is s3.
 .PHONY: gate-m4
+gate-m4: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
 gate-m4:
-	$(GO) test -tags m4gate -count=1 -v -timeout 20m ./internal/ingest/
+	LW_BLOB_FS_ROOT="$(LW_BLOB_FS_ROOT)" $(GO) test -tags m4gate -count=1 -v -timeout 20m ./internal/ingest/
 
 .PHONY: lint
 lint:
