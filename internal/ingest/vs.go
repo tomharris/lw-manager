@@ -361,7 +361,11 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 		names = append(names, m.Name)
 	}
 	if closest, a, b := roster.ClosestPairScore(names); closest >= roster.AutoAccept {
-		slog.WarnContext(ctx, "ingest: two roster members are indistinguishable to the matcher",
+		// ClosestPairScore reports only the single highest-scoring pair, so
+		// this is the closest pair, not necessarily the only one at or above
+		// AutoAccept -- a third or fourth near-indistinguishable pair could
+		// exist below it and this warning would not say so.
+		slog.WarnContext(ctx, "ingest: two roster members are indistinguishable to the matcher (closest pair; others may exist below it)",
 			"capture_id", captureID, "score", closest, "auto_accept", roster.AutoAccept,
 			"member_a", a, "member_b", b)
 	}

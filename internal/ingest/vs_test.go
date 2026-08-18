@@ -636,7 +636,14 @@ func TestIngestVSWarnsWhenTwoMembersAreIndistinguishable(t *testing.T) {
 	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
 		t.Fatalf("IngestVS: %v", err)
 	}
-	if !strings.Contains(buf.String(), "indistinguishable") {
-		t.Errorf("no warning logged for two members scoring above AutoAccept against each other; log was:\n%s", buf.String())
+	log := buf.String()
+	if !strings.Contains(log, "indistinguishable") {
+		t.Errorf("no warning logged for two members scoring above AutoAccept against each other; log was:\n%s", log)
+	}
+	// Not just that some warning fired: that it names the right two members,
+	// rather than a garbled or empty pair the "indistinguishable" substring
+	// check alone cannot tell apart from a correct one.
+	if !strings.Contains(log, "ALBAN80") || !strings.Contains(log, "ALBANSO") {
+		t.Errorf("warning did not name both indistinguishable members (ALBAN80, ALBANSO); log was:\n%s", log)
 	}
 }

@@ -157,16 +157,21 @@ func TestM4NameProbe(t *testing.T) {
 	// matcher can attribute one member's row to another — the one failure
 	// here that a human cannot undo later.
 	//
-	// Measured over the whole member list (members), not exp.Rows: the
-	// ranking lists scorers only, so the 86 hand-transcribed rows are the set
-	// least likely to contain the near-neighbour that actually breaks a
-	// match -- see ClosestPairScore's doc comment.
+	// Built from `members` (probeMembers(exp)), not straight off exp.Rows, so
+	// this widens automatically the day a fixture carries a broader roster --
+	// see ClosestPairScore's doc comment for why the ranked rows are the wrong
+	// set in general. It does NOT widen anything today: probeMembers builds
+	// its list 1:1 from exp.Rows, because this probe has no roster to draw on
+	// beyond the hand-transcribed capture, so `names` below is still exactly
+	// the 86 ranked names. The real widening -- checking members who never
+	// scored -- only happens in production IngestVS, which has the full
+	// alliance roster to check against.
 	names := make([]string, 0, len(members))
 	for _, m := range members {
 		names = append(names, m.Name)
 	}
 	closest, a, b := roster.ClosestPairScore(names)
-	t.Logf("closest pair among the %d roster members: %d (%q vs %q); AutoAccept is %d, margin %d",
+	t.Logf("closest pair among the %d ranked rows (probe has no broader roster to check): %d (%q vs %q); AutoAccept is %d, margin %d",
 		len(names), closest, a, b, roster.AutoAccept, roster.AutoAccept-closest)
 	if closest >= roster.AutoAccept {
 		t.Errorf("two distinct members score %d against each other — at or above AutoAccept (%d). "+

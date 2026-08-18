@@ -114,11 +114,13 @@ func substitutionCost(a, b rune) int {
 // who scored, so a set built from it systematically excludes exactly the
 // members most likely to be an unnoticed near-neighbour of a ranked name — a
 // non-scoring member is invisible to a check built that way, and the pair
-// that breaks the matcher is disproportionately one of those. `make probe-m4`
-// used to measure this over the 86 ranked names for that reason and read a
+// that breaks the matcher is disproportionately one of those. Production
+// IngestVS now calls this over the full alliance roster for exactly that
+// reason. `make probe-m4` still measures it over the 86 hand-transcribed
+// ranked names -- the probe has no broader roster to draw on -- and read a
 // comfortable margin throughout, while the shipped matcher misattributed a
-// row once the member set was widened with a decoy one confusable
-// substitution from a real name.
+// row once a decoy one confusable substitution from a real name was added to
+// the member set the assignment probe checked against.
 //
 // A result at or above AutoAccept means the roster contains two members the
 // matcher can no longer tell apart, and the cost constant is too low — or those
