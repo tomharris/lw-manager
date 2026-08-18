@@ -3,7 +3,6 @@ package ingest
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sort"
 	"time"
 
@@ -254,6 +253,31 @@ var (
 // above) 1.0.
 const zeroInferenceConfidence = 0.90
 
+// residualMatchConfidence is the name-match confidence a phase-2 assignment
+// carries.
+//
+// It exists because score/100 is the wrong confidence model for an
+// assignment, and using it would silently erase the whole gain: a row
+// resolved at string-score 60 blends to 0.60, falls under
+// factConfidenceGate (0.80), and is queued for review despite having been
+// resolved. Lowering that gate is not the fix -- it protects every other row.
+//
+// The claim a phase-2 assignment makes is not "these two strings are 60%
+// similar". It is "this member is the unambiguous winner among the
+// unclaimed, by a margin of at least ResidualMargin, in a closed set where
+// every confident row is already pinned." That claim's strength does not vary
+// with the string score, so neither does this number.
+//
+// 0.85 sits above factConfidenceGate and visibly below a clean match, so the
+// distinction survives into the fact and a human triaging later can see how a
+// row was resolved. UpsertFact only overwrites on strictly higher confidence,
+// so a later clean read of the same member supersedes a residual match by
+// itself -- which is the correct direction.
+//
+// Fitted, like confusableCost. Re-measure with `make probe-assign`; do not
+// re-reason.
+const residualMatchConfidence = 0.85
+
 // VSResult summarizes one IngestVS run.
 //
 // Unidentified counts rows whose name matched no member confidently enough to
@@ -264,7 +288,13 @@ const zeroInferenceConfidence = 0.90
 // that needs its review queue cleared.
 type VSResult struct {
 	Matched, Queued, Zeroed, Unidentified int
-	Status                                string
+	// Duplicates counts rows dropped because the member they read was
+	// already assigned to another row -- the pinned self row, structurally.
+	// Reported rather than silent because "the capture contained a duplicate"
+	// and "the capture contained a row nobody could attribute" are different
+	// outcomes, and only one of them is a problem.
+	Duplicates int
+	Status     string
 }
 
 // vsRun carries the state one IngestVS call accumulates across frames.
@@ -323,12 +353,6 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 		res:        VSResult{Status: capture.Status},
 	}
 
-	// scored is the identity-dedupe set: which members already have a
-	// vs_points fact written (or attempted) from this capture. It is also
-	// the belt-and-braces cross-check's other half — see the disagreement
-	// check below.
-	scored := map[int64]bool{}
-
 	rows, err := i.readVSRows(ctx, frames, members)
 	if err != nil {
 		return VSResult{}, err
@@ -339,32 +363,40 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 		lastFrameShotID = frames[len(frames)-1].ScreenshotID
 	}
 
-	matchedRowCount := 0
-	for _, row := range rows {
-		matched, err := run.attributeRow(ctx, i, row, members, scored)
-		if err != nil {
-			return VSResult{}, err
-		}
-		if matched {
-			matchedRowCount++
-		} else {
-			run.res.Unidentified++
+	assignments := roster.Assign(scoreMatrix(rows), roster.DefaultResidual)
+
+	// A row left unassigned whose best read IS a member somebody else already
+	// holds is a duplicate, not a failure -- see VSResult.Duplicates.
+	assignedMember := make(map[int]bool, len(assignments))
+	for _, a := range assignments {
+		if a.Member >= 0 {
+			assignedMember[a.Member] = true
 		}
 	}
 
-	// The identity cross-check the roster route deliberately omitted (see
-	// roster.go's dedupe-site comment, and CLAUDE.md: it exists to catch the
-	// pinned self row). Geometric dedupe only compares a row's position to
-	// the one immediately before it, so it cannot see the same member
-	// matched at two unrelated positions in the same capture.
-	// matchedRowCount counts every row whose name auto-accepted a match,
-	// including a repeat; len(scored) counts only the distinct members that
-	// made it past deduplication. A mismatch is not silently resolved — it
-	// is flagged, so a problem bigger than the one known, structurally
-	// excluded pinned row does not go unnoticed.
-	if matchedRowCount != len(scored) {
-		slog.WarnContext(ctx, "ingest: vs ranking identity cross-check found a disagreement between geometric and identity match counts",
-			"capture_id", captureID, "geometric_matches", matchedRowCount, "identity_matches", len(scored))
+	for n, row := range rows {
+		a := assignments[n]
+		dup := false
+		if a.Member < 0 {
+			for j, s := range row.Scores {
+				if s >= roster.AutoAccept && assignedMember[j] {
+					dup = true
+					break
+				}
+			}
+		}
+		matched, err := run.attributeRow(ctx, i, row, a, dup, members)
+		if err != nil {
+			return VSResult{}, err
+		}
+		switch {
+		case dup:
+			run.res.Duplicates++
+		case matched:
+			// counted inside attributeRow via run.res.Matched
+		default:
+			run.res.Unidentified++
+		}
 	}
 
 	// Absence means zero, but only on a complete capture whose every row was
@@ -395,8 +427,8 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 	// clear the review queue and re-ingest, and this same capture writes them
 	// once every row is accounted for.
 	if capture.Status == "complete" && run.res.Unidentified == 0 {
-		for _, m := range members {
-			if scored[m.ID] {
+		for n, m := range members {
+			if assignedMember[n] {
 				continue
 			}
 			if _, _, err := i.store.UpsertFact(ctx, db.Fact{
@@ -535,6 +567,16 @@ func (i *Ingester) readVSRows(ctx context.Context, frames []db.CaptureFrame, mem
 	return rows, nil
 }
 
+// scoreMatrix projects the rows' score vectors into the shape roster.Assign
+// takes.
+func scoreMatrix(rows []vsRow) [][]int {
+	out := make([][]int, len(rows))
+	for i, r := range rows {
+		out[i] = r.Scores
+	}
+	return out
+}
+
 // candidatesFor rebuilds the ranked candidate list from a row's stored score
 // vector, so a review row can still record what the matcher was choosing
 // between without pass 1 carrying a second copy of it.
@@ -549,57 +591,60 @@ func candidatesFor(row vsRow, members []roster.Member) []roster.Candidate {
 
 // attributeRow routes one already-read row to a fact, a duplicate no-op, or
 // the review queue. It never creates a member: the roster route is the only
-// writer of that table, so a name that matches nothing here goes to review,
-// full stop -- minting a member from a misread ranking row would corrupt the
-// very count reconciliation depends on.
+// writer of that table, so a row matching nothing goes to review, full stop.
 //
-// Returns whether the row's name auto-accepted a match at all, independent of
-// whether that member had already been scored this capture.
-func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, members []roster.Member, scored map[int64]bool) (bool, error) {
-	candidates := candidatesFor(row, members)
-	switch {
-	case len(candidates) > 0 && candidates[0].Score >= roster.AutoAccept:
-		memberID := candidates[0].MemberID
-		if scored[memberID] {
-			// Same member, a different screen position: the pinned self row
-			// (or a genuine bug surfacing elsewhere). Deduplicate by member
-			// id -- do not write a second fact for it.
-			return true, nil
-		}
-		scored[memberID] = true
-		run.res.Matched++
-
-		matchNorm := float64(candidates[0].Score) / 100.0
-		points, perr := ParsePoints(row.PointsText)
-		if perr != nil {
-			return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.PointsText, nil, "unparseable_points", 0)
-		}
-		conf := min(matchNorm, row.PointsConf)
-		if conf < factConfidenceGate {
-			return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.PointsText, nil, "low_confidence_points", conf)
-		}
-		// UpsertFact, not InsertFact, for the reason IngestRoster's writeFacts
-		// documents at length: observed_at is pinned to the capture's own
-		// started_at, so re-running ingest over this same capture recomputes
-		// the identical key and a plain INSERT rejects it -- which is not
-		// hypothetical, since resolving a review tells the operator to ingest
-		// the capture again.
-		if _, _, err := i.store.UpsertFact(ctx, db.Fact{
-			MemberID: memberID, Metric: "vs_points", Value: float64(points),
-			ObservedAt: run.observedAt, PeriodKey: run.periodKey,
-			Source: "ocr:vs_ranking", ScreenshotID: row.ScreenshotID,
-			Confidence: conf,
-		}); err != nil {
-			return true, fmt.Errorf("ingest: writing vs_points fact for member %d: %w", memberID, err)
-		}
-		return true, nil
-
-	case len(candidates) > 0 && candidates[0].Score >= roster.ReviewFloor:
-		return false, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.NameText, candidates, "ambiguous_name_match", 0)
-
-	default:
-		return false, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.NameText, candidates, "no_confident_match", 0)
+// It no longer decides WHO the row is -- roster.Assign did that across the
+// whole capture, using the constraint that a member appears at most once.
+// What is left here is what to do about it.
+func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a roster.Assignment, dup bool, members []roster.Member) (bool, error) {
+	if dup {
+		// Same member, a different screen position: the pinned self row.
+		// Counted by the caller, deliberately not queued.
+		return false, nil
 	}
+	if a.Member < 0 {
+		candidates := candidatesFor(row, members)
+		reason := "no_confident_match"
+		if len(candidates) > 0 && candidates[0].Score >= roster.ReviewFloor {
+			reason = "ambiguous_name_match"
+		}
+		return false, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.NameText, candidates, reason, 0)
+	}
+
+	memberID := members[a.Member].ID
+	run.res.Matched++
+
+	// A phase-1 match is a string that scored >= AutoAccept and is weighted
+	// as one. A phase-2 match is an elimination argument whose strength does
+	// not vary with the string score -- see residualMatchConfidence.
+	matchNorm := float64(a.Score) / 100.0
+	if a.Phase == roster.PhaseResidual {
+		matchNorm = residualMatchConfidence
+	}
+
+	points, perr := ParsePoints(row.PointsText)
+	if perr != nil {
+		return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.PointsText, nil, "unparseable_points", 0)
+	}
+	conf := min(matchNorm, row.PointsConf)
+	if conf < factConfidenceGate {
+		return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.PointsText, nil, "low_confidence_points", conf)
+	}
+	// UpsertFact, not InsertFact, for the reason IngestRoster's writeFacts
+	// documents at length: observed_at is pinned to the capture's own
+	// started_at, so re-running ingest over this same capture recomputes the
+	// identical (member_id, metric, period_key, source, observed_at) key and
+	// a plain INSERT rejects it -- which is not hypothetical, since resolving
+	// a review tells the operator to ingest the capture again.
+	if _, _, err := i.store.UpsertFact(ctx, db.Fact{
+		MemberID: memberID, Metric: "vs_points", Value: float64(points),
+		ObservedAt: run.observedAt, PeriodKey: run.periodKey,
+		Source: "ocr:vs_ranking", ScreenshotID: row.ScreenshotID,
+		Confidence: conf,
+	}); err != nil {
+		return true, fmt.Errorf("ingest: writing vs_points fact for member %d: %w", memberID, err)
+	}
+	return true, nil
 }
 
 // queueReview mirrors rosterRun.queueReview: records one row that could not

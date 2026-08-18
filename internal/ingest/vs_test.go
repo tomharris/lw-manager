@@ -218,6 +218,18 @@ func newVSIngestHarness(t *testing.T, fx vsFixture) *vsIngestHarness {
 	return h
 }
 
+// reviewReasons counts the queued review rows by reason, mirroring
+// rosterIngestHarness's helper. The VS route now has several distinct reasons
+// a row can be held for, and the assertions below care which gate a row hit
+// rather than only that it was queued.
+func (h *vsIngestHarness) reviewReasons() map[string]int {
+	out := map[string]int{}
+	for _, r := range h.store.Reviews {
+		out[r.Reason]++
+	}
+	return out
+}
+
 // --- tests -------------------------------------------------------------------
 
 // The rule the recon forced: the ranking lists scorers only, so an absent
@@ -415,6 +427,81 @@ func TestIngestVSInferredZeroCarriesLowerConfidenceThanARead(t *testing.T) {
 	}
 	if !sawRead || !sawInferredZero {
 		t.Fatalf("expected both a read fact and an inferred zero in this fixture, sawRead=%v sawInferredZero=%v", sawRead, sawInferredZero)
+	}
+}
+
+// A row nothing matches at AutoAccept, whose member is nonetheless the only
+// candidate left once every other row is pinned. This is the whole gain: on
+// capture 6 it is twelve members, including "Syłar" read as "cular" at 60.
+func TestIngestVSResolvesAWeakRowFromTheResidual(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(2), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// "Brav0z" scores below AutoAccept against Bravo02 and far below it
+		// against Alpha01 -- unmatchable per-row, unambiguous once Alpha01 is
+		// taken.
+		{Text: "Brav0z", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
+	}
+
+	res, err := h.IngestVS(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if res.Matched != 2 {
+		t.Errorf("matched %d, want 2: the residual row's member was the only one left", res.Matched)
+	}
+	if len(h.store.Facts) != 2 {
+		t.Fatalf("wrote %d facts, want 2", len(h.store.Facts))
+	}
+	// The residual match must carry residualMatchConfidence, not score/100 --
+	// a string score of ~60 blended into the fact would fall under
+	// factConfidenceGate and the row would be queued anyway, silently undoing
+	// the entire assignment.
+	var residual db.Fact
+	for _, f := range h.store.Facts {
+		if f.MemberID == h.store.members[1].ID {
+			residual = f
+		}
+	}
+	if residual.Confidence < factConfidenceGate {
+		t.Errorf("residual fact confidence %.2f is below factConfidenceGate %.2f; it would never be written",
+			residual.Confidence, factConfidenceGate)
+	}
+	if residual.Confidence >= 0.95 {
+		t.Errorf("residual fact confidence %.2f, want it visibly below a clean match", residual.Confidence)
+	}
+}
+
+// The pinned self row appears twice by design (recon section 2). It is
+// structurally expected, so it is counted and dropped -- never queued. A
+// review row every week for something the screen always does trains an
+// operator to ignore the queue.
+func TestIngestVSCountsADuplicateRowRatherThanQueueingIt(t *testing.T) {
+	h := newVSIngestHarness(t, vsFixture{
+		captureComplete: true, rosterSize: 3, rankedRows: 3, duplicateSelfRow: true,
+	})
+
+	res, err := h.IngestVS(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if res.Duplicates != 1 {
+		t.Errorf("duplicates %d, want 1", res.Duplicates)
+	}
+	if reasons := h.reviewReasons(); reasons["no_confident_match"] != 0 {
+		t.Errorf("the duplicate self row reached the review queue; all reasons: %v", reasons)
+	}
+	if res.Unidentified != 0 {
+		t.Errorf("unidentified %d, want 0: a duplicate is not an unattributed row, and counting it as one would block every inferred zero",
+			res.Unidentified)
 	}
 }
 
