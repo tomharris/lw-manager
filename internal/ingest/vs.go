@@ -3,8 +3,8 @@ package ingest
 import (
 	"context"
 	"fmt"
-	"image"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/tomharris/lw-manager/internal/db"
@@ -328,46 +328,27 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 	// the belt-and-braces cross-check's other half — see the disagreement
 	// check below.
 	scored := map[int64]bool{}
-	var matchedRowCount, totalParsed int
-	var lastFrameShotID int64
-	contentY, lastRowY := 0, -1
-	havePrev := false
 
-	for _, frame := range frames {
-		img, err := i.loadFrame(ctx, frame.ScreenshotID)
+	rows, err := i.readVSRows(ctx, frames, members)
+	if err != nil {
+		return VSResult{}, err
+	}
+	totalParsed := len(rows)
+	lastFrameShotID := int64(0)
+	if len(frames) > 0 {
+		lastFrameShotID = frames[len(frames)-1].ScreenshotID
+	}
+
+	matchedRowCount := 0
+	for _, row := range rows {
+		matched, err := run.attributeRow(ctx, i, row, members, scored)
 		if err != nil {
-			return VSResult{}, fmt.Errorf("ingest: loading screenshot %d: %w", frame.ScreenshotID, err)
+			return VSResult{}, err
 		}
-		lastFrameShotID = frame.ScreenshotID
-
-		if havePrev {
-			contentY += frame.OffsetPx
-		}
-		havePrev = true
-
-		bands, err := SegmentRows(img, vsListRegion, vsRowPitch)
-		if err != nil {
-			return VSResult{}, fmt.Errorf("ingest: segmenting screenshot %d: %w", frame.ScreenshotID, err)
-		}
-
-		regionTop := int(vsListRegion.Y1 * float64(img.Bounds().Dy()))
-		for _, band := range bands {
-			rowY := contentY + (band.Y0 - regionTop)
-			if lastRowY >= 0 && rowY <= lastRowY+vsRowPitch/2 {
-				continue // geometric duplicate; OCR never runs on it
-			}
-			lastRowY = rowY
-			totalParsed++
-
-			matched, err := run.processRow(ctx, i, img, band, frame.ScreenshotID, members, scored)
-			if err != nil {
-				return VSResult{}, err
-			}
-			if matched {
-				matchedRowCount++
-			} else {
-				run.res.Unidentified++
-			}
+		if matched {
+			matchedRowCount++
+		} else {
+			run.res.Unidentified++
 		}
 	}
 
@@ -436,62 +417,177 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 	return run.res, nil
 }
 
-// processRow reads one row's name and points fields, matches the name, and
-// routes the row to a fact, a duplicate no-op, or the review queue. It never
-// creates a member: the roster route is the only writer of that table, so a
-// name that matches nothing here goes to review, full stop — minting a
-// member from a misread ranking row would corrupt the very count
-// reconciliation depends on.
+// vsRow is one deduped ranking row: where it came from and what both fields
+// read, held until every row has been read.
 //
-// Returns whether the row's name auto-accepted a match at all, independent
-// of whether that member had already been scored this capture — a duplicate
-// still counts toward the caller's matchedRowCount, or the disagreement it
-// represents would cancel itself out and the cross-check would never fire.
-func (run *vsRun) processRow(ctx context.Context, i *Ingester, img image.Image, band RowBand, screenshotID int64, members []roster.Member, scored map[int64]bool) (bool, error) {
-	nameRes, err := i.readFieldWithRetry(ctx, img, fieldRect(band, img, vsNameXFrac0, vsNameXFrac1, vsNameYFrac0, vsNameYFrac1), vsName, vsNameRetry)
-	if err != nil {
-		return false, err
+// Assignment cannot be streamed -- no row may be attributed until every row's
+// scores are known -- so the frame walk stops writing anything and accumulates
+// these instead. That also strengthens invariant #2 rather than straining it:
+// a crash midway through the walk now leaves nothing written, where it used to
+// leave a partial set of facts.
+type vsRow struct {
+	ScreenshotID int64
+	Band         RowBand
+	NameText     string
+	PointsText   string
+	PointsConf   float64
+	// Scores is this row's name score against every member, indexed the same
+	// as the members slice IngestVS built. It comes from roster.Rank, so
+	// member aliases are already folded in and the assignment never has to
+	// know they exist.
+	Scores []int
+}
+
+// vsRowCursor replays the geometric dedupe across a capture's frames.
+//
+// It is a type rather than four local variables so the probes can share it.
+// An instrument that reimplements the dedupe drifts from what IngestVS does,
+// and then reports a row set production never sees -- which is the failure
+// mode CLAUDE.md records for the probe whose retry was happening inside the
+// engine before the probe ever saw it.
+type vsRowCursor struct {
+	contentY int
+	lastRowY int
+	havePrev bool
+}
+
+func newVSRowCursor() *vsRowCursor { return &vsRowCursor{lastRowY: -1} }
+
+// nextFrame advances to a new frame, accumulating its measured scroll offset.
+func (c *vsRowCursor) nextFrame(offsetPx int) {
+	if c.havePrev {
+		c.contentY += offsetPx
 	}
-	pointsRes, err := i.readField(ctx, img, fieldRect(band, img, vsPointsXFrac0, vsPointsXFrac1, vsPointsYFrac0, vsPointsYFrac1), vsPointsSpec, vsPointsOptions)
-	if err != nil {
-		return false, err
+	c.havePrev = true
+}
+
+// accept reports whether a band is a new row rather than a geometric
+// duplicate of the one before it, and advances the cursor when it is.
+func (c *vsRowCursor) accept(band RowBand, regionTop int) bool {
+	rowY := c.contentY + (band.Y0 - regionTop)
+	if c.lastRowY >= 0 && rowY <= c.lastRowY+vsRowPitch/2 {
+		return false
+	}
+	c.lastRowY = rowY
+	return true
+}
+
+// readVSRows is pass 1: walk the frames, drop geometric duplicates, and read
+// both fields of every surviving row. It writes nothing.
+//
+// The field order -- name, then points, per band -- is load-bearing for the
+// tests: ocr.FakeEngine returns queued results in call order and every VS
+// fixture builds that queue name-then-points per row.
+func (i *Ingester) readVSRows(ctx context.Context, frames []db.CaptureFrame, members []roster.Member) ([]vsRow, error) {
+	idxByID := make(map[int64]int, len(members))
+	for n, m := range members {
+		idxByID[m.ID] = n
 	}
 
-	candidates := roster.Rank(nameRes.Text, members)
+	var rows []vsRow
+	cursor := newVSRowCursor()
+
+	for _, frame := range frames {
+		img, err := i.loadFrame(ctx, frame.ScreenshotID)
+		if err != nil {
+			return nil, fmt.Errorf("ingest: loading screenshot %d: %w", frame.ScreenshotID, err)
+		}
+		cursor.nextFrame(frame.OffsetPx)
+
+		bands, err := SegmentRows(img, vsListRegion, vsRowPitch)
+		if err != nil {
+			return nil, fmt.Errorf("ingest: segmenting screenshot %d: %w", frame.ScreenshotID, err)
+		}
+		regionTop := int(vsListRegion.Y1 * float64(img.Bounds().Dy()))
+
+		for _, band := range bands {
+			if !cursor.accept(band, regionTop) {
+				continue // geometric duplicate; OCR never runs on it
+			}
+
+			nameRes, err := i.readFieldWithRetry(ctx, img,
+				fieldRect(band, img, vsNameXFrac0, vsNameXFrac1, vsNameYFrac0, vsNameYFrac1),
+				vsName, vsNameRetry)
+			if err != nil {
+				return nil, err
+			}
+			pointsRes, err := i.readField(ctx, img,
+				fieldRect(band, img, vsPointsXFrac0, vsPointsXFrac1, vsPointsYFrac0, vsPointsYFrac1),
+				vsPointsSpec, vsPointsOptions)
+			if err != nil {
+				return nil, err
+			}
+
+			scores := make([]int, len(members))
+			for _, c := range roster.Rank(nameRes.Text, members) {
+				scores[idxByID[c.MemberID]] = c.Score
+			}
+			rows = append(rows, vsRow{
+				ScreenshotID: frame.ScreenshotID,
+				Band:         band,
+				NameText:     nameRes.Text,
+				PointsText:   pointsRes.Text,
+				PointsConf:   pointsRes.Confidence,
+				Scores:       scores,
+			})
+		}
+	}
+	return rows, nil
+}
+
+// candidatesFor rebuilds the ranked candidate list from a row's stored score
+// vector, so a review row can still record what the matcher was choosing
+// between without pass 1 carrying a second copy of it.
+func candidatesFor(row vsRow, members []roster.Member) []roster.Candidate {
+	out := make([]roster.Candidate, 0, len(members))
+	for j, m := range members {
+		out = append(out, roster.Candidate{MemberID: m.ID, Name: m.Name, Score: row.Scores[j]})
+	}
+	sort.SliceStable(out, func(a, b int) bool { return out[a].Score > out[b].Score })
+	return out
+}
+
+// attributeRow routes one already-read row to a fact, a duplicate no-op, or
+// the review queue. It never creates a member: the roster route is the only
+// writer of that table, so a name that matches nothing here goes to review,
+// full stop -- minting a member from a misread ranking row would corrupt the
+// very count reconciliation depends on.
+//
+// Returns whether the row's name auto-accepted a match at all, independent of
+// whether that member had already been scored this capture.
+func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, members []roster.Member, scored map[int64]bool) (bool, error) {
+	candidates := candidatesFor(row, members)
 	switch {
 	case len(candidates) > 0 && candidates[0].Score >= roster.AutoAccept:
 		memberID := candidates[0].MemberID
 		if scored[memberID] {
 			// Same member, a different screen position: the pinned self row
 			// (or a genuine bug surfacing elsewhere). Deduplicate by member
-			// id — do not write a second fact for it.
+			// id -- do not write a second fact for it.
 			return true, nil
 		}
 		scored[memberID] = true
 		run.res.Matched++
 
 		matchNorm := float64(candidates[0].Score) / 100.0
-		points, perr := ParsePoints(pointsRes.Text)
+		points, perr := ParsePoints(row.PointsText)
 		if perr != nil {
-			return true, run.queueReview(ctx, i, screenshotID, band, pointsRes.Text, nil, "unparseable_points", 0)
+			return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.PointsText, nil, "unparseable_points", 0)
 		}
-		conf := min(matchNorm, pointsRes.Confidence)
+		conf := min(matchNorm, row.PointsConf)
 		if conf < factConfidenceGate {
-			return true, run.queueReview(ctx, i, screenshotID, band, pointsRes.Text, nil, "low_confidence_points", conf)
+			return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.PointsText, nil, "low_confidence_points", conf)
 		}
-		// UpsertFact, not InsertFact, for the reason IngestRoster's
-		// writeFacts already documents at length: observed_at is pinned to
-		// the capture's own started_at, so re-running ingest over this same
-		// capture recomputes the identical (member_id, metric, period_key,
-		// source, observed_at) key and a plain INSERT rejects it. That is not
-		// hypothetical here — resolving a review in studio tells the operator
-		// to ingest the capture again, so the second run is the whole point
-		// of the review loop, and it died on a unique-constraint violation
-		// before it could correct anything.
+		// UpsertFact, not InsertFact, for the reason IngestRoster's writeFacts
+		// documents at length: observed_at is pinned to the capture's own
+		// started_at, so re-running ingest over this same capture recomputes
+		// the identical key and a plain INSERT rejects it -- which is not
+		// hypothetical, since resolving a review tells the operator to ingest
+		// the capture again.
 		if _, _, err := i.store.UpsertFact(ctx, db.Fact{
 			MemberID: memberID, Metric: "vs_points", Value: float64(points),
 			ObservedAt: run.observedAt, PeriodKey: run.periodKey,
-			Source: "ocr:vs_ranking", ScreenshotID: screenshotID,
+			Source: "ocr:vs_ranking", ScreenshotID: row.ScreenshotID,
 			Confidence: conf,
 		}); err != nil {
 			return true, fmt.Errorf("ingest: writing vs_points fact for member %d: %w", memberID, err)
@@ -499,10 +595,10 @@ func (run *vsRun) processRow(ctx context.Context, i *Ingester, img image.Image, 
 		return true, nil
 
 	case len(candidates) > 0 && candidates[0].Score >= roster.ReviewFloor:
-		return false, run.queueReview(ctx, i, screenshotID, band, nameRes.Text, candidates, "ambiguous_name_match", 0)
+		return false, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.NameText, candidates, "ambiguous_name_match", 0)
 
 	default:
-		return false, run.queueReview(ctx, i, screenshotID, band, nameRes.Text, candidates, "no_confident_match", 0)
+		return false, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.NameText, candidates, "no_confident_match", 0)
 	}
 }
 
