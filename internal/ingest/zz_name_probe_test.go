@@ -156,12 +156,17 @@ func TestM4NameProbe(t *testing.T) {
 	// genuinely different names on this roster ever reaches AutoAccept, the
 	// matcher can attribute one member's row to another — the one failure
 	// here that a human cannot undo later.
-	names := make([]string, 0, len(exp.Rows))
-	for _, row := range exp.Rows {
-		names = append(names, row.Name)
+	//
+	// Measured over the whole member list (members), not exp.Rows: the
+	// ranking lists scorers only, so the 86 hand-transcribed rows are the set
+	// least likely to contain the near-neighbour that actually breaks a
+	// match -- see ClosestPairScore's doc comment.
+	names := make([]string, 0, len(members))
+	for _, m := range members {
+		names = append(names, m.Name)
 	}
 	closest, a, b := roster.ClosestPairScore(names)
-	t.Logf("closest pair among the %d real names: %d (%q vs %q); AutoAccept is %d, margin %d",
+	t.Logf("closest pair among the %d roster members: %d (%q vs %q); AutoAccept is %d, margin %d",
 		len(names), closest, a, b, roster.AutoAccept, roster.AutoAccept-closest)
 	if closest >= roster.AutoAccept {
 		t.Errorf("two distinct members score %d against each other — at or above AutoAccept (%d). "+

@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -343,6 +344,27 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 		return VSResult{}, fmt.Errorf("ingest: listing aliases for alliance %d: %w", allianceID, err)
 	}
 	members := toRosterMembers(dbMembers, aliases)
+
+	// The safety half of confusable-aware scoring, checked against the roster
+	// this run will actually match against. Two members scoring at or above
+	// AutoAccept are a pair the matcher cannot tell apart, which no threshold
+	// fixes and only an alias can -- and attributing one member's score to the
+	// other is the single failure here a review queue cannot undo.
+	//
+	// Over the WHOLE member list, not the ranked rows. `make probe-m4`
+	// measured it over the 86 transcribed names, which is the set least
+	// likely to contain the problem: the ranking lists scorers only, so the
+	// near-neighbour that breaks a match is disproportionately a member who
+	// did not score and was therefore invisible to the check.
+	names := make([]string, 0, len(members))
+	for _, m := range members {
+		names = append(names, m.Name)
+	}
+	if closest, a, b := roster.ClosestPairScore(names); closest >= roster.AutoAccept {
+		slog.WarnContext(ctx, "ingest: two roster members are indistinguishable to the matcher",
+			"capture_id", captureID, "score", closest, "auto_accept", roster.AutoAccept,
+			"member_a", a, "member_b", b)
+	}
 
 	// observedAt is the capture's own started_at, not wall-clock now — see
 	// IngestRoster's doc comment for why: a replayed ingest run must write

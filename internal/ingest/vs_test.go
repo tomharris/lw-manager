@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"log/slog"
 	"strconv"
 	"strings"
 	"testing"
@@ -604,5 +605,38 @@ func TestIngestVSStampsFactsWithTheCapturesStartedAtNotWallClockNow(t *testing.T
 	}
 	if !sawRead || !sawInferredZero {
 		t.Fatalf("expected both a read fact and an inferred zero in this fixture, sawRead=%v sawInferredZero=%v", sawRead, sawInferredZero)
+	}
+}
+
+// Two members the matcher cannot tell apart are a hazard no threshold fixes
+// and only an alias can, so ingest says so out loud rather than silently
+// attributing one of them.
+func TestIngestVSWarnsWhenTwoMembersAreIndistinguishable(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	h := newVSHarness(t, "complete")
+	// ALBAN80 and ALBANSO differ by one confusable substitution, which
+	// confusable.go charges 2 tenths of an edit -- they score above
+	// AutoAccept against each other.
+	for _, name := range []string{"ALBAN80", "ALBANSO"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(1), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "ALBAN80", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if !strings.Contains(buf.String(), "indistinguishable") {
+		t.Errorf("no warning logged for two members scoring above AutoAccept against each other; log was:\n%s", buf.String())
 	}
 }
