@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"time"
 
@@ -281,6 +282,21 @@ const zeroInferenceConfidence = 0.90
 // re-reason.
 const residualMatchConfidence = 0.85
 
+// pointsOrderConfidenceFloor is the OCR confidence a row's own points read
+// must clear before an in-order value -- one bracketed by a CLOSED window on
+// both sides -- is promoted to factConfidenceGate. Being bracketed on both
+// sides proves the value sits between two real neighbours; it says nothing
+// about whether OCR read the right digits within that range, so a near-blank
+// or garbage crop that happens to parse and land inside a wide window must
+// not ride the ordering to a write it did not earn from its own pixels.
+//
+// Fitted against capture 6: the two reads this check recovers are 0.52 (rank
+// 38, Handbol, 8,835,180) and 0.70 (rank 83, Nichoj, 1,242,375), both closed
+// on both sides -- so 0.40 costs nothing today, and still blocks a read like
+// "0.1" confidence from being written at factConfidenceGate solely because it
+// happened to parse and land inside a window.
+const pointsOrderConfidenceFloor = 0.40
+
 // VSResult summarizes one IngestVS run.
 //
 // Unidentified counts rows whose name matched no member confidently enough to
@@ -407,10 +423,49 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 		}
 	}
 
+	// Points resolve against the ranking's own order, which needs every row's
+	// value in hand -- so parse first, bound second, write third. Rows are in
+	// rank order because they are in screen order.
+	values := make([]int64, len(rows))
+	known := make([]bool, len(rows))
+	for n, row := range rows {
+		// A row without a confident NAME match is excluded from seeding even
+		// when its points read is itself confident and would otherwise
+		// tighten its neighbours' windows for free. That is deliberate
+		// conservatism, not an oversight: a row that reached here without a
+		// name match includes a spurious segmentation band (no real row at
+		// all), and letting an ungrounded band seed a bound risks narrowing
+		// real neighbours' windows off of content that was never a ranking
+		// row to begin with. The cost is a missed tightening opportunity on
+		// an already-review-bound row; the alternative risks corrupting
+		// rows that would otherwise resolve cleanly.
+		if assignments[n].Member < 0 {
+			continue
+		}
+		v, err := ParsePoints(row.PointsText)
+		if err != nil {
+			continue
+		}
+		// Only a confident read seeds a bound. A weak read is what the bounds
+		// exist to adjudicate, and letting it define the window it is judged
+		// against would make the check circular.
+		if row.PointsConf >= factConfidenceGate {
+			values[n], known[n] = v, true
+		}
+	}
+	// A seed that is greater than the nearest better-ranked seed already
+	// accepted cannot be a genuine ranking row -- see monotonicKnown's own
+	// comment for why a value like that (most notably the pinned self row,
+	// which Task 3's assignment keeps out of this array by Member < 0, but
+	// which does not by itself rule out every other kind of out-of-order
+	// value) must be dropped rather than allowed to seed a window.
+	known = monotonicKnown(ctx, values, known)
+	bounds := pointsBounds(values, known)
+
 	for n, row := range rows {
 		a := assignments[n]
 		dup := a.Phase == roster.PhaseDuplicate
-		matched, err := run.attributeRow(ctx, i, row, a, dup, members)
+		matched, err := run.attributeRow(ctx, i, row, a, dup, bounds[n], members)
 		if err != nil {
 			return VSResult{}, err
 		}
@@ -621,7 +676,7 @@ func candidatesFor(row vsRow, members []roster.Member) []roster.Candidate {
 // It no longer decides WHO the row is -- roster.Assign did that across the
 // whole capture, using the constraint that a member appears at most once.
 // What is left here is what to do about it.
-func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a roster.Assignment, dup bool, members []roster.Member) (bool, error) {
+func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a roster.Assignment, dup bool, bound pointsBound, members []roster.Member) (bool, error) {
 	if dup {
 		// Same member, a different screen position: the pinned self row.
 		// Counted by the caller, deliberately not queued.
@@ -651,7 +706,36 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 	if perr != nil {
 		return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.PointsText, nil, "unparseable_points", 0)
 	}
+	if !withinBounds(points, bound) {
+		// A value outside the window its neighbours define is the signature
+		// of a crop that caught neighbouring content -- the failure
+		// vsPointsSpec's charset comment describes, caught structurally.
+		return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.PointsText, nil, "points_out_of_order", 0)
+	}
+	// Everything past here is in order, but "in order" alone does not mean
+	// "corroborated": the windows are open at the ends -- out[0].Hi is
+	// always MaxInt64, out[len-1].Lo is always 0 -- and when NOTHING seeds a
+	// bound at all, every window is [0, MaxInt64], so withinBounds is
+	// unconditionally true and this check degrades to "did the regex match",
+	// which is the guard the old low_confidence_points branch already
+	// applied on its own. Promoting on that alone would invert the failure
+	// mode: a capture where OCR broadly degrades used to queue everything,
+	// and would instead write everything at factConfidenceGate with an empty
+	// review queue -- worse OCR producing fewer queued rows. So promotion
+	// requires the window to be CLOSED on both sides (an actual pair of
+	// neighbours bracketing the value, not an absent constraint that lets
+	// anything through) and the read's own OCR confidence to clear
+	// pointsOrderConfidenceFloor -- a near-blank or garbage crop must not
+	// ride a genuinely closed window to a write it did not earn from its own
+	// pixels. It is raised to exactly factConfidenceGate and no further:
+	// invariant #5 is about what a number claims about itself, and being in
+	// order does not make a 0.52 read a 0.95 one -- it only makes it worth
+	// writing once the ordering has actually corroborated it.
 	conf := min(matchNorm, row.PointsConf)
+	corroborated := bound.Lo > 0 && bound.Hi < math.MaxInt64 && row.PointsConf >= pointsOrderConfidenceFloor
+	if corroborated && conf < factConfidenceGate {
+		conf = factConfidenceGate
+	}
 	if conf < factConfidenceGate {
 		return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.PointsText, nil, "low_confidence_points", conf)
 	}

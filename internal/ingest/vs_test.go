@@ -647,3 +647,158 @@ func TestIngestVSWarnsWhenTwoMembersAreIndistinguishable(t *testing.T) {
 		t.Errorf("warning did not name both indistinguishable members (ALBAN80, ALBANSO); log was:\n%s", log)
 	}
 }
+
+// A value that parses and sits in a window CLOSED on both sides is
+// corroborated by the ordering, so it no longer rests on OCR confidence
+// alone. Measured on capture 6: two of the six points failures were EXACTLY
+// RIGHT and rejected for confidence -- 8,835,180 at 0.52 and 1,242,375 at
+// 0.70.
+func TestIngestVSAcceptsALowConfidencePointsReadThatSitsInOrder(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.52},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if len(h.store.Facts) != 3 {
+		t.Errorf("wrote %d facts, want 3: 8,000,000 sits between its neighbours (a window closed on both sides) and is corroborated by the ordering", len(h.store.Facts))
+	}
+	if reasons := h.reviewReasons(); reasons["low_confidence_points"] != 0 {
+		t.Errorf("an in-order, doubly-bracketed value was rejected on OCR confidence alone; all reasons: %v", reasons)
+	}
+	// Not just that a fact was written, but that it was written at the
+	// promoted confidence and not at its own weak 0.52: UpsertFact only
+	// supersedes on a STRICTLY higher confidence, so a fact left at 0.52
+	// could never be superseded by a later genuine read landing at exactly
+	// factConfidenceGate.
+	bravoID := h.store.members[1].ID // Bravo02
+	var bravoConf float64 = -1
+	for _, f := range h.store.Facts {
+		if f.MemberID == bravoID {
+			bravoConf = f.Confidence
+		}
+	}
+	if bravoConf != factConfidenceGate {
+		t.Errorf("Bravo02's promoted fact confidence = %v, want exactly factConfidenceGate (%v)", bravoConf, factConfidenceGate)
+	}
+}
+
+// The other half, and the reason the first half is safe: a value that parses
+// but violates its bounds is the signature of a crop that caught neighbouring
+// content, which is exactly what vsPointsSpec's charset comment describes.
+//
+// The assertion is exact rather than merely "at least one", because a broken
+// monotonicKnown can produce a rejection for the WRONG reason and still trip
+// a "!= 0" check: with monotonicKnown deleted entirely, Bravo02's bogus 99M
+// seeds Lo = 99,000,000 for Alpha01, so the correct rank-1 read (9,000,000)
+// is ALSO rejected -- two rows queued and one fact written, not two -- and a
+// loose assertion would not notice.
+func TestIngestVSRejectsAPointsValueThatBreaksTheRankingOrder(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Rank 2 cannot outscore rank 1.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "99,000,000", Confidence: 0.95},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["points_out_of_order"] != 1 {
+		t.Errorf("points_out_of_order = %d, want exactly 1 (only Bravo02's own bogus read, not its neighbours too); all reasons: %v", reasons["points_out_of_order"], reasons)
+	}
+	if len(h.store.Facts) != 2 {
+		t.Errorf("wrote %d facts, want 2: Alpha01 (9,000,000) and Charlie03 (7,000,000) are untouched by Bravo02's bad read", len(h.store.Facts))
+	}
+}
+
+// The Critical-1 guard: an in-order read must not be promoted on the
+// strength of an OPEN-ended window, because withinBounds is unconditionally
+// true against an open end and proves nothing about correctness -- it only
+// proves the parser matched, which the old low_confidence_points guard
+// already established on its own. Alpha01 sits at rank 1, where Hi is always
+// open (nothing ranks above it), so a weak Alpha01 read must still queue
+// even though it is numerically "in order" relative to its one real
+// neighbour below.
+func TestIngestVSDoesNotPromoteAnOpenEndedWindow(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		// Rank 1: reads fine but weakly, and its window is open above.
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.52},
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["low_confidence_points"] != 1 {
+		t.Errorf("low_confidence_points = %d, want 1: rank 1's window is open above and must not be promoted; all reasons: %v", reasons["low_confidence_points"], reasons)
+	}
+	if len(h.store.Facts) != 2 {
+		t.Errorf("wrote %d facts, want 2: Bravo02 and Charlie03 only, Alpha01 held for review", len(h.store.Facts))
+	}
+}
+
+// The Critical-1 guard's other half: a window closed on BOTH sides is still
+// not enough on its own -- the read's own OCR confidence must also clear
+// pointsOrderConfidenceFloor, or a near-blank/garbage crop that happens to
+// parse into something in-window would ride the ordering to a write it did
+// not earn from its own pixels.
+func TestIngestVSDoesNotPromoteBelowTheOrderConfidenceFloor(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Rank 2's window is closed on both sides (bracketed by Alpha01 and
+		// Charlie03) but its own OCR confidence (0.35) is below the 0.40 floor.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.35},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["low_confidence_points"] != 1 {
+		t.Errorf("low_confidence_points = %d, want 1: Bravo02's 0.35 is below the floor even though its window is closed; all reasons: %v", reasons["low_confidence_points"], reasons)
+	}
+	if len(h.store.Facts) != 2 {
+		t.Errorf("wrote %d facts, want 2: Alpha01 and Charlie03 only, Bravo02 held for review", len(h.store.Facts))
+	}
+}

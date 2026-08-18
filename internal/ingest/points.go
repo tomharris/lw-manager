@@ -1,6 +1,10 @@
 package ingest
 
-import "math"
+import (
+	"context"
+	"log/slog"
+	"math"
+)
 
 // The weekly ranking is sorted descending by points, so once the assignment
 // has fixed each row's rank, a row's value is bounded by its nearest
@@ -18,16 +22,14 @@ type pointsBound struct {
 	Lo, Hi int64
 }
 
-// pointsUnknown is the value a row carries in the caller's array when it has
-// no confidently-parsed points -- used only for readability at call sites;
-// pointsBounds itself never inspects values[i] where known[i] is false.
-const pointsUnknown = int64(-1)
-
 // pointsBounds returns one bound per row. values[i] is meaningful only where
 // known[i]; unknown rows are bracketed by the nearest KNOWN neighbour on each
 // side, looking past other unknowns rather than resting on a value that was
 // never read. An end with no neighbour is left open (0 or math.MaxInt64)
 // rather than pinned to something that does not exist.
+//
+// values and known must be the same length and index the same row; both call
+// sites build them together today, so this is not enforced, only documented.
 //
 // It trusts known[i] outright: it assumes the caller has already dropped any
 // seed that would corrupt the ordering (see monotonicKnown below). It does
@@ -57,7 +59,11 @@ func pointsBounds(values []int64, known []bool) []pointsBound {
 	return out
 }
 
-// withinBounds reports whether v satisfies b.
+// withinBounds reports whether v satisfies b. An open end (Lo == 0 or
+// Hi == math.MaxInt64) always satisfies its side, which is exactly why
+// clearing withinBounds is not by itself proof of corroboration -- see
+// pointsOrderConfidenceFloor's comment in vs.go, which is what stops that
+// gap from being exploited at the write gate.
 func withinBounds(v int64, b pointsBound) bool {
 	return v >= b.Lo && v <= b.Hi
 }
@@ -79,23 +85,67 @@ func withinBounds(v int64, b pointsBound) bool {
 // windows to the wrong range and then rejects correct reads, rather than
 // just failing to corroborate them.
 //
-// So seeds are walked in rank (screen) order and a seed greater than the
-// last accepted one -- the sequence must be non-increasing -- is dropped
-// rather than allowed to define a window. This costs nothing on a capture
-// with no such row (the gate's capture has none, 86 deduped rows); it is a
-// production-only safeguard against a capture that does.
-func monotonicKnown(values []int64, known []bool) []bool {
-	out := make([]bool, len(known))
-	last := int64(math.MaxInt64)
-	for i, v := range values {
-		if !known[i] {
-			continue
+// This is the LARGEST subset of seeds mutually consistent in rank order, not
+// the prefix consistent with whichever seed came first. A greedy walk from
+// the front trusts the first seed absolutely -- and rank 1 carries the
+// longest number on the screen, the row most exposed to a left-edge clip on
+// a crop that starts at x=0.74. A single clipped rank-1 value (read
+// confidently, because a clip does not make a crop blurry) would otherwise
+// be accepted as the seed and drop every later, correct seed as "greater
+// than" it, leaving zero constraints for the entire capture. Finding the
+// longest non-increasing subsequence instead means one bad seed anywhere in
+// the run only costs itself, not everything after it.
+//
+// Non-increasing PERMITS equality: two members can legitimately score the
+// same, and a run like [100, 100, 90] keeps every seed.
+//
+// O(n^2) on the number of seeds, which is bounded by the row count -- at
+// most a couple hundred -- so the naive DP is not worth complicating.
+func monotonicKnown(ctx context.Context, values []int64, known []bool) []bool {
+	var idx []int // indices into values/known that are seeds, in rank order
+	for i, k := range known {
+		if k {
+			idx = append(idx, i)
 		}
-		if v > last {
-			continue // breaks the non-increasing sequence; not a valid seed
-		}
-		out[i] = true
-		last = v
 	}
+	out := make([]bool, len(known))
+	if len(idx) == 0 {
+		return out
+	}
+
+	// length[j] is the longest non-increasing run ending at seed j; prev[j]
+	// is the seed before it in that run, or -1 to start one.
+	length := make([]int, len(idx))
+	prev := make([]int, len(idx))
+	bestEnd, bestLen := 0, 0
+	for j := range idx {
+		length[j] = 1
+		prev[j] = -1
+		for k := 0; k < j; k++ {
+			if values[idx[k]] >= values[idx[j]] && length[k]+1 > length[j] {
+				length[j] = length[k] + 1
+				prev[j] = k
+			}
+		}
+		if length[j] > bestLen {
+			bestLen, bestEnd = length[j], j
+		}
+	}
+
+	for j := bestEnd; j != -1; j = prev[j] {
+		out[idx[j]] = true
+	}
+
+	// A production-only safeguard that fires silently is unobservable, and
+	// this project's own posture is that a single capture session cannot
+	// reveal what only shows up weeks apart -- see roster_capture's rank
+	// groups note in CLAUDE.md for the same argument reached elsewhere. A
+	// nonzero drop count here is exactly the kind of signal that should not
+	// wait for someone to go looking.
+	if dropped := len(idx) - bestLen; dropped > 0 {
+		slog.WarnContext(ctx, "ingest: dropped points seeds inconsistent with the ranking's own order",
+			"seeds", len(idx), "kept", bestLen, "dropped", dropped)
+	}
+
 	return out
 }

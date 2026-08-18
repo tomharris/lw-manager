@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"context"
 	"math"
 	"testing"
 )
@@ -65,14 +66,14 @@ func TestMonotonicKnownDropsASeedThatBreaksDescendingOrder(t *testing.T) {
 	// position, or a mis-ordered read the assignment did not catch.
 	values := []int64{9_000_000, 12_000_000, 7_000_000}
 	known := []bool{true, true, true}
-	got := monotonicKnown(values, known)
-	if got[0] != true {
+	got := monotonicKnown(context.Background(), values, known)
+	if !got[0] {
 		t.Errorf("row 0 known = %v, want true (nothing before it to violate)", got[0])
 	}
-	if got[1] != false {
+	if got[1] {
 		t.Errorf("row 1 known = %v, want false: 12,000,000 > row 0's 9,000,000 breaks descending order", got[1])
 	}
-	if got[2] != true {
+	if !got[2] {
 		t.Errorf("row 2 known = %v, want true: 7,000,000 is consistent with row 0's accepted 9,000,000", got[2])
 	}
 }
@@ -84,7 +85,7 @@ func TestMonotonicKnownDropsASeedThatBreaksDescendingOrder(t *testing.T) {
 // legitimate ceiling for row 2.
 func TestMonotonicKnownFeedsCorrectWindowsIntoPointsBounds(t *testing.T) {
 	values := []int64{9_000_000, 12_000_000, 7_000_000}
-	known := monotonicKnown(values, []bool{true, true, true})
+	known := monotonicKnown(context.Background(), values, []bool{true, true, true})
 	got := pointsBounds(values, known)
 	if got[1].Lo != 7_000_000 || got[1].Hi != 9_000_000 {
 		t.Errorf("row 1 bounds = %+v, want Lo 7000000 Hi 9000000 (bracketed by rows 0 and 2, not seeded by itself)", got[1])
@@ -99,11 +100,76 @@ func TestMonotonicKnownFeedsCorrectWindowsIntoPointsBounds(t *testing.T) {
 // consistent with the last GOOD seed.
 func TestMonotonicKnownRecoversAfterADroppedViolation(t *testing.T) {
 	values := []int64{10_000_000, 15_000_000, 8_000_000, 6_000_000}
-	known := monotonicKnown(values, []bool{true, true, true, true})
+	known := monotonicKnown(context.Background(), values, []bool{true, true, true, true})
 	want := []bool{true, false, true, true}
 	for i, w := range want {
 		if known[i] != w {
 			t.Errorf("row %d known = %v, want %v", i, known[i], w)
 		}
+	}
+}
+
+// Rank 1 carries the longest number on screen -- the row most exposed to a
+// left-edge clip -- and a greedy walk from the front trusts it absolutely:
+// one clipped-but-confident rank-1 read would drop every later, correct
+// seed as "greater than" it, leaving zero constraints for the whole capture.
+// monotonicKnown instead keeps the LARGEST mutually-consistent set, so a bad
+// seed anywhere in the run costs only itself.
+func TestMonotonicKnownRecoversFromABadLeadingSeed(t *testing.T) {
+	// Row 0 is a left-clipped rank-1 read: confidently read, numerically
+	// tiny. A greedy prefix walk accepts it and then rejects every
+	// subsequent (correct, descending) seed as "greater than" it. The
+	// longest-subsequence approach instead drops only row 0.
+	values := []int64{1_234, 17_000_000, 16_000_000, 15_000_000}
+	known := []bool{true, true, true, true}
+	got := monotonicKnown(context.Background(), values, known)
+	want := []bool{false, true, true, true}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("row %d known = %v, want %v", i, got[i], w)
+		}
+	}
+}
+
+// Non-increasing PERMITS equality -- two members can legitimately score the
+// same -- and nothing else pins that down: a refactor from >= to > in the DP
+// comparison would silently drop every tied member's seed while the rest of
+// the suite stayed green, since every other case here has strictly
+// decreasing values.
+func TestMonotonicKnownPermitsTies(t *testing.T) {
+	cases := []struct {
+		name   string
+		values []int64
+		known  []bool
+		want   []bool
+	}{
+		{
+			name:   "a tie at the front is fully kept",
+			values: []int64{100, 100, 90},
+			known:  []bool{true, true, true},
+			want:   []bool{true, true, true},
+		},
+		{
+			name:   "a tie mid-run is fully kept",
+			values: []int64{200, 100, 100, 50},
+			known:  []bool{true, true, true, true},
+			want:   []bool{true, true, true, true},
+		},
+		{
+			name:   "an all-tied run is fully kept",
+			values: []int64{100, 100, 100},
+			known:  []bool{true, true, true},
+			want:   []bool{true, true, true},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := monotonicKnown(context.Background(), tc.values, tc.known)
+			for i, w := range tc.want {
+				if got[i] != w {
+					t.Errorf("row %d known = %v, want %v", i, got[i], w)
+				}
+			}
+		})
 	}
 }
