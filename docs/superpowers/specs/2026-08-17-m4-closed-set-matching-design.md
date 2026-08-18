@@ -1,7 +1,8 @@
 # M4 — Closed-set matching: design
 
 **Date:** 2026-08-17
-**Status:** proposed. Supersedes the "what is left" section of
+**Status:** implemented on branch `m4-closed-set-matching`; §9 records what it
+measured. Supersedes the "what is left" section of
 `2026-08-17-m4-gate-name-matching-gap.md`; everything that document records
 about *how* the current numbers were reached still stands.
 **Gate:** unchanged — `make gate-m4` at ≥95% of rows within ±1%, **cold**.
@@ -372,3 +373,199 @@ alternative — write the fact *and* queue a non-blocking confirmation row so th
 alias mechanism still compounds — costs roughly a dozen queue rows per week and
 was rejected as noise. Worth revisiting if the gate shows any residual-resolved
 row producing a wrong value.
+
+---
+
+## 9. Results
+
+Measured 2026-08-18 on branch `m4-closed-set-matching` at commit `d1c6a35`,
+against **capture 6, game version 1.0.358, period `2026-W34`** — the same
+21-frame hand-transcribed capture §1 was measured on, and the only one there
+is. Every number below was read off a run made for this section; nothing is
+carried forward from the tasks that produced it.
+
+### The gate
+
+    before (§1)  M4 gate: 65/86 rows within 1%, matched=71 queued=21 status=complete
+    after        M4 gate: 83/86 rows within 1%, matched=84 queued=3 zeroed=0 status=complete (game version 1.0.358)
+
+**83/86 = 96.51% against the 95% bar.** Conditions 2 and 3 pass: 3
+discrepancies against 3 review rows, nothing dropped silently, and the capture
+still reconciles to `complete`.
+
+The "before" line is §1's, recorded before this branch existed and not re-run
+here; the "after" line is `make gate-m4` in this session. The conditional
+repair task (§4.2's fourth use) had already been built and measured by the
+time this section was written, and no further work on it is triggered: the
+gate passes with a one-row margin over the 82-row bar.
+
+### The review queue, in full
+
+Three rows, queried from `review_queue` scoped to the capture the gate seeded:
+
+| rank | member | reason | raw text |
+|---|---|---|---|
+| 31 | `ϟϟ Leo ϟϟ` | `no_confident_match` | `soleoss` |
+| 39 | `٣١٢ A l i ٣١٢` | `no_confident_match` | `wali` |
+| 77 | `albambet` | `low_confidence_points` | `¢,609,299` |
+
+Two name-stage failures and one points-stage failure. 31 and 39 are the
+decorated-glyph names an English-only tesseract cannot read at any setting.
+`make probe-m4 PROBE_ARGS=-probe.detail` scores their best read against their
+own member at **28** (`ϟϟ Leo ϟϟ`, best read `">> Lea >>"`) and **22**
+(`٣١٢ A l i ٣١٢`, whose best band was won outright by another member at 100) —
+both far below the residual floor of 60, so no threshold and no margin reaches
+them. That is the missing language pack `CLAUDE.md` describes under "OCR reads
+the glyph, not the codepoint", not a tuning problem, and closed-set matching
+was never going to touch it. 77's name matches; its points read `¢,609,299`,
+which parses only once `repairPoints` solves the damaged leading position, and
+a repaired value ships un-promoted by design — a constructed value has no pixel
+evidence behind the position that was solved for — so the row queues rather
+than being written. All three are recoverable queue rows; none is a
+misattribution.
+
+### `make probe-assign` at the shipped floor and margin
+
+86 deduped rows, 86 members, reads at PSM 7:
+
+| matcher | correct | wrong | unassigned |
+|---|---|---|---|
+| baseline (per-row, ≥ `AutoAccept` 92) | 71/86 | 0 | 15 |
+| assignment, floor 60 / margin 20 (shipped) | **83/86** | **0** | 3 |
+
+The grid around the shipped setting, which is what a future change is read
+against — floor 60 is flat from margin 20 down to 0 at 83/86, and margin 30
+costs four rows by refusing them:
+
+    floor  margin   correct  wrong  unassigned
+    65     20       81/86     0      5
+    60     30       79/86     0      7
+    60     20       83/86     0      3
+    60     10       83/86     0      3
+    40     10       84/86     0      2
+    0      10       86/86     0      0
+
+`duplicates: 0` — capture 6 contains no second sighting of the pinned self row,
+so the between-phases duplicate guard is unexercised here and remains a
+production-only safeguard.
+
+### The two self-checks that make those zeros mean anything
+
+**Canary (`-probe.assignshuffle`).** Truth labels rotated by one rank, so every
+assignment is wrong by construction. Baseline `0/86 correct, 71 wrong`;
+assignment at floor 60 / margin 20 `0/86 correct, 83 wrong`. 0 correct in every
+one of the 35 grid cells. The counters do measure attribution.
+
+**Decoys (`-probe.assigndecoys=20`).** 20 adversarial decoys, each one
+confusable substitution from a real name (`Mcl999` against `Mc1999`, `Leroy
+Jenkins o914` against `Leroy Jenkins 0914`), giving 106 members against 86 rows:
+
+| matcher | correct | wrong |
+|---|---|---|
+| baseline (per-row, ≥92) | 70/86 | **1** |
+| assignment, floor 60 / margin 20 | 77/86 | **1** |
+| assignment, floor 0 / margin 0 | 84/86 | **2** |
+
+Assignment adds seven rows and introduces **no new misattribution**: the one
+wrong row is inherited from phase 1 and today's shipped per-row matcher
+produces it too. The margin is what holds that line — at floor 0 / margin 0 a
+second wrong appears. Note the shape of the cost: 77/86 under decoys against
+83/86 square, so roughly six of the residual recoveries depend on the member
+pool being exactly the rows on screen. That is the number to re-measure first
+on the first capture whose roster fixture contains real non-scorers.
+
+### The two field probes
+
+    make probe-m4     psm7 shipped   73/86 distinct   120/142 bands   0 empty
+    make probe-points psm7 shipped   83/86 rows exact 135/142 bands exact
+                                     136 within 1%  6 unparseable  0 empty
+                                     7 low-conf  4 retried
+
+`roster.ClosestPairScore` over the 86 ranked rows is **60** — `"ALBAN80"` vs
+`"albambet"` — against `AutoAccept` 92, a margin of 32. That is the budget any
+change to `confusableCost` or the pair table is read against, and it has not
+moved.
+
+The points probe's three rows that never read cleanly are ranks 20, 79 and 77,
+which is a *different* set from the gate's three misses (31, 39, 77). The
+probe scores the best band per rank and attributes bands to ranks by value, so
+it reports what the capture contains; the gate reports what one deduped
+sighting per row produced. Reading either as the other is a mistake, and the
+next section is what it costs.
+
+### Rank 7: the gate's 1% tolerance hides a wrong number
+
+Rank 7 `Mar 89` was written as **18,356,304** against the hand-checked
+**18,356,804** — a single digit, an 8 read as a 3. This is the most important
+thing the milestone produced and it contradicts what an earlier draft of
+`vs.go`'s promotion comment claimed, which was that this capture contains no
+real wrong promoted value at any window width.
+
+Verified here by dumping all 83 facts the gate wrote and diffing them against
+`expected.yaml` member by member. It is the **only** value-level disagreement
+among the 83; the other 82 are exact.
+
+- **The window cannot see it.** Its neighbours' written facts are 17,219,876
+  (rank 8) and 19,247,540 (rank 6), so the window is 2,027,664 wide against a
+  value of 18,356,304 — ratio **0.1105**, computed here from the written
+  facts. Against the promoted population's ratios as instrumented when the
+  width check landed (0.0348 / 0.0540 / 0.0550 / 0.1105 / 0.1508 / 0.3134 /
+  0.5114, seven rows, and recorded in `vs.go`'s promotion comment rather than
+  re-measured for this section) that is the *second narrowest* window of the
+  seven. Both the right value and the wrong one sit comfortably inside it.
+  No width threshold could separate them, and tightening toward 0.1105 would
+  discard five correct rows before reaching it. The width check's scope is
+  wrong-*magnitude* values only; a low-order digit error is invisible to
+  ordering by construction.
+- **The confidence cannot see it either.** The read's own OCR confidence is
+  **0.6380**, below `factConfidenceGate` — so absent promotion it would have
+  queued for a human, and promotion wrote it at 0.80 instead. That is the
+  trade the width check makes, stated at full price. A confidence floor would
+  not have saved it: 0.638 is well *above* the two lowest correct promotions
+  in this population, which `vs.go`'s promotion comment records at 0.0853 and
+  0.2000 — so any floor excluding rank 7 would have excluded those first.
+  Confidence and correctness are not ordered together here.
+- **The gate cannot see it.** 500 on 18.3M is 0.0027%, inside `gateTolerance`
+  of 1%, so rank 7 is counted among the 83 rows that pass. The gate's own
+  report cannot surface this by construction.
+- **The capture contains the right answer.** Reading every band of every frame
+  finds two sightings of this row: frame 0 at y0=1070 reading `18,356,304` at
+  confidence 0.6380, and frame 1 at y0=729 reading `18,356,804` at confidence
+  **0.8531** — which would have cleared `factConfidenceGate` on its own with no
+  promotion at all. The geometric dedupe kept the frame-0 sighting. So this
+  particular row is not a limit of the OCR; it is a limit of choosing one
+  sighting per row and never comparing it with the others. Nothing in the
+  current design does that comparison, and nothing here proposes it — but it
+  is the first place to look if low-order digit accuracy ever becomes the
+  binding constraint.
+
+The general form of this is written down in `CLAUDE.md` as "A passing aggregate
+hides everything its tolerance is wider than". The operational consequence for
+this project: **83/86 means each row reached the right member carrying roughly
+the right magnitude. It does not mean the numbers are correct**, and it must
+not be quoted as if it did.
+
+### Open questions
+
+**Is a 1% relative tolerance the right bar for this gate?** Rank 7 shows what
+it costs — at the top of the ranking, 1% is a window 183,000 wide, and every
+low-order digit misread passes silently inside it. A tighter tolerance would
+have caught rank 7; it would also start failing rows for transcription
+ambiguity in `expected.yaml` itself, which is 86 numbers read by eye off
+screenshots and is not regenerable. An absolute tolerance, or a tolerance
+scaled to digit position rather than to magnitude, are both plausible and
+neither has been measured. This section deliberately does not answer it: the
+blind spot is now recorded, and changing the bar is a decision about what the
+gate is for, not a fix to make the current number better.
+
+**Does the residual phase hold up off this capture?** §7's first risk is
+unchanged — `ResidualFloor 60`, `ResidualMargin 20` and
+`residualMatchConfidence 0.85` are all fitted to capture 6. The decoy run is a
+synthetic lower bound and the 77/86-under-decoys reading above is the honest
+figure to hold in mind, not the 83/86.
+
+**Is a real wrong promoted value ever wrong by magnitude?** The width check at
+1.0 was fitted against real-correct rows on one side and *synthetic* wrong rows
+on the other; no real wrong-magnitude promoted value has ever been observed. The
+first one must be used to refit against what the check excludes, not to
+re-confirm what it admits.
