@@ -859,6 +859,69 @@ func TestIngestVSPromotesAClosedWindowReadEvenAtVeryLowConfidence(t *testing.T) 
 	}
 }
 
+// RULING C's regression test, built the way the review itself demonstrated
+// the gap rather than argued it: closure (some seed above, some seed below)
+// does not imply narrowness. Five ranks, seeded only at rank 1 (30,000,000)
+// and rank 5 (500,000) -- three ranks apart on both sides -- with the three
+// middle rows read at confidence 0.0000 as mutually OUT OF ORDER values
+// (1,111,111 / 25,000,000 / 9,999,999: rank 3's read is larger than rank 2's,
+// which cannot happen on a real ranking). Every one of those three sits
+// inside [500000, 30000000], the window closure alone provides, so before
+// pointsBound.AdjacentSeeds existed all three would have been written as
+// facts at factConfidenceGate with an empty review queue -- restoring the
+// old, removed pointsOrderConfidenceFloor does queue all three (it was doing
+// real work here), but AdjacentSeeds queues them too, structurally, without
+// reintroducing a fitted number: none of the three has a SEEDED row at both
+// i-1 and i+1, so none is corroborated regardless of confidence.
+func TestIngestVSRequiresAdjacentSeedsNotMerelyAnyClosure(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03", "Delta04", "Echo05"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(5), 0)
+	h.engine.Results = []ocr.Result{
+		// Rank 1: the only seed above.
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "30,000,000", Confidence: 0.95},
+		// Ranks 2-4: parse cleanly (no repair, no retry -- confidence alone
+		// keeps them from seeding), but are wrong and mutually out of order.
+		// Only closure -- not adjacency -- would let any of these through.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "1,111,111", Confidence: 0.0000},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "25,000,000", Confidence: 0.0000},
+		{Text: "Delta04", Confidence: 0.95}, {Text: "Delta04", Confidence: 0.95}, {Text: "9,999,999", Confidence: 0.0000},
+		// Rank 5: the only seed below.
+		{Text: "Echo05", Confidence: 0.95}, {Text: "Echo05", Confidence: 0.95}, {Text: "500,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["low_confidence_points"] != 3 {
+		t.Errorf("low_confidence_points = %d, want 3: Bravo02, Charlie03 and Delta04 are all closed-but-not-adjacent; all reasons: %v", reasons["low_confidence_points"], reasons)
+	}
+	for _, id := range []int64{h.store.members[1].ID, h.store.members[2].ID, h.store.members[3].ID} {
+		if f, ok := h.factFor(id); ok {
+			t.Errorf("member %d has a fact (%v): a closed-but-not-adjacent window must not promote a 0.0000-confidence read", id, f.Value)
+		}
+	}
+	for id, wantValue := range map[int64]float64{
+		h.store.members[0].ID: 30000000,
+		h.store.members[4].ID: 500000,
+	} {
+		f, ok := h.factFor(id)
+		if !ok {
+			t.Errorf("member %d: no fact written, want %v", id, wantValue)
+			continue
+		}
+		if f.Value != wantValue {
+			t.Errorf("member %d: fact = %v, want %v", id, f.Value, wantValue)
+		}
+	}
+}
+
 // The empty points read is the same PSM 7 layout blindness the name field
 // retries for. It is allowed here only because the value has to land inside
 // the window its neighbours define -- a manufactured number has no reason to.
@@ -1082,13 +1145,18 @@ func TestIngestVSLateRetriesANonEmptyUnparseablePointsReadAndAcceptsAnInOrderVal
 	}
 }
 
-// The OTHER shape the generalized trigger covers: a primary read that PARSES
-// cleanly but lands outside the window its neighbours define. Measured
-// (investigation-confidence-floor.md), this is a real, separate failure mode
-// from an unparseable read, and the trigger condition has to catch both --
-// this test specifically exercises the withinBounds half of that check,
-// leaving the parse-failure half to the test above.
-func TestIngestVSLateRetriesAnOutOfOrderPointsReadAndAcceptsTheRetriedInOrderValue(t *testing.T) {
+// RULING D: the generalized trigger fires on a PARSE failure only, never on
+// "parsed but landed outside the window". That second half shipped briefly
+// and was removed -- nothing had measured it, and firing it means adjudicating
+// PSM 13 (documented to introduce a +3,000,000 leading-digit artifact) against
+// a window already in conflict with the primary, which may itself be a strong
+// read monotonicKnown's tie-break dropped rather than a bad one. This is the
+// regression test: a primary that PARSES cleanly but is out of order must be
+// queued directly, with no late retry attempted at all -- the fixture supplies
+// no extra OCR result for one, so if the trigger regressed to firing on this
+// shape too, the fake engine would exhaust and this test would see an error
+// instead of a clean queue.
+func TestIngestVSDoesNotLateRetryAnOutOfOrderPointsRead(t *testing.T) {
 	h := newVSHarness(t, "complete")
 	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
 		h.store.nextMemberID++
@@ -1102,37 +1170,33 @@ func TestIngestVSLateRetriesAnOutOfOrderPointsReadAndAcceptsTheRetriedInOrderVal
 		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
 		// Parses cleanly -- no repair needed, no parse failure -- but
 		// 1,000,000 cannot rank above Charlie03's 7,000,000, so this is out
-		// of order rather than unparseable. Confidence is deliberately below
-		// factConfidenceGate: at 0.90 this value would itself have cleared
-		// IngestVS's seeding gate and been accepted as a SEED before
-		// monotonicKnown ever ran, at which point the tie-break documented
-		// on TestIngestVSRejectsAPointsValueThatBreaksTheRankingOrder keeps
-		// this earlier row and drops Charlie03 instead -- corrupting
-		// Charlie03's bound rather than tripping this row's own
-		// withinBounds check, which is a real but different failure mode
-		// this test is not the one to cover.
+		// of order rather than unparseable. No further Result follows for
+		// this row: a late retry firing anyway would exhaust the fake engine.
 		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "1,000,000", Confidence: 0.50},
 		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
-		// The late retry's own read: in order this time.
-		{Text: "8,000,000", Confidence: 0.50},
 	}
 
 	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
-		t.Fatalf("IngestVS: %v", err)
+		t.Fatalf("IngestVS: %v (a late retry firing on an out-of-window primary would exhaust the fake engine and surface here)", err)
 	}
-	if reasons := h.reviewReasons(); reasons["points_out_of_order"] != 0 {
-		t.Errorf("points_out_of_order = %d, want 0: the late retry should have recovered Bravo02's row; all reasons: %v", reasons["points_out_of_order"], reasons)
+	if reasons := h.reviewReasons(); reasons["points_out_of_order"] != 1 {
+		t.Errorf("points_out_of_order = %d, want 1: Bravo02's out-of-order read, queued directly with no retry attempted; all reasons: %v", reasons["points_out_of_order"], reasons)
 	}
-	bravoID := h.store.members[1].ID
-	f, ok := h.factFor(bravoID)
-	if !ok {
-		t.Fatalf("Bravo02 has no fact: the late retry's 8,000,000 must have been written")
+	if _, ok := h.factFor(h.store.members[1].ID); ok {
+		t.Errorf("Bravo02 has a fact: its out-of-order primary must have been queued, not written or retried into a write")
 	}
-	if f.Value != 8000000 {
-		t.Errorf("Bravo02's fact = %v, want 8,000,000", f.Value)
-	}
-	if f.Confidence != factConfidenceGate {
-		t.Errorf("Bravo02's promoted fact confidence = %v, want exactly factConfidenceGate (%v)", f.Confidence, factConfidenceGate)
+	for id, wantValue := range map[int64]float64{
+		h.store.members[0].ID: 9000000,
+		h.store.members[2].ID: 7000000,
+	} {
+		f, ok := h.factFor(id)
+		if !ok {
+			t.Errorf("member %d: no fact written, want %v", id, wantValue)
+			continue
+		}
+		if f.Value != wantValue {
+			t.Errorf("member %d: fact = %v, want %v", id, f.Value, wantValue)
+		}
 	}
 }
 
@@ -1219,6 +1283,62 @@ func TestIngestVSLateRetriedValueEarnsNoConfidenceBoost(t *testing.T) {
 	}
 	if _, ok := h.factFor(h.store.members[0].ID); ok {
 		t.Errorf("Bravo02 has a fact: a late-retried value must not be written on an open-ended window at low confidence")
+	}
+}
+
+// RULING E: a value repairPoints CONSTRUCTED must not be promoted by the
+// closed-window check, even when the window is both closed and adjacent.
+// repairPoints solves the damaged digit AGAINST bound, so withinBounds
+// cannot fail for its own output -- "the window corroborates it" would
+// really mean "the value was built to satisfy the window it is now being
+// credited with satisfying." Bravo02's primary has exactly one damaged
+// position and repairPoints resolves it uniquely to 8,500,000 -- but at the
+// primary's own near-zero confidence (0.02), which must decide this row on
+// its own merits since the window contributes nothing evidential.
+func TestIngestVSDoesNotPromoteARepairedValue(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "8,700,000", Confidence: 0.95},
+		// One damaged position ('€'). Within [8,300,000, 8,700,000] -- the
+		// window Alpha01 and Charlie03 (its immediate, adjacent neighbours)
+		// define -- only d=8 admits a candidate (8,500,000); d=7 gives
+		// 7,500,000 (below Lo) and d=9 gives 9,500,000 (above Hi), so
+		// repairPoints resolves it uniquely rather than refusing. Confidence
+		// is the primary read's own, near zero: no pixel evidence backs the
+		// damaged position itself.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "€,500,000", Confidence: 0.02},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "8,300,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["low_confidence_points"] != 1 {
+		t.Errorf("low_confidence_points = %d, want 1: Bravo02's repaired value must be judged on its own confidence, not the window; all reasons: %v", reasons["low_confidence_points"], reasons)
+	}
+	if f, ok := h.factFor(h.store.members[1].ID); ok {
+		t.Errorf("Bravo02 has a fact (%v): a repaired value must not be promoted by a closed, adjacent window alone", f.Value)
+	}
+	for id, wantValue := range map[int64]float64{
+		h.store.members[0].ID: 8700000,
+		h.store.members[2].ID: 8300000,
+	} {
+		f, ok := h.factFor(id)
+		if !ok {
+			t.Errorf("member %d: no fact written, want %v", id, wantValue)
+			continue
+		}
+		if f.Value != wantValue {
+			t.Errorf("member %d: fact = %v, want %v", id, f.Value, wantValue)
+		}
 	}
 }
 

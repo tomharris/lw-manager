@@ -935,6 +935,14 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 	// repair to be refused for the wrong reason.
 	trimmed := trimPointsArtifact(row.PointsText)
 	points, perr := ParsePoints(trimmed)
+	// repaired records whether the final value was CONSTRUCTED by
+	// repairPoints rather than read cleanly. It matters below: repairPoints
+	// solves the damaged digit AGAINST bound, so withinBounds cannot fail
+	// for its own output -- the window check is vacuous for a repaired
+	// value, and the "corroborated" promotion below must not credit it with
+	// having been confirmed by a window it was built to satisfy (RULING E;
+	// see the promotion comment below for the full argument).
+	repaired := false
 	if perr != nil {
 		if v, ok := repairPoints(trimmed, bound); ok {
 			// A repaired value never seeds another row's bound -- not
@@ -944,20 +952,38 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 			// seeding loop above). It still carries the read's own
 			// confidence and still points at the same crop of the same
 			// screenshot below, exactly like any other read; it earns no
-			// confidence boost for having been repaired.
-			points, perr = v, nil
+			// confidence boost for having been repaired, and (see below) no
+			// window-based promotion either.
+			points, perr, repaired = v, nil, true
 		}
 	}
 	pointsConf := row.PointsConf
 
 	// A late, second-shape retry: the primary read is non-empty (so pass 1's
-	// readFieldWithRetry never touched it) but still produced nothing usable
-	// -- it failed to parse even after repair, or it parsed to a value
-	// outside the window its neighbours define. Ranks 77 and 79 on capture 6
-	// are this shape (see vsPointsRetry's doc comment); readFieldWithRetry's
-	// empty-only trigger was never wrong to trust a non-empty primary by
-	// default, it just had nothing to fall back to when that trust was
-	// misplaced. This is that fallback.
+	// readFieldWithRetry never touched it) but still failed to parse, even
+	// after repair. Rank 79 on capture 6 is this shape (see vsPointsRetry's
+	// doc comment); readFieldWithRetry's empty-only trigger was never wrong
+	// to trust a non-empty primary by default, it just had nothing to fall
+	// back to when that trust was misplaced. This is that fallback.
+	//
+	// It fires on a PARSE failure only -- NOT on "parsed but landed outside
+	// the window", which was this trigger's original condition and has been
+	// removed (RULING D). Nothing has ever measured that half: both
+	// investigations behind this retry (investigation-retry-confidence.md,
+	// investigation-confidence-floor.md) concern parse failures, and this
+	// change's own gate gain is rank 79, a parse failure. Had the
+	// out-of-window half stayed, firing it means the primary's parsed value
+	// is by hypothesis in conflict with the window -- which can mean a
+	// genuinely bad primary, but can also mean a strong primary that
+	// monotonicKnown's tie-break dropped in favour of an earlier seed (see
+	// TestIngestVSRejectsAPointsValueThatBreaksTheRankingOrder's comment) --
+	// and PSM 13, documented below to introduce a +3,000,000 leading-digit
+	// artifact on 6 of 142 bands, would then be adjudicated by that same
+	// suspect window and written at factConfidenceGate. Re-adding it needs
+	// its own measurement -- a capture with a genuine non-empty,
+	// out-of-window primary whose PSM-13 retry is checked against ground
+	// truth the way capture 6's parse failures were -- not an inference from
+	// the parse-failure case, which says nothing about this one.
 	//
 	// !row.PointsFromRetry excludes a row pass 1 already retried: its
 	// PointsText already IS this same PSM 13 read (same crop, same plan),
@@ -965,26 +991,24 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 	// a result already in hand, for no chance of a different answer.
 	//
 	// PSM 7 (the primary) is preferred over PSM 13 whenever it already
-	// parses in-window, which is exactly what this condition encodes: the
-	// late retry only ever runs once the primary's own path -- trim, parse,
-	// repair, bounds check -- has already failed. That preference is not a
-	// stylistic default; it is the safety property. Measured
-	// (investigation-confidence-floor.md): where both PSMs parse AND both
+	// parses, which is exactly what this condition now encodes: the late
+	// retry only ever runs once the primary's own path -- trim, parse,
+	// repair -- has already failed outright. That preference is not a
+	// stylistic default; it is the safety property, and the measurement
+	// behind it is narrower than it looks: where both PSMs parse AND both
 	// land in-window, they disagree on 2 of 142 bands and PSM 7 is exactly
-	// right both times, while PSM 13 is badly wrong (roughly +3,000,000, a
-	// leading-digit artifact) on 6 further bands outside that pairing -- and
-	// the ordering window catches every one of those 6. PSM 13 is not safe
-	// to prefer unconditionally; it is only safe to CONSULT behind a guard
-	// (parses AND in-window) that has demonstrably caught 100% of its
-	// observed errors, which is exactly the same guard every other points
-	// retry in this file is already fenced by.
+	// right both times, while PSM 13 is badly wrong (roughly +3,000,000) on
+	// 6 further bands outside that pairing (investigation-confidence-floor.md).
+	// That measured PSM 13 consulted behind an in-window guard; it does not
+	// license consulting PSM 13 for a value that already parsed, which is
+	// exactly why this trigger no longer does.
 	//
 	// A value recovered here never seeds another row's bound, and not
 	// because of a flag threaded through this call: IngestVS's seeding loop
 	// and pointsBounds already ran, for every row, before the per-row loop
 	// that calls attributeRow ever started (see IngestVS). This retry is
 	// pass 2. There is no bound left uncomputed for it to reach.
-	if (perr != nil || !withinBounds(points, bound)) && !row.PointsFromRetry {
+	if perr != nil && !row.PointsFromRetry {
 		v, conf, ok, err := i.retryPointsLate(ctx, row, bound)
 		if err != nil {
 			return true, fmt.Errorf("ingest: late points retry for screenshot %d: %w", row.ScreenshotID, err)
@@ -995,7 +1019,9 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 			// repairPoints leaves a repaired value at the primary's own
 			// confidence above. Whatever this value ultimately writes at is
 			// decided by the ordinary corroboration check below, the same
-			// as any other row's.
+			// as any other row's. repaired stays false: this value was
+			// READ by PSM 13, not constructed, so it remains eligible for
+			// window-based promotion.
 			points, pointsConf, perr = v, conf, nil
 		}
 	}
@@ -1018,24 +1044,39 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 	// applied on its own. Promoting on that alone would invert the failure
 	// mode: a capture where OCR broadly degrades used to queue everything,
 	// and would instead write everything at factConfidenceGate with an empty
-	// review queue -- worse OCR producing fewer queued rows. So promotion
-	// requires the window to be CLOSED on both sides -- an actual pair of
-	// neighbours bracketing the value, not an absent constraint that lets
-	// anything through. It is raised to exactly factConfidenceGate and no
-	// further: invariant #5 is about what a number claims about itself, and
-	// being in order does not make a 0.09 read a 0.95 one -- it only makes it
-	// worth writing once the ordering has actually corroborated it.
+	// review queue -- worse OCR producing fewer queued rows.
+	//
+	// Closure (Lo > 0 && Hi < MaxInt64) is necessary but NOT sufficient
+	// (RULING C) -- the first version of this check got that wrong. Closure
+	// only asks that some seed exists somewhere above and somewhere below,
+	// not that either is close: a capture seeded only every few ranks
+	// closes a wide window for everything in between, and the failure is
+	// correlated the wrong way -- a seed needs factConfidenceGate, so as OCR
+	// degrades across a capture, seeds thin out, windows widen, and closure
+	// becomes nearly free at exactly the moment corroboration should be
+	// hardest to claim. Demonstrated directly: a 5-row fixture seeded only
+	// at rank 1 and rank 5 closes every middle row's window widely enough
+	// that three mutually out-of-order, confidence-0.0000 misreads all
+	// satisfied it and would all have been written. pointsBound.AdjacentSeeds
+	// (points.go) is the fix -- it additionally requires the bracketing
+	// values to come from the IMMEDIATE rank neighbours (known[i-1] and
+	// known[i+1]), not merely the nearest known values at any distance. See
+	// AdjacentSeeds' own comment for the full fixture.
+	//
+	// It is raised to exactly factConfidenceGate and no further: invariant
+	// #5 is about what a number claims about itself, and being in order does
+	// not make a 0.09 read a 0.95 one -- it only makes it worth writing once
+	// the ordering has actually corroborated it.
 	//
 	// There is deliberately no additional floor on the read's own OCR
 	// confidence here (see the removed pointsOrderConfidenceFloor comment
-	// above vsRun.attributeRow's neighbourhood -- the const used to live
-	// where this comment now does). Measured against capture 6, the row this
-	// mattered for is rank 10 at confidence 0.0853, correct, and the only row
-	// a floor would have excluded from this exact population; nothing wrong
-	// has ever been observed riding a closed window through here at any
-	// confidence. If that changes on a later capture, refit the floor against
-	// what it excludes, not what it admits -- that is the mistake its first
-	// fitting made.
+	// next to residualMatchConfidence -- the const used to live there). On
+	// capture 6, with AdjacentSeeds now required, the row this mattered for
+	// is rank 10 at confidence 0.0853, correct; nothing wrong has been
+	// observed riding a closed, adjacency-bracketed window through here at
+	// any confidence. If that changes on a later capture, refit a
+	// confidence floor against what it excludes, not what it admits -- that
+	// is the mistake this floor's first fitting made.
 	//
 	// This means a RETRIED row's own PointsConf can still promote it here,
 	// even though that identical confidence is exactly what the seeding loop
@@ -1046,15 +1087,31 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 	// defining the range its neighbours are then judged against, which is
 	// exactly the fabrication risk the bounds exist to prevent, reintroduced
 	// one level up. Promotion runs the other way: it requires two REAL,
-	// independent neighbours' seeds to already bracket the value on both
-	// sides before its own confidence is even consulted, so the structural
-	// evidence points AT the value rather than OUT from it toward a row that
-	// has not earned any corroboration of its own. A fabricated retry read
-	// has no reason to land inside a window it played no part in drawing, so
-	// closure alone is doing, in this context, the work a confidence floor
-	// would otherwise be asked to do for a row with no such bracketing.
+	// independent, ADJACENT neighbours' seeds to already bracket the value on
+	// both sides before its own confidence is even consulted, so the
+	// structural evidence points AT the value rather than OUT from it toward
+	// a row that has not earned any corroboration of its own. A fabricated
+	// retry read has no reason to land inside a window it played no part in
+	// drawing, so closure-plus-adjacency is doing, in this context, the work
+	// a confidence floor would otherwise be asked to do for a row with no
+	// such bracketing.
+	//
+	// A REPAIRED value is excluded from this promotion outright (RULING E),
+	// regardless of closure or adjacency (see `repaired` above):
+	// repairPoints solves the damaged digit AGAINST bound, so withinBounds
+	// cannot fail for its own output -- the window check is vacuous for it,
+	// and "the window corroborates it" would really mean "the value was
+	// constructed to satisfy the window it is now being credited with
+	// satisfying." A repaired value has zero pixel evidence behind its
+	// damaged position; it must clear factConfidenceGate on the primary
+	// read's own confidence, or queue like anything else that doesn't. This
+	// is also an evidential correction, not only a mechanical one: the
+	// investigation that justified removing pointsOrderConfidenceFloor
+	// explicitly excluded repairPoints from what it measured, so crediting a
+	// repaired value with window promotion was, until now, resting on a
+	// population that investigation never surveyed.
 	conf := min(matchNorm, pointsConf)
-	corroborated := bound.Lo > 0 && bound.Hi < math.MaxInt64
+	corroborated := !repaired && bound.Lo > 0 && bound.Hi < math.MaxInt64 && bound.AdjacentSeeds
 	if corroborated && conf < factConfidenceGate {
 		conf = factConfidenceGate
 	}
