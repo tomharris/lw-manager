@@ -273,7 +273,32 @@ var vsNameModes = []readPlan{
 	{spec: ocr.Spec{MinConf: vsNameSpec.MinConf, PSM: ocr.PSMRawLine, Languages: vsNameLanguages}, opts: vsNameOptions},
 }
 
-// vsPointsRetry reads a points crop the primary PSM returned nothing for.
+// vsPointsRetry is the PSM-13 read plan used to re-read a points crop the
+// primary PSM (7) failed on. Two different call sites trigger it, for two
+// different, independently measured failure shapes:
+//
+//   - readVSRows (pass 1, via readFieldWithRetry) fires it the moment the
+//     primary returns the EMPTY string -- tesseract's layout analysis
+//     refusing the crop outright.
+//   - vsRun.attributeRow (pass 2, via retryPointsLate below) fires it when
+//     the primary returned something NON-EMPTY that still turned out to be
+//     unusable -- it failed to parse (even after repairPoints), or it
+//     parsed but landed outside the window its neighbours define. This
+//     second trigger cannot live in pass 1: the window is only known once
+//     every row's points has been read and the seeding pass has run, which
+//     is after readVSRows has already returned.
+//
+// This comment used to claim the retry's three recovered rows on capture 6
+// (ranks 20, 77, 79) "read empty at the primary and now read close but not
+// exact at the retry." Measured
+// (.superpowers/sdd/2026-08-17-m4-closed-set-matching/investigation-retry-confidence.md),
+// that was true only for rank 20. Ranks 77 and 79 return NON-EMPTY, corrupted
+// text ("¢,609,299", "e,2¢8,001") with real, if low, confidences of their
+// own -- readFieldWithRetry's empty-only guard never invoked this retry for
+// them at all, in either direction: not because the guard was wrong (a
+// non-empty, if wrong, primary read is still trusted over an unneeded retry,
+// by design), but because nothing existed to catch the case where trusting
+// it was the mistake. retryPointsLate is that second catch.
 //
 // The asymmetry with the name field was deliberate and is now conditional
 // rather than absolute. A name has a known roster behind it, so a bad read
@@ -319,26 +344,34 @@ var vsNameModes = []readPlan{
 //     the primary's options happen to be optimal for the retry too, on this
 //     capture.
 //
-// The three points failures this unblocks on the M4 gate's capture 6 read
-// empty at the primary and now read close but not exact at the retry --
-// "12,090,000 —", "¢,609,299", "e,2¢8,001" for ranks 20, 77 and 79 -- each
-// containing the right digits corrupted by a stray symbol raw-line mode
-// hallucinates from crop noise. pointsRe correctly refuses all three at this
-// point in the pipeline, so they stay queued as unparseable_points rather
-// than writing a near-miss value directly out of this retry -- loosening
-// pointsRe to admit these would be the same mistake as lowering
-// roster.AutoAccept.
+// Three points failures on the M4 gate's capture 6 trace back to this retry
+// or its neighbouring mechanisms, and it is worth naming which one resolves
+// each, because none of the three take the same path:
 //
-// Two of the three are recovered downstream instead, by mechanisms that are
-// not part of this retry and do not loosen this regex at all.
-// trimPointsArtifact (points.go) strips rank 20's trailing " —" before
-// ParsePoints ever runs, because every digit in that read was already right.
-// repairPoints (points.go) solves for rank 77's single symbol-for-digit
-// character subject to the ordering bounds, because the bounds admit exactly
-// one digit there. Rank 79 has two damaged positions -- "e,2¢8,001" -- which
-// repairPoints refuses by construction: two unknowns is a guess with extra
-// steps, whatever the bounds say, and it stays queued as unparseable_points.
-// See the task 10 report for the exact before/after gate line.
+//   - Rank 20 ("12,090,000 —") is genuinely empty at the primary, so PASS 1's
+//     empty-primary trigger fires directly. trimPointsArtifact (points.go)
+//     then strips the trailing " —" before ParsePoints ever runs, because
+//     every digit the retry read was already right.
+//   - Rank 77 ("¢,609,299") is non-empty at the primary, so pass 1 never
+//     retries it -- but the corruption is exactly one damaged position, and
+//     the ordering bounds admit exactly one digit there, so repairPoints
+//     (points.go) reconstructs it from the PRIMARY read alone, with no retry
+//     involved at all.
+//   - Rank 79 ("e,2¢8,001") is also non-empty at the primary and has TWO
+//     damaged positions, which repairPoints refuses by construction -- two
+//     unknowns is a guess with extra steps, whatever the bounds say. This is
+//     the row retryPointsLate exists for: the primary read is unusable, pass
+//     1 never retried it (not empty), and repairPoints declines to guess, so
+//     the late, pass-2 retry re-reads the crop at PSM 13 and recovers
+//     "2,328,001" cleanly -- accepted because it both parses and lands inside
+//     the window rank 79's real neighbours define, exactly as any other
+//     retried points value must.
+//
+// Loosening pointsRe to admit any of these three directly out of a raw read
+// would be the same mistake as lowering roster.AutoAccept -- every recovery
+// here goes through a structural check (trim, repair-within-bounds, or
+// retry-within-bounds) that a fabricated value has no reason to satisfy,
+// never through relaxing what counts as a parse.
 var vsPointsRetry = readPlan{
 	spec: ocr.Spec{MinConf: vsPointsSpec.MinConf, PSM: ocr.PSMRawLine},
 	opts: vsPointsOptions,
@@ -740,6 +773,14 @@ func (c *vsRowCursor) accept(band RowBand, regionTop int) bool {
 // queued results in call order and every VS fixture builds that queue
 // name-name-then-points per row (one name result per vsNameModes entry, plus
 // one more for either read's own retry if it comes back empty).
+//
+// retryPointsLate's engine calls are NOT part of this ordering: that retry
+// runs later, in attributeRow's pass-2 loop over already-read rows, so its
+// calls land strictly after every one of pass 1's -- for every row this
+// function reads, in order -- not interleaved with them. A fixture that
+// expects a late retry queues that result at the end of its Results slice,
+// after every row's primary name/points reads, not next to the row it
+// belongs to.
 func (i *Ingester) readVSRows(ctx context.Context, frames []db.CaptureFrame, members []roster.Member) ([]vsRow, error) {
 	idxByID := make(map[int64]int, len(members))
 	for n, m := range members {
@@ -907,6 +948,58 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 			points, perr = v, nil
 		}
 	}
+	pointsConf := row.PointsConf
+
+	// A late, second-shape retry: the primary read is non-empty (so pass 1's
+	// readFieldWithRetry never touched it) but still produced nothing usable
+	// -- it failed to parse even after repair, or it parsed to a value
+	// outside the window its neighbours define. Ranks 77 and 79 on capture 6
+	// are this shape (see vsPointsRetry's doc comment); readFieldWithRetry's
+	// empty-only trigger was never wrong to trust a non-empty primary by
+	// default, it just had nothing to fall back to when that trust was
+	// misplaced. This is that fallback.
+	//
+	// !row.PointsFromRetry excludes a row pass 1 already retried: its
+	// PointsText already IS this same PSM 13 read (same crop, same plan),
+	// so re-reading it here would spend a tesseract invocation to reproduce
+	// a result already in hand, for no chance of a different answer.
+	//
+	// PSM 7 (the primary) is preferred over PSM 13 whenever it already
+	// parses in-window, which is exactly what this condition encodes: the
+	// late retry only ever runs once the primary's own path -- trim, parse,
+	// repair, bounds check -- has already failed. That preference is not a
+	// stylistic default; it is the safety property. Measured
+	// (investigation-confidence-floor.md): where both PSMs parse AND both
+	// land in-window, they disagree on 2 of 142 bands and PSM 7 is exactly
+	// right both times, while PSM 13 is badly wrong (roughly +3,000,000, a
+	// leading-digit artifact) on 6 further bands outside that pairing -- and
+	// the ordering window catches every one of those 6. PSM 13 is not safe
+	// to prefer unconditionally; it is only safe to CONSULT behind a guard
+	// (parses AND in-window) that has demonstrably caught 100% of its
+	// observed errors, which is exactly the same guard every other points
+	// retry in this file is already fenced by.
+	//
+	// A value recovered here never seeds another row's bound, and not
+	// because of a flag threaded through this call: IngestVS's seeding loop
+	// and pointsBounds already ran, for every row, before the per-row loop
+	// that calls attributeRow ever started (see IngestVS). This retry is
+	// pass 2. There is no bound left uncomputed for it to reach.
+	if (perr != nil || !withinBounds(points, bound)) && !row.PointsFromRetry {
+		v, conf, ok, err := i.retryPointsLate(ctx, row, bound)
+		if err != nil {
+			return true, fmt.Errorf("ingest: late points retry for screenshot %d: %w", row.ScreenshotID, err)
+		}
+		if ok {
+			// No confidence boost for having been retried -- conf is the
+			// retry's own reported OCR confidence, unmodified, exactly like
+			// repairPoints leaves a repaired value at the primary's own
+			// confidence above. Whatever this value ultimately writes at is
+			// decided by the ordinary corroboration check below, the same
+			// as any other row's.
+			points, pointsConf, perr = v, conf, nil
+		}
+	}
+
 	if perr != nil {
 		return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.PointsText, nil, "unparseable_points", 0)
 	}
@@ -960,7 +1053,7 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 	// has no reason to land inside a window it played no part in drawing, so
 	// closure alone is doing, in this context, the work a confidence floor
 	// would otherwise be asked to do for a row with no such bracketing.
-	conf := min(matchNorm, row.PointsConf)
+	conf := min(matchNorm, pointsConf)
 	corroborated := bound.Lo > 0 && bound.Hi < math.MaxInt64
 	if corroborated && conf < factConfidenceGate {
 		conf = factConfidenceGate
@@ -983,6 +1076,51 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 		return true, fmt.Errorf("ingest: writing vs_points fact for member %d: %w", memberID, err)
 	}
 	return true, nil
+}
+
+// retryPointsLate re-reads one row's points crop at vsPointsRetry's PSM 13
+// plan, for a primary read that was non-empty but still turned out unusable
+// once the row's bounds were known -- attributeRow's second retry trigger
+// (see vsPointsRetry's doc comment and the call site above).
+//
+// It lives on *Ingester rather than *vsRun because it needs nothing from the
+// run beyond what its own parameters carry, and it takes the row's own
+// bound rather than looking it up, because attributeRow already has it in
+// hand from IngestVS's per-row loop.
+//
+// It reloads the frame from the blob store rather than being handed the
+// already-decoded image readVSRows held. That is a real, deliberate cost,
+// not an oversight: pass 1 (readVSRows) discards each frame's pixels once
+// it has read every band on it, because assignment cannot run until every
+// row's scores are known and the accumulated vsRow slice, not decoded
+// images, is what carries state across that boundary (see vsRow's own doc
+// comment). Threading every frame's image through to pass 2 so a handful of
+// late retries could avoid a re-decode would mean holding a whole capture's
+// worth of decoded PNGs in memory for the run's full duration, for a retry
+// that measured 4 of 142 bands on capture 6 (points.go's earlier sweep) plus
+// this trigger's own small addition -- not a trade worth making to save one
+// re-read of a screenshot already sitting in the blob store.
+//
+// Returns ok=false, with no error, when the retried read itself fails to
+// parse or lands outside bound -- an ordinary "the retry didn't help either"
+// outcome, not a fault. A non-nil error is reserved for the two things that
+// ARE faults: the screenshot failing to reload, or the OCR engine failing to
+// run at all.
+func (i *Ingester) retryPointsLate(ctx context.Context, row vsRow, bound pointsBound) (int64, float64, bool, error) {
+	img, err := i.loadFrame(ctx, row.ScreenshotID)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("ingest: reloading screenshot %d for a late points retry: %w", row.ScreenshotID, err)
+	}
+	rect := fieldRect(row.Band, img, vsPointsXFrac0, vsPointsXFrac1, vsPointsYFrac0, vsPointsYFrac1)
+	res, err := i.readField(ctx, img, rect, vsPointsRetry.spec, vsPointsRetry.opts)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	v, perr := ParsePoints(trimPointsArtifact(res.Text))
+	if perr != nil || !withinBounds(v, bound) {
+		return 0, 0, false, nil
+	}
+	return v, res.Confidence, true, nil
 }
 
 // queueReview mirrors rosterRun.queueReview: records one row that could not

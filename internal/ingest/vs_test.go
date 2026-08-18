@@ -728,6 +728,15 @@ func TestIngestVSAcceptsALowConfidencePointsReadThatSitsInOrder(t *testing.T) {
 // seeds Lo = 99,000,000 for Alpha01, so the correct rank-1 read (9,000,000)
 // is ALSO rejected -- two rows queued and one fact written, not two -- and a
 // loose assertion would not notice.
+//
+// Bravo02's primary parses fine (it is well-formed) but lands outside its
+// window, which is now one of retryPointsLate's two triggers -- so this
+// fixture's engine queue carries a fourth result for Bravo02, standing in
+// for the late PSM-13 re-read attributeRow now attempts. It reads the same
+// bogus, still out-of-window value, so the row is still rejected the same
+// way -- proving the new trigger firing changes nothing about a row the
+// retry genuinely cannot help, not just that this test still happens to
+// pass.
 func TestIngestVSRejectsAPointsValueThatBreaksTheRankingOrder(t *testing.T) {
 	h := newVSHarness(t, "complete")
 	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
@@ -743,6 +752,10 @@ func TestIngestVSRejectsAPointsValueThatBreaksTheRankingOrder(t *testing.T) {
 		// Rank 2 cannot outscore rank 1.
 		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "99,000,000", Confidence: 0.95},
 		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		// The late retry's own read, consumed only after every row above has
+		// been read (see readVSRows' doc comment on ordering): still bogus,
+		// still out of order.
+		{Text: "99,000,000", Confidence: 0.90},
 	}
 
 	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
@@ -1009,6 +1022,203 @@ func TestIngestVSNeverSeedsABoundFromARetriedRead(t *testing.T) {
 	}
 	if len(h.store.Facts) != 2 {
 		t.Errorf("wrote %d facts, want exactly 2: Alpha01 and Charlie03", len(h.store.Facts))
+	}
+}
+
+// The second retry trigger, generalized beyond "the primary was empty": a
+// primary read that is non-empty but fails to parse (even after repair) is
+// now also retried, late, in attributeRow's pass-2 loop -- capture 6's rank
+// 79 ("e,2¢8,001", two damaged positions, which repairPoints refuses) is
+// exactly this shape (investigation-retry-confidence.md).
+func TestIngestVSLateRetriesANonEmptyUnparseablePointsReadAndAcceptsAnInOrderValue(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Non-empty at the primary, so pass 1's readFieldWithRetry never
+		// touches this row -- and TWO damaged positions ('€' twice), so
+		// repairPoints refuses by construction (it only solves for exactly
+		// one). Ends in a digit, so trimPointsArtifact's trailing-only trim
+		// does not touch it either: this read is genuinely unparseable at
+		// the primary, not merely dirty at one end.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "€,00€,000", Confidence: 0.30},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		// The late retry's own read, consumed only after every row above has
+		// been read (see readVSRows' doc comment on ordering). It parses
+		// cleanly and lands inside Bravo02's window (bracketed by Alpha01's
+		// 9,000,000 and Charlie03's 7,000,000) -- and at low confidence, to
+		// prove the write below comes from CLOSED-WINDOW promotion, not from
+		// this number happening to be high already.
+		{Text: "8,000,000", Confidence: 0.20},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["unparseable_points"] != 0 {
+		t.Errorf("unparseable_points = %d, want 0: the late retry should have recovered Bravo02's row; all reasons: %v", reasons["unparseable_points"], reasons)
+	}
+	bravoID := h.store.members[1].ID
+	f, ok := h.factFor(bravoID)
+	if !ok {
+		t.Fatalf("Bravo02 has no fact: the late retry's 8,000,000 must have been written")
+	}
+	if f.Value != 8000000 {
+		t.Errorf("Bravo02's fact = %v, want 8,000,000", f.Value)
+	}
+	// Closed on both sides, so promoted to exactly factConfidenceGate, not
+	// left at the retry's own weak 0.20 and not boosted past the gate either
+	// -- same promotion rule as any other row, earning the retry no special
+	// treatment.
+	if f.Confidence != factConfidenceGate {
+		t.Errorf("Bravo02's promoted fact confidence = %v, want exactly factConfidenceGate (%v)", f.Confidence, factConfidenceGate)
+	}
+}
+
+// The OTHER shape the generalized trigger covers: a primary read that PARSES
+// cleanly but lands outside the window its neighbours define. Measured
+// (investigation-confidence-floor.md), this is a real, separate failure mode
+// from an unparseable read, and the trigger condition has to catch both --
+// this test specifically exercises the withinBounds half of that check,
+// leaving the parse-failure half to the test above.
+func TestIngestVSLateRetriesAnOutOfOrderPointsReadAndAcceptsTheRetriedInOrderValue(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Parses cleanly -- no repair needed, no parse failure -- but
+		// 1,000,000 cannot rank above Charlie03's 7,000,000, so this is out
+		// of order rather than unparseable. Confidence is deliberately below
+		// factConfidenceGate: at 0.90 this value would itself have cleared
+		// IngestVS's seeding gate and been accepted as a SEED before
+		// monotonicKnown ever ran, at which point the tie-break documented
+		// on TestIngestVSRejectsAPointsValueThatBreaksTheRankingOrder keeps
+		// this earlier row and drops Charlie03 instead -- corrupting
+		// Charlie03's bound rather than tripping this row's own
+		// withinBounds check, which is a real but different failure mode
+		// this test is not the one to cover.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "1,000,000", Confidence: 0.50},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		// The late retry's own read: in order this time.
+		{Text: "8,000,000", Confidence: 0.50},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["points_out_of_order"] != 0 {
+		t.Errorf("points_out_of_order = %d, want 0: the late retry should have recovered Bravo02's row; all reasons: %v", reasons["points_out_of_order"], reasons)
+	}
+	bravoID := h.store.members[1].ID
+	f, ok := h.factFor(bravoID)
+	if !ok {
+		t.Fatalf("Bravo02 has no fact: the late retry's 8,000,000 must have been written")
+	}
+	if f.Value != 8000000 {
+		t.Errorf("Bravo02's fact = %v, want 8,000,000", f.Value)
+	}
+	if f.Confidence != factConfidenceGate {
+		t.Errorf("Bravo02's promoted fact confidence = %v, want exactly factConfidenceGate (%v)", f.Confidence, factConfidenceGate)
+	}
+}
+
+// A row pass 1 already retried (its primary PSM was empty) must not be
+// late-retried a second time, even when the pass-1 retry's own read is
+// itself unusable: PointsText already IS the PSM-13 read, so a further
+// attempt would re-read the identical crop with the identical plan for no
+// chance of a different answer, and would spend an OCR call the fixture
+// below deliberately does not provide -- if the guard were dropped, the fake
+// engine runs dry and IngestVS returns an error instead of a clean queue.
+func TestIngestVSDoesNotLateRetryARowThePrimaryPassAlreadyRetried(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Empty at the primary, so pass 1's readFieldWithRetry fires --
+		// and the retry it runs is ITSELF unparseable (two damaged
+		// positions), so PointsFromRetry is true but the row is still
+		// unusable. No further Result follows for this row: a late retry
+		// firing anyway would exhaust the fake engine.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "", Confidence: 0},
+		{Text: "€,00€,000", Confidence: 0.10},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v (a late retry firing anyway would exhaust the fake engine and surface here)", err)
+	}
+	if reasons := h.reviewReasons(); reasons["unparseable_points"] != 1 {
+		t.Errorf("unparseable_points = %d, want 1: Bravo02's retried-but-still-garbled read", reasons["unparseable_points"])
+	}
+	if _, ok := h.factFor(h.store.members[1].ID); ok {
+		t.Errorf("Bravo02 has a fact: its unparseable retried read must have been queued, not written")
+	}
+}
+
+// The controller ruling this trigger must obey too: a late-retried value is
+// judged by the SAME confidence and corroboration rules as any other read,
+// not written on the strength of having been recovered at all. Bravo02
+// sits at rank 1, where Hi is always open (nothing ranks above it -- see
+// TestIngestVSDoesNotPromoteAnOpenEndedWindow for the same argument against
+// the primary-path retry), so even though the late retry parses and lands
+// inside the (one-sided) window, it must still queue on its own low
+// confidence rather than being written because a retry "found something".
+func TestIngestVSLateRetriedValueEarnsNoConfidenceBoost(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(2), 0)
+	h.engine.Results = []ocr.Result{
+		// Rank 1: unparseable at the primary, no neighbour above.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "€,00€,000", Confidence: 0.30},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "5,000,000", Confidence: 0.95},
+		// The late retry: parses, and satisfies the one real bound it has
+		// (>= Charlie03's 5,000,000), but at a confidence far below
+		// factConfidenceGate.
+		{Text: "9,000,000", Confidence: 0.30},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	reasons := h.reviewReasons()
+	if reasons["low_confidence_points"] != 1 {
+		t.Errorf("low_confidence_points = %d, want 1: the retry succeeded structurally but its confidence never clears the gate on an open window; all reasons: %v", reasons["low_confidence_points"], reasons)
+	}
+	// Specifically NOT unparseable_points or points_out_of_order: those would
+	// mean the retry never actually recovered a usable value, which is a
+	// different failure than the one this test is checking for.
+	if reasons["unparseable_points"] != 0 || reasons["points_out_of_order"] != 0 {
+		t.Errorf("expected only low_confidence_points, got: %v", reasons)
+	}
+	if _, ok := h.factFor(h.store.members[0].ID); ok {
+		t.Errorf("Bravo02 has a fact: a late-retried value must not be written on an open-ended window at low confidence")
 	}
 }
 
