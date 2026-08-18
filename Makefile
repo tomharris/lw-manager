@@ -101,6 +101,39 @@ probe-points: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
 probe-points:
 	LW_BLOB_FS_ROOT="$(LW_BLOB_FS_ROOT)" $(GO) test -tags m4probe -count=1 -v -timeout 60m ./internal/ingest/ -run TestM4PointsProbe $(PROBE_ARGS)
 
+# The M4 assignment probe: does closed-set matching beat per-row thresholding,
+# and at what false-attribution cost?
+#
+# Not a gate. It asserts nothing and its output is the point. Reach for it
+# before changing roster.ResidualFloor, roster.ResidualMargin or
+# residualMatchConfidence -- and after, because "re-measure, do not re-reason"
+# applies to all three.
+#
+# Two of its modes exist to keep its own numbers honest, and both should be run
+# before believing a headline:
+#
+#   -probe.assignshuffle   rotates the truth labels by one rank, so every
+#                          assignment is wrong by construction. It must report
+#                          ~0 correct. A clean run here proved nothing until
+#                          this fired, because forcing an assignment at floor 0
+#                          / margin 0 produced a PERFECT result -- which reads
+#                          as a finding and is really an untested instrument.
+#   -probe.assigndecoys=N  pads the member set with N members one confusable
+#                          substitution from a real name. The gate's capture is
+#                          square (86 rows, 86 members) and production is not
+#                          (recon: 94 ranked rows, 96 alliance members), and
+#                          squareness is the assignment's biggest unearned
+#                          advantage.
+#
+#	make probe-assign
+#	make probe-assign PROBE_ARGS='-probe.assigndetail'
+#	make probe-assign PROBE_ARGS='-probe.assignshuffle'
+#	make probe-assign PROBE_ARGS='-probe.assigndecoys=20 -probe.assignpsm=13'
+.PHONY: probe-assign
+probe-assign: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
+probe-assign:
+	LW_BLOB_FS_ROOT="$(LW_BLOB_FS_ROOT)" $(GO) test -tags m4probe -count=1 -v -timeout 60m ./internal/ingest/ -run TestM4AssignProbe -probe.assign $(PROBE_ARGS)
+
 .PHONY: lint
 lint:
 	$(GO) vet ./...

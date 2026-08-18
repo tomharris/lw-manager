@@ -91,6 +91,12 @@ type probeCapture struct {
 type probeFrame struct {
 	Seq    int    `yaml:"seq"`
 	SHA256 string `yaml:"sha256"`
+	// OffsetPx is how far the list scrolled between this frame and the
+	// previous one, as measured at capture time. Only the assignment probe
+	// reads it — the name probe deliberately scores every band of every frame
+	// with no deduplication at all — but it lives here because this is the
+	// struct that mirrors fixtures/m4gate/expected.yaml.
+	OffsetPx int `yaml:"offset_px"`
 }
 
 type probeRow struct {
