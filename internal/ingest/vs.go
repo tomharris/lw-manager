@@ -249,6 +249,30 @@ var (
 	}
 )
 
+// vsNameModes are the segmentation modes every name crop is read at. Each
+// produces its own read; the per-member best score across all of them is what
+// the assignment sees.
+//
+// PSM 13 alone is much worse than PSM 7 alone -- 55/86 members against 73/86
+// -- but their miss sets are DISJOINT in four places on capture 6, so the
+// union beats either. Worth +6 at the per-row baseline and +1 once closed-set
+// assignment is in, which makes this insurance rather than accuracy: it earns
+// its keep on a capture where the assignment has less structure to work with,
+// which is exactly the case a single fixture cannot measure.
+//
+// This is not the thing CLAUDE.md warns against when it says gating a retry on
+// a low match score "would put the matcher upstream of OCR". Both reads happen
+// unconditionally, so nothing about the roster decides what OCR is asked to
+// do; taking the better of two independent readings of the same pixels is the
+// move the probes already make across overlapping frames.
+//
+// Cost is one extra tesseract invocation per row, roughly 27s to 53s over 86
+// rows, in a batch that runs once a day.
+var vsNameModes = []readPlan{
+	vsName,
+	{spec: ocr.Spec{MinConf: vsNameSpec.MinConf, PSM: ocr.PSMRawLine, Languages: vsNameLanguages}, opts: vsNameOptions},
+}
+
 // vsPointsRetry reads a points crop the primary PSM returned nothing for.
 //
 // The asymmetry with the name field was deliberate and is now conditional
@@ -686,9 +710,11 @@ func (c *vsRowCursor) accept(band RowBand, regionTop int) bool {
 // readVSRows is pass 1: walk the frames, drop geometric duplicates, and read
 // both fields of every surviving row. It writes nothing.
 //
-// The field order -- name, then points, per band -- is load-bearing for the
-// tests: ocr.FakeEngine returns queued results in call order and every VS
-// fixture builds that queue name-then-points per row.
+// The field order -- name read at every vsNameModes entry in order, then
+// points, per band -- is load-bearing for the tests: ocr.FakeEngine returns
+// queued results in call order and every VS fixture builds that queue
+// name-name-then-points per row (one name result per vsNameModes entry, plus
+// one more for either read's own retry if it comes back empty).
 func (i *Ingester) readVSRows(ctx context.Context, frames []db.CaptureFrame, members []roster.Member) ([]vsRow, error) {
 	idxByID := make(map[int64]int, len(members))
 	for n, m := range members {
@@ -716,12 +742,36 @@ func (i *Ingester) readVSRows(ctx context.Context, frames []db.CaptureFrame, mem
 				continue // geometric duplicate; OCR never runs on it
 			}
 
-			nameRes, _, err := i.readFieldWithRetry(ctx, img,
-				fieldRect(band, img, vsNameXFrac0, vsNameXFrac1, vsNameYFrac0, vsNameYFrac1),
-				vsName, vsNameRetry)
-			if err != nil {
-				return nil, err
+			scores := make([]int, len(members))
+			nameText := ""
+			bestTop := -1
+			for _, mode := range vsNameModes {
+				nameRes, _, err := i.readFieldWithRetry(ctx, img,
+					fieldRect(band, img, vsNameXFrac0, vsNameXFrac1, vsNameYFrac0, vsNameYFrac1),
+					mode, vsNameRetry)
+				if err != nil {
+					return nil, err
+				}
+				if nameRes.Text == "" {
+					continue
+				}
+				top := 0
+				for _, c := range roster.Rank(nameRes.Text, members) {
+					if j := idxByID[c.MemberID]; c.Score > scores[j] {
+						scores[j] = c.Score
+					}
+					if c.Score > top {
+						top = c.Score
+					}
+				}
+				// NameText is only ever shown to a human in the review queue,
+				// so it carries whichever read got closest to a real member --
+				// the one worth looking at when deciding what the row says.
+				if top > bestTop {
+					bestTop, nameText = top, nameRes.Text
+				}
 			}
+
 			pointsRes, pointsRetried, err := i.readFieldWithRetry(ctx, img,
 				fieldRect(band, img, vsPointsXFrac0, vsPointsXFrac1, vsPointsYFrac0, vsPointsYFrac1),
 				readPlan{spec: vsPointsSpec, opts: vsPointsOptions}, vsPointsRetry)
@@ -729,14 +779,10 @@ func (i *Ingester) readVSRows(ctx context.Context, frames []db.CaptureFrame, mem
 				return nil, err
 			}
 
-			scores := make([]int, len(members))
-			for _, c := range roster.Rank(nameRes.Text, members) {
-				scores[idxByID[c.MemberID]] = c.Score
-			}
 			rows = append(rows, vsRow{
 				ScreenshotID:    frame.ScreenshotID,
 				Band:            band,
-				NameText:        nameRes.Text,
+				NameText:        nameText,
 				PointsText:      pointsRes.Text,
 				PointsConf:      pointsRes.Confidence,
 				PointsFromRetry: pointsRetried,

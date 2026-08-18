@@ -211,6 +211,7 @@ func newVSIngestHarness(t *testing.T, fx vsFixture) *vsIngestHarness {
 	for _, r := range rows {
 		results = append(results,
 			ocr.Result{Text: r.name, Confidence: 0.95},
+			ocr.Result{Text: r.name, Confidence: 0.95},
 			ocr.Result{Text: r.points, Confidence: 0.95},
 		)
 	}
@@ -353,8 +354,8 @@ func TestIngestVSInfersZeroOnTheRightMemberWhenRowsArriveOutOfRosterOrder(t *tes
 	}
 	h.addFrame(vsFrame(2), 0)
 	h.engine.Results = []ocr.Result{
-		{Text: "Member03", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
-		{Text: "Member01", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
+		{Text: "Member03", Confidence: 0.95}, {Text: "Member03", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "Member01", Confidence: 0.95}, {Text: "Member01", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
 	}
 
 	res, err := h.IngestVS(context.Background(), 1, testPeriodKey)
@@ -517,7 +518,7 @@ func TestIngestVSResolvesAWeakRowFromTheResidual(t *testing.T) {
 	}
 	h.addFrame(vsFrame(2), 0)
 	h.engine.Results = []ocr.Result{
-		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
 		// "Br4v0z" scores 68 against Bravo02 (roster.TokenSetRatio) -- inside
 		// the 60-79 residual band, well below AutoAccept, and 14 against
 		// Alpha01 -- unmatchable per-row, unambiguous once Alpha01 is taken.
@@ -526,7 +527,7 @@ func TestIngestVSResolvesAWeakRowFromTheResidual(t *testing.T) {
 		// deliberate: a reviewer proved by mutation that a fixture scoring in
 		// the 80s lets this test pass even with the residualMatchConfidence
 		// branch deleted, because score/100 alone already clears the gate.
-		{Text: "Br4v0z", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
+		{Text: "Br4v0z", Confidence: 0.95}, {Text: "Br4v0z", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
 	}
 
 	res, err := h.IngestVS(context.Background(), 1, testPeriodKey)
@@ -652,7 +653,7 @@ func TestIngestVSWarnsWhenTwoMembersAreIndistinguishable(t *testing.T) {
 	}
 	h.addFrame(vsFrame(1), 0)
 	h.engine.Results = []ocr.Result{
-		{Text: "ALBAN80", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "ALBAN80", Confidence: 0.95}, {Text: "ALBAN80", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
 	}
 
 	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
@@ -686,9 +687,9 @@ func TestIngestVSAcceptsALowConfidencePointsReadThatSitsInOrder(t *testing.T) {
 	}
 	h.addFrame(vsFrame(3), 0)
 	h.engine.Results = []ocr.Result{
-		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
-		{Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.52},
-		{Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.52},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
 	}
 
 	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
@@ -738,10 +739,10 @@ func TestIngestVSRejectsAPointsValueThatBreaksTheRankingOrder(t *testing.T) {
 	}
 	h.addFrame(vsFrame(3), 0)
 	h.engine.Results = []ocr.Result{
-		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
 		// Rank 2 cannot outscore rank 1.
-		{Text: "Bravo02", Confidence: 0.95}, {Text: "99,000,000", Confidence: 0.95},
-		{Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "99,000,000", Confidence: 0.95},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
 	}
 
 	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
@@ -775,9 +776,9 @@ func TestIngestVSDoesNotPromoteAnOpenEndedWindow(t *testing.T) {
 	h.addFrame(vsFrame(3), 0)
 	h.engine.Results = []ocr.Result{
 		// Rank 1: reads fine but weakly, and its window is open above.
-		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.52},
-		{Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
-		{Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.52},
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
 	}
 
 	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
@@ -807,11 +808,11 @@ func TestIngestVSDoesNotPromoteBelowTheOrderConfidenceFloor(t *testing.T) {
 	}
 	h.addFrame(vsFrame(3), 0)
 	h.engine.Results = []ocr.Result{
-		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
 		// Rank 2's window is closed on both sides (bracketed by Alpha01 and
 		// Charlie03) but its own OCR confidence (0.35) is below the 0.40 floor.
-		{Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.35},
-		{Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.35},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
 	}
 
 	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
@@ -839,11 +840,11 @@ func TestIngestVSRetriesAnEmptyPointsReadAndAcceptsAnInOrderValue(t *testing.T) 
 	}
 	h.addFrame(vsFrame(3), 0)
 	h.engine.Results = []ocr.Result{
-		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
 		// Empty at the primary PSM, read at the retry.
-		{Text: "Bravo02", Confidence: 0.95}, {Text: "", Confidence: 0},
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "", Confidence: 0},
 		{Text: "8,000,000", Confidence: 0.90},
-		{Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
 	}
 
 	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
@@ -888,10 +889,10 @@ func TestIngestVSRejectsARetriedPointsValueThatBreaksTheOrder(t *testing.T) {
 	}
 	h.addFrame(vsFrame(3), 0)
 	h.engine.Results = []ocr.Result{
-		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
-		{Text: "Bravo02", Confidence: 0.95}, {Text: "", Confidence: 0},
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "", Confidence: 0},
 		{Text: "44,357,000", Confidence: 0.90}, // well-formed, and impossible at rank 2
-		{Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
 	}
 
 	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
@@ -941,15 +942,15 @@ func TestIngestVSNeverSeedsABoundFromARetriedRead(t *testing.T) {
 	}
 	h.addFrame(vsFrame(3), 0)
 	h.engine.Results = []ocr.Result{
-		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
 		// Empty at the primary PSM; the retry reads a well-formed, confident,
 		// but fabricated value that a crop catching neighbouring content could
 		// plausibly produce. Bracketed by Alpha01 (9,000,000) and Charlie03
 		// (7,000,000) it is itself out of order and must be rejected -- but the
 		// real question this test asks is whether it also corrupts Charlie03.
-		{Text: "Bravo02", Confidence: 0.95}, {Text: "", Confidence: 0},
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "", Confidence: 0},
 		{Text: "1,000,000", Confidence: 0.90},
-		{Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
 	}
 
 	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
@@ -988,5 +989,31 @@ func TestIngestVSNeverSeedsABoundFromARetriedRead(t *testing.T) {
 	}
 	if len(h.store.Facts) != 2 {
 		t.Errorf("wrote %d facts, want exactly 2: Alpha01 and Charlie03", len(h.store.Facts))
+	}
+}
+
+// Both segmentation modes run on every name crop and the better score wins.
+// Their miss sets are disjoint in four places on capture 6, so this is not a
+// tie-break, it is two independent readings of the same pixels.
+func TestIngestVSTakesTheBetterOfTwoNameReads(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	h.store.nextMemberID++
+	h.store.members = append(h.store.members, db.Member{
+		ID: h.store.nextMemberID, AllianceID: 1, Name: "Alpha01",
+		NameNormalized: roster.Normalize("Alpha01"), Active: true,
+	})
+	h.addFrame(vsFrame(1), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "XXXXXXX", Confidence: 0.95}, // primary mode: matches nobody
+		{Text: "Alpha01", Confidence: 0.95}, // second mode: exact
+		{Text: "9,000,000", Confidence: 0.95},
+	}
+
+	res, err := h.IngestVS(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if res.Matched != 1 {
+		t.Errorf("matched %d, want 1: the second mode read the name exactly", res.Matched)
 	}
 }
