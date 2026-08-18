@@ -281,10 +281,12 @@ var (
 //     identically within every shape. That is not the broken-instrument
 //     uniformity CLAUDE.md warns about (which was identical scores ACROSS
 //     shapes that differ enormously elsewhere); shapes here still separate
-//     82 from 83. It is explained by how few bands the retry ever touches:
-//     of 142 bands only a handful read empty at the primary, so there is far
-//     less surface for an upscale factor to move than the name field's
-//     retry, which was fitted against fifteen empty bands.
+//     82 from 83. It is explained by how few bands the retry ever touches --
+//     measured, not inferred from the before/after aggregate above: `make
+//     probe-points` reports a Retried count alongside the rest of the row,
+//     and it reads 4 of 142 bands on this capture. That is far less surface
+//     for an upscale factor to move than the name field's retry, which was
+//     fitted against fifteen empty bands.
 //   - Grayscale-alone beats grayscale-plus-invert's name-side win by exactly
 //     tying it rather than losing to it -- inverting costs nothing here but
 //     also buys nothing, unlike the name retry where it was worth one
@@ -829,6 +831,24 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 	// invariant #5 is about what a number claims about itself, and being in
 	// order does not make a 0.52 read a 0.95 one -- it only makes it worth
 	// writing once the ordering has actually corroborated it.
+	//
+	// This means a RETRIED row's own PointsConf can still promote it here,
+	// via pointsOrderConfidenceFloor, even though that identical confidence
+	// is exactly what the seeding loop above refuses to trust at all (see
+	// vsRow.PointsFromRetry). That is not a contradiction -- the two checks
+	// ask different questions of the same number. Seeding lets a value
+	// constrain OTHER rows with nothing external checking it: a retried
+	// value seeding a window is one unverified read defining the range its
+	// neighbours are then judged against, which is exactly the fabrication
+	// risk the bounds exist to prevent, reintroduced one level up. Promotion
+	// runs the other way: it requires two REAL, independent neighbours'
+	// seeds to already bracket the value on both sides before its own
+	// confidence is even consulted, so the structural evidence points AT the
+	// value rather than OUT from it toward a row that has not earned any
+	// corroboration of its own. A fabricated retry read has no reason to
+	// land inside a window it played no part in drawing, so the floor is
+	// judging the read in a context where the ordering has already done the
+	// work the seeding guard withholds it from doing for anyone else.
 	conf := min(matchNorm, row.PointsConf)
 	corroborated := bound.Lo > 0 && bound.Hi < math.MaxInt64 && row.PointsConf >= pointsOrderConfidenceFloor
 	if corroborated && conf < factConfidenceGate {

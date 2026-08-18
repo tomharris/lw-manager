@@ -231,6 +231,28 @@ func (h *vsIngestHarness) reviewReasons() map[string]int {
 	return out
 }
 
+// factFor returns the fact written for memberID, or ok=false if none was.
+//
+// Exists so a test can assert a fact EXISTS rather than only that any fact it
+// happens to find carries the right value -- a bare count comparison or a
+// "for every fact, if it matches this member, check its value" loop is
+// vacuous against a bug that drops the row entirely (no fact ever iterated,
+// so the value check never runs) while an unrelated bug changes the total
+// count to something that still satisfies a `!= N` assertion elsewhere. See
+// TestIngestVSNeverSeedsABoundFromARetriedRead's history for a case that
+// actually happened: without the never-seed guard, Charlie03's row is the one
+// dropped (queued as points_out_of_order via monotonicKnown, not Bravo02's),
+// and a loop that only checks matching facts it finds never notices Charlie03
+// is missing.
+func (h *vsIngestHarness) factFor(memberID int64) (db.Fact, bool) {
+	for _, f := range h.store.Facts {
+		if f.MemberID == memberID {
+			return f, true
+		}
+	}
+	return db.Fact{}, false
+}
+
 // --- tests -------------------------------------------------------------------
 
 // The rule the recon forced: the ranking lists scorers only, so an absent
@@ -827,8 +849,28 @@ func TestIngestVSRetriesAnEmptyPointsReadAndAcceptsAnInOrderValue(t *testing.T) 
 	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
 		t.Fatalf("IngestVS: %v", err)
 	}
+	// Asserted per member, not as a bare count: a count comparison alone
+	// cannot distinguish "all three rows wrote, one at a wrong value" from
+	// "only two rows wrote" if a third, unrelated fact happened to appear --
+	// and it is exactly as blind to a swap between two members. Each of the
+	// three must exist AND carry its own value.
+	want := map[int64]float64{
+		h.store.members[0].ID: 9000000, // Alpha01: read cleanly by the primary
+		h.store.members[1].ID: 8000000, // Bravo02: empty at the primary, read by the retry
+		h.store.members[2].ID: 7000000, // Charlie03: read cleanly by the primary
+	}
+	for id, wantValue := range want {
+		f, ok := h.factFor(id)
+		if !ok {
+			t.Errorf("member %d: no fact written, want %v", id, wantValue)
+			continue
+		}
+		if f.Value != wantValue {
+			t.Errorf("member %d: fact = %v, want %v", id, f.Value, wantValue)
+		}
+	}
 	if len(h.store.Facts) != 3 {
-		t.Errorf("wrote %d facts, want 3: the retry read a value that sits between its neighbours", len(h.store.Facts))
+		t.Errorf("wrote %d facts, want exactly 3", len(h.store.Facts))
 	}
 }
 
@@ -857,6 +899,27 @@ func TestIngestVSRejectsARetriedPointsValueThatBreaksTheOrder(t *testing.T) {
 	}
 	if reasons := h.reviewReasons(); reasons["points_out_of_order"] == 0 {
 		t.Errorf("a fabricated but well-formed retry value was written; all reasons: %v", reasons)
+	}
+	// The reason-count check above cannot tell "Bravo02 was rejected" from
+	// "some unrelated row was queued as points_out_of_order and Bravo02's
+	// fabrication was written anyway" -- checking that Bravo02 specifically
+	// has no fact, and that its two neighbours are untouched by its bad read,
+	// closes that gap.
+	if _, ok := h.factFor(h.store.members[1].ID); ok {
+		t.Errorf("Bravo02 has a fact: its fabricated 44,357,000 must have been rejected, not written")
+	}
+	for id, wantValue := range map[int64]float64{
+		h.store.members[0].ID: 9000000,
+		h.store.members[2].ID: 7000000,
+	} {
+		f, ok := h.factFor(id)
+		if !ok {
+			t.Errorf("member %d: no fact written, want %v", id, wantValue)
+			continue
+		}
+		if f.Value != wantValue {
+			t.Errorf("member %d: fact = %v, want %v", id, f.Value, wantValue)
+		}
 	}
 }
 
@@ -895,12 +958,35 @@ func TestIngestVSNeverSeedsABoundFromARetriedRead(t *testing.T) {
 	if reasons := h.reviewReasons(); reasons["points_out_of_order"] != 1 {
 		t.Errorf("points_out_of_order = %d, want exactly 1 (Bravo02's own fabricated read); all reasons: %v", reasons["points_out_of_order"], reasons)
 	}
-	if len(h.store.Facts) != 2 {
-		t.Fatalf("wrote %d facts, want 2: Alpha01 and Charlie03 -- Bravo02's retried value must not have narrowed Charlie03's window", len(h.store.Facts))
+	// Asserted per member, not as a bare count. Without the never-seed guard,
+	// Bravo02's 1,000,000 DOES seed a bound -- and the row it corrupts is
+	// Charlie03's, not Bravo02's own: monotonicKnown takes the longest
+	// non-increasing run over the seeds [9M, 1M, 7M], keeps {9M, 1M} on the
+	// first-found tie-break, and drops Charlie03's 7M instead, so Charlie03
+	// is the one queued as points_out_of_order and Bravo02 is the one
+	// written. `len(Facts) != 2` and a reason count of exactly 1 both still
+	// hold in that broken world, and a loop that only inspects facts it
+	// finds for Charlie03's ID never fires, because there is no such fact to
+	// find -- every assertion in this test used to survive that mutation
+	// silently. Checking existence directly is what catches it: with the
+	// guard removed, factFor(Charlie03) below returns ok=false and this test
+	// fails.
+	if f, ok := h.factFor(h.store.members[1].ID); ok {
+		t.Errorf("Bravo02 has a fact (%v): its fabricated 1,000,000 must have been rejected, not written", f.Value)
 	}
-	for _, f := range h.store.Facts {
-		if f.MemberID == h.store.members[2].ID && f.Value != 7000000 {
-			t.Errorf("Charlie03's fact = %v, want 7,000,000: Bravo02's retried 1,000,000 must not have capped it", f.Value)
-		}
+	if f, ok := h.factFor(h.store.members[0].ID); !ok {
+		t.Errorf("Alpha01 has no fact: its genuine 9,000,000 read must not be affected by Bravo02's retry")
+	} else if f.Value != 9000000 {
+		t.Errorf("Alpha01's fact = %v, want 9,000,000", f.Value)
+	}
+	f, ok := h.factFor(h.store.members[2].ID)
+	if !ok {
+		t.Fatalf("Charlie03 has no fact at all: Bravo02's retried read seeded a bound and pushed Charlie03 out of order instead")
+	}
+	if f.Value != 7000000 {
+		t.Errorf("Charlie03's fact = %v, want 7,000,000: Bravo02's retried 1,000,000 must not have capped it", f.Value)
+	}
+	if len(h.store.Facts) != 2 {
+		t.Errorf("wrote %d facts, want exactly 2: Alpha01 and Charlie03", len(h.store.Facts))
 	}
 }

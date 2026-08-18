@@ -71,7 +71,7 @@ var (
 	pointsPSMs = flag.String("points.psm", "",
 		"comma-separated page-segmentation modes to compare, e.g. '7,13'; empty uses the engine default")
 	pointsCharset = flag.String("points.charset", "",
-		"set vsPointsSpec.Charset, e.g. '0123456789,'; empty ships as-is. The charset was removed deliberately -- see vsPointsSpec's comment -- and this re-measures that decision rather than re-reasoning it")
+		"set vsPointsSpec.Charset, e.g. '0123456789,'; empty ships as-is. The charset was removed deliberately -- see vsPointsSpec's comment -- and this re-measures that decision rather than re-reasoning it. Applied to the PRIMARY spec only, matching production (the retry carries no charset) -- so a band the charset-constrained primary leaves empty is then read by a charset-free retry, and this flag's result is partly confounded by that rather than a clean charset-alone comparison")
 	pointsDump = flag.String("points.dump", "",
 		"directory to write the crops of bands that did not read exactly: both the raw band and the preprocessed points crop, so the pixels can be looked at rather than reasoned about")
 	pointsFBSweep = flag.Bool("points.fbsweep", false,
@@ -96,6 +96,15 @@ type pointsResult struct {
 	Unparseable int // read did not clear pointsRe
 	Empty       int // OCR returned nothing
 	LowConf     int // parsed, but below MinConf: would queue rather than write
+
+	// Retried counts bands where the primary read came back empty and
+	// readFieldWithRetry actually ran the retry -- the measured version of
+	// what vsPointsRetry's doc comment otherwise only infers from a
+	// before/after aggregate. "Two aggregates side by side are not a causal
+	// claim" applies here as much as it did to the name field's language
+	// packs: this is the number that either backs the doc comment's "how few
+	// bands the retry ever touches" or contradicts it.
+	Retried int
 
 	// Best is each expected row's best showing across every band, keyed by
 	// rank, so a row that read correctly once is never reported by one of its
@@ -171,16 +180,28 @@ func TestM4PointsProbe(t *testing.T) {
 				// property that made the name probe's -probe.fbsweep a valid
 				// apples-to-apples comparison rather than a sweep over every
 				// band regardless of whether the retry ever touches it.
-				retry := readPlan{spec: ocr.Spec{MinConf: spec.MinConf, PSM: *pointsFallbackPSM}, opts: fb.opts}
+				//
+				// Derived from vsPointsRetry.spec rather than rebuilt field by
+				// field, so a spec field added to the shipped retry later (a
+				// charset, a language) is measured automatically instead of
+				// silently going unmeasured here -- the same probe-drifts-
+				// from-production hazard this file's header warns about.
+				retry := vsPointsRetry
+				retry.opts = fb.opts
+				retry.spec.PSM = *pointsFallbackPSM
 				label := fmt.Sprintf("psm%d %s", psm, cfg.label)
 				if *pointsFBSweep {
-					label = fmt.Sprintf("fb:%-13s", fb.label)
+					// Composed onto the psm/primary label rather than
+					// replacing it: combined with -points.sweep or
+					// -points.psm, a replaced label would make rows that
+					// differ in PSM or primary shape indistinguishable.
+					label = fmt.Sprintf("%s fb:%-13s", label, fb.label)
 				}
 				res := scorePointsConfig(ctx, t, engine, frames, exp, spec, cfg.opts, retry, label)
 
-				t.Logf("%-22s  %2d/%d rows exact  %3d/%d bands exact  %3d within 1%%  %3d unparseable  %3d empty  %3d low-conf",
+				t.Logf("%-22s  %2d/%d rows exact  %3d/%d bands exact  %3d within 1%%  %3d unparseable  %3d empty  %3d low-conf  %3d retried",
 					res.Label, res.rowsExact(), scored, res.Exact, res.TotalBand,
-					res.Within1Pct, res.Unparseable, res.Empty, res.LowConf)
+					res.Within1Pct, res.Unparseable, res.Empty, res.LowConf, res.Retried)
 
 				if *pointsDetail {
 					// Printed before the per-row list because it is the number a
@@ -264,9 +285,12 @@ func scorePointsConfig(ctx context.Context, t *testing.T, engine *ocr.TesseractE
 			// probe follows. readFieldWithRetry fires the retry only on an
 			// empty primary read, so a band that already reads at the
 			// primary is untouched by anything -points.fbsweep varies.
-			read, _, err := ing.readFieldWithRetry(ctx, f.Img, rect, readPlan{spec: spec, opts: opts}, retry)
+			read, retried, err := ing.readFieldWithRetry(ctx, f.Img, rect, readPlan{spec: spec, opts: opts}, retry)
 			if err != nil {
 				t.Fatalf("reading frame %d band %d: %v", f.Seq, band.Y0, err)
+			}
+			if retried {
+				res.Retried++
 			}
 
 			cur := pointsRead{
