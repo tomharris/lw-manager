@@ -382,20 +382,30 @@ const zeroInferenceConfidence = 0.90
 // re-reason.
 const residualMatchConfidence = 0.85
 
-// pointsOrderConfidenceFloor is the OCR confidence a row's own points read
-// must clear before an in-order value -- one bracketed by a CLOSED window on
-// both sides -- is promoted to factConfidenceGate. Being bracketed on both
-// sides proves the value sits between two real neighbours; it says nothing
-// about whether OCR read the right digits within that range, so a near-blank
-// or garbage crop that happens to parse and land inside a wide window must
-// not ride the ordering to a write it did not earn from its own pixels.
+// There used to be a pointsOrderConfidenceFloor here: a 0.40 OCR-confidence
+// gate a row's own points read had to clear, in addition to a CLOSED window
+// on both sides, before promotion to factConfidenceGate. It was fitted
+// against two POSITIVE examples only -- correct reads at 0.52 (rank 38) and
+// 0.70 (rank 83) -- and nobody had checked what it excluded.
 //
-// Fitted against capture 6: the two reads this check recovers are 0.52 (rank
-// 38, Handbol, 8,835,180) and 0.70 (rank 83, Nichoj, 1,242,375), both closed
-// on both sides -- so 0.40 costs nothing today, and still blocks a read like
-// "0.1" confidence from being written at factConfidenceGate solely because it
-// happened to parse and land inside a window.
-const pointsOrderConfidenceFloor = 0.40
+// Measured directly against capture 6
+// (.superpowers/sdd/2026-08-17-m4-closed-set-matching/investigation-confidence-floor.md):
+// the population it actually gated -- a points read that parses and sits in
+// a window closed on both sides -- has exactly ONE row below 0.40 on this
+// capture, rank 10 (16,958,260 at confidence 0.0853), and it is CORRECT.
+// Zero rows in that population, above or below 0.40, are wrong. The two
+// reads that genuinely ARE wrong on this capture (ranks 77, 79) never reach
+// this population at all -- they fail to PARSE, so they are refused two
+// steps earlier, before confidence is ever consulted (see repairPoints and
+// the late retry below). So the floor was screening nothing here, and its
+// measured cost was one correct, structurally-corroborated row sent to
+// review for no offsetting protection. Removed.
+//
+// n=1 in the population this measured is thin, and that is the part worth
+// not forgetting: if a later capture ever shows a genuinely WRONG value that
+// parses and lands inside a closed window, at any confidence, the floor's
+// argument comes back -- and it must be refit against the set it EXCLUDES
+// this time, not (as happened the first time) the set it admits.
 
 // VSResult summarizes one IngestVS run.
 //
@@ -916,35 +926,42 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 	// mode: a capture where OCR broadly degrades used to queue everything,
 	// and would instead write everything at factConfidenceGate with an empty
 	// review queue -- worse OCR producing fewer queued rows. So promotion
-	// requires the window to be CLOSED on both sides (an actual pair of
+	// requires the window to be CLOSED on both sides -- an actual pair of
 	// neighbours bracketing the value, not an absent constraint that lets
-	// anything through) and the read's own OCR confidence to clear
-	// pointsOrderConfidenceFloor -- a near-blank or garbage crop must not
-	// ride a genuinely closed window to a write it did not earn from its own
-	// pixels. It is raised to exactly factConfidenceGate and no further:
-	// invariant #5 is about what a number claims about itself, and being in
-	// order does not make a 0.52 read a 0.95 one -- it only makes it worth
-	// writing once the ordering has actually corroborated it.
+	// anything through. It is raised to exactly factConfidenceGate and no
+	// further: invariant #5 is about what a number claims about itself, and
+	// being in order does not make a 0.09 read a 0.95 one -- it only makes it
+	// worth writing once the ordering has actually corroborated it.
+	//
+	// There is deliberately no additional floor on the read's own OCR
+	// confidence here (see the removed pointsOrderConfidenceFloor comment
+	// above vsRun.attributeRow's neighbourhood -- the const used to live
+	// where this comment now does). Measured against capture 6, the row this
+	// mattered for is rank 10 at confidence 0.0853, correct, and the only row
+	// a floor would have excluded from this exact population; nothing wrong
+	// has ever been observed riding a closed window through here at any
+	// confidence. If that changes on a later capture, refit the floor against
+	// what it excludes, not what it admits -- that is the mistake its first
+	// fitting made.
 	//
 	// This means a RETRIED row's own PointsConf can still promote it here,
-	// via pointsOrderConfidenceFloor, even though that identical confidence
-	// is exactly what the seeding loop above refuses to trust at all (see
-	// vsRow.PointsFromRetry). That is not a contradiction -- the two checks
-	// ask different questions of the same number. Seeding lets a value
-	// constrain OTHER rows with nothing external checking it: a retried
-	// value seeding a window is one unverified read defining the range its
-	// neighbours are then judged against, which is exactly the fabrication
-	// risk the bounds exist to prevent, reintroduced one level up. Promotion
-	// runs the other way: it requires two REAL, independent neighbours'
-	// seeds to already bracket the value on both sides before its own
-	// confidence is even consulted, so the structural evidence points AT the
-	// value rather than OUT from it toward a row that has not earned any
-	// corroboration of its own. A fabricated retry read has no reason to
-	// land inside a window it played no part in drawing, so the floor is
-	// judging the read in a context where the ordering has already done the
-	// work the seeding guard withholds it from doing for anyone else.
+	// even though that identical confidence is exactly what the seeding loop
+	// above refuses to trust at all (see vsRow.PointsFromRetry). That is not
+	// a contradiction -- the two checks ask different questions of the same
+	// number. Seeding lets a value constrain OTHER rows with nothing external
+	// checking it: a retried value seeding a window is one unverified read
+	// defining the range its neighbours are then judged against, which is
+	// exactly the fabrication risk the bounds exist to prevent, reintroduced
+	// one level up. Promotion runs the other way: it requires two REAL,
+	// independent neighbours' seeds to already bracket the value on both
+	// sides before its own confidence is even consulted, so the structural
+	// evidence points AT the value rather than OUT from it toward a row that
+	// has not earned any corroboration of its own. A fabricated retry read
+	// has no reason to land inside a window it played no part in drawing, so
+	// closure alone is doing, in this context, the work a confidence floor
+	// would otherwise be asked to do for a row with no such bracketing.
 	conf := min(matchNorm, row.PointsConf)
-	corroborated := bound.Lo > 0 && bound.Hi < math.MaxInt64 && row.PointsConf >= pointsOrderConfidenceFloor
+	corroborated := bound.Lo > 0 && bound.Hi < math.MaxInt64
 	if corroborated && conf < factConfidenceGate {
 		conf = factConfidenceGate
 	}

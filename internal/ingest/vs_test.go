@@ -792,12 +792,16 @@ func TestIngestVSDoesNotPromoteAnOpenEndedWindow(t *testing.T) {
 	}
 }
 
-// The Critical-1 guard's other half: a window closed on BOTH sides is still
-// not enough on its own -- the read's own OCR confidence must also clear
-// pointsOrderConfidenceFloor, or a near-blank/garbage crop that happens to
-// parse into something in-window would ride the ordering to a write it did
-// not earn from its own pixels.
-func TestIngestVSDoesNotPromoteBelowTheOrderConfidenceFloor(t *testing.T) {
+// There used to be a Critical-1-adjacent guard here: a window closed on BOTH
+// sides was still not enough on its own, and the read's own OCR confidence
+// also had to clear pointsOrderConfidenceFloor (0.40). Measured against
+// capture 6 (investigation-confidence-floor.md), the only row that floor
+// ever excluded on real data was correct (rank 10, confidence 0.0853), and
+// the floor caught nothing wrong. It was removed, so a window closed on both
+// sides now promotes regardless of how low the read's own confidence is --
+// this test proves that directly, at a confidence (0.09) below where the old
+// floor sat.
+func TestIngestVSPromotesAClosedWindowReadEvenAtVeryLowConfidence(t *testing.T) {
 	h := newVSHarness(t, "complete")
 	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
 		h.store.nextMemberID++
@@ -810,19 +814,35 @@ func TestIngestVSDoesNotPromoteBelowTheOrderConfidenceFloor(t *testing.T) {
 	h.engine.Results = []ocr.Result{
 		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
 		// Rank 2's window is closed on both sides (bracketed by Alpha01 and
-		// Charlie03) but its own OCR confidence (0.35) is below the 0.40 floor.
-		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.35},
+		// Charlie03) and its own OCR confidence (0.09) is far below the old,
+		// now-removed 0.40 floor -- the shape of capture 6's rank 10.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.09},
 		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
 	}
 
 	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
 		t.Fatalf("IngestVS: %v", err)
 	}
-	if reasons := h.reviewReasons(); reasons["low_confidence_points"] != 1 {
-		t.Errorf("low_confidence_points = %d, want 1: Bravo02's 0.35 is below the floor even though its window is closed; all reasons: %v", reasons["low_confidence_points"], reasons)
+	if reasons := h.reviewReasons(); reasons["low_confidence_points"] != 0 {
+		t.Errorf("low_confidence_points = %d, want 0: Bravo02's window is closed on both sides, and there is no confidence floor left to block it; all reasons: %v", reasons["low_confidence_points"], reasons)
 	}
-	if len(h.store.Facts) != 2 {
-		t.Errorf("wrote %d facts, want 2: Alpha01 and Charlie03 only, Bravo02 held for review", len(h.store.Facts))
+	if len(h.store.Facts) != 3 {
+		t.Errorf("wrote %d facts, want 3: Alpha01, Bravo02 and Charlie03 all write", len(h.store.Facts))
+	}
+	bravoID := h.store.members[1].ID
+	f, ok := h.factFor(bravoID)
+	if !ok {
+		t.Fatalf("Bravo02 has no fact: its closed-window 8,000,000 read must have been promoted, not queued")
+	}
+	if f.Value != 8000000 {
+		t.Errorf("Bravo02's fact = %v, want 8,000,000", f.Value)
+	}
+	// Promoted to exactly factConfidenceGate, not left at its own weak 0.09 --
+	// same requirement TestIngestVSAcceptsALowConfidencePointsReadThatSitsInOrder
+	// makes for the 0.52 case; this is the same promotion path at a much lower
+	// starting confidence, which is the whole point of removing the floor.
+	if f.Confidence != factConfidenceGate {
+		t.Errorf("Bravo02's promoted fact confidence = %v, want exactly factConfidenceGate (%v)", f.Confidence, factConfidenceGate)
 	}
 }
 

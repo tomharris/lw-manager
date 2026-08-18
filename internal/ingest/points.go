@@ -64,9 +64,10 @@ func pointsBounds(values []int64, known []bool) []pointsBound {
 
 // withinBounds reports whether v satisfies b. An open end (Lo == 0 or
 // Hi == math.MaxInt64) always satisfies its side, which is exactly why
-// clearing withinBounds is not by itself proof of corroboration -- see
-// pointsOrderConfidenceFloor's comment in vs.go, which is what stops that
-// gap from being exploited at the write gate.
+// clearing withinBounds is not by itself proof of corroboration -- see the
+// "corroborated" check in vsRun.attributeRow (vs.go), which additionally
+// requires the window to be CLOSED on both sides before this is trusted as
+// more than "the parser matched".
 func withinBounds(v int64, b pointsBound) bool {
 	return v >= b.Lo && v <= b.Hi
 }
