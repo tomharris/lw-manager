@@ -21,32 +21,28 @@ import (
 // a manufactured value has no reason to land inside a narrow ordered window.
 
 // pointsBound is one row's inclusive range, derived from its neighbours.
+//
+// This struct carried an AdjacentSeeds field for one fix round: closure
+// (Lo > 0 && Hi < MaxInt64) alone does not imply a narrow window, so
+// AdjacentSeeds additionally required the bracketing values to come from
+// the immediate rank neighbours (known[i-1] and known[i+1]), demonstrated
+// against a synthetic 5-row fixture where non-adjacent seeds closed a wide
+// window over three wrong values.
+//
+// It was withdrawn, and the reason is worth keeping visible rather than
+// just deleting the field: measured against the REAL capture (not only the
+// synthetic counterexample that motivated it), adjacency cost two rows --
+// ranks 38 and 76 -- and both were CORRECT. It prevented zero wrong values
+// on this capture. That is the identical mistake made with the original
+// pointsOrderConfidenceFloor: a fence justified against what it admits
+// (the synthetic counterexample it correctly rejects) and never measured
+// against what it excludes (the real rows it also rejects). Adjacent seeds
+// do not guarantee a narrow window, and non-adjacent seeds do not imply a
+// wide one -- it is simply the wrong proxy, in both directions. See
+// vsRun.attributeRow's corroborated comment for what replaced it (a window
+// WIDTH check) and the same honest limit repeated there.
 type pointsBound struct {
 	Lo, Hi int64
-	// AdjacentSeeds reports whether the bracketing values in Lo and Hi came
-	// from this row's IMMEDIATE rank neighbours (known[i-1] and known[i+1]),
-	// not merely from the nearest known values at any distance.
-	//
-	// Closure (Lo > 0 && Hi < MaxInt64) alone does not imply a narrow window
-	// -- it only asks that SOME seed exists somewhere above and somewhere
-	// below. Demonstrated directly: a 5-row fixture seeded only at rank 1
-	// (30,000,000) and rank 5 (500,000) closes every middle row's window to
-	// [500000, 30000000], wide enough that three mutually-out-of-order,
-	// confidence-0.0000 misreads (1,111,111 / 25,000,000 / 9,999,999) all
-	// satisfy it. And the failure is correlated the wrong way: a seed needs
-	// factConfidenceGate, so as OCR degrades across a capture, seeds vanish,
-	// windows widen, and closure becomes nearly free -- exactly the "worse
-	// OCR produces fewer queued rows" inversion vsRun.attributeRow's
-	// corroborated comment already warns closure exists to prevent. The
-	// n≈84-seed measurement behind removing pointsOrderConfidenceFloor says
-	// nothing about that regime: on a capture with seeds every 1-2 ranks,
-	// closure and adjacency coincide almost everywhere, so the gap was
-	// invisible until someone built a capture sparse enough to expose it.
-	//
-	// So closure is necessary but not sufficient: vsRun.attributeRow also
-	// requires AdjacentSeeds before promoting on the strength of the window
-	// alone.
-	AdjacentSeeds bool
 }
 
 // pointsBounds returns one bound per row. values[i] is meaningful only where
@@ -82,15 +78,6 @@ func pointsBounds(values []int64, known []bool) []pointsBound {
 		if known[i] {
 			lo = values[i]
 		}
-	}
-	// AdjacentSeeds is deliberately a THIRD pass over known, not folded into
-	// the two above: Hi/Lo answer "what is the nearest known value", which a
-	// single forward/backward sweep gives directly, while AdjacentSeeds asks
-	// a different question -- "is the row exactly one rank away also
-	// known" -- that needs known[i-1] and known[i+1] looked up directly
-	// rather than carried through a running value.
-	for i := range out {
-		out[i].AdjacentSeeds = i > 0 && known[i-1] && i < len(values)-1 && known[i+1]
 	}
 	return out
 }

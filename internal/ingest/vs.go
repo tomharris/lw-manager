@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"fmt"
+	"image"
 	"log/slog"
 	"math"
 	"sort"
@@ -465,6 +466,16 @@ type vsRun struct {
 	observedAt time.Time
 	periodKey  string
 	res        VSResult
+	// lateRetryFrame/lateRetryImg memoize the single most recently decoded
+	// frame for retryPointsLate (Minor 6, fix round 1 findings). Rows are
+	// attributed in row order, which is screenshot order (readVSRows walks
+	// frame by frame), so a broadly degraded capture can call
+	// retryPointsLate several times in a row for the SAME screenshot -- one
+	// entry is enough, because a cache miss only ever happens on a genuine
+	// frame change, never because an unrelated row's retry evicted the one
+	// that mattered.
+	lateRetryFrame int64
+	lateRetryImg   image.Image
 }
 
 // IngestVS turns one VS-ranking capture's frames into vs_points facts.
@@ -1008,11 +1019,19 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 	// and pointsBounds already ran, for every row, before the per-row loop
 	// that calls attributeRow ever started (see IngestVS). This retry is
 	// pass 2. There is no bound left uncomputed for it to reach.
+	// lateRetryText/lateRetryAttempted (Minor 7, fix round 1 findings) let
+	// the unparseable_points queue below show a human what the second read
+	// said too, not only that a retry was taken -- populated regardless of
+	// whether the retry helped, since a failed retry's text is exactly what
+	// a reviewer needs to judge whether a THIRD read stands any chance.
+	var lateRetryText string
+	var lateRetryAttempted bool
 	if perr != nil && !row.PointsFromRetry {
-		v, conf, ok, err := i.retryPointsLate(ctx, row, bound)
+		v, conf, text, ok, err := run.retryPointsLate(ctx, i, row, bound)
 		if err != nil {
 			return true, fmt.Errorf("ingest: late points retry for screenshot %d: %w", row.ScreenshotID, err)
 		}
+		lateRetryText, lateRetryAttempted = text, true
 		if ok {
 			// No confidence boost for having been retried -- conf is the
 			// retry's own reported OCR confidence, unmodified, exactly like
@@ -1027,7 +1046,16 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 	}
 
 	if perr != nil {
-		return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.PointsText, nil, "unparseable_points", 0)
+		// Both reads go to review, labelled, when a retry was taken. Not a
+		// bare concatenation: a reviewer looking at one string has no other
+		// way to tell which engine produced which half, and the whole value
+		// of surfacing the second read is that its disagreement with the
+		// first is the evidence about whether a third read could help.
+		rawText := row.PointsText
+		if lateRetryAttempted {
+			rawText = fmt.Sprintf("%s | retry: %s", row.PointsText, lateRetryText)
+		}
+		return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, rawText, nil, "unparseable_points", 0)
 	}
 	if !withinBounds(points, bound) {
 		// A value outside the window its neighbours define is the signature
@@ -1046,22 +1074,62 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 	// and would instead write everything at factConfidenceGate with an empty
 	// review queue -- worse OCR producing fewer queued rows.
 	//
-	// Closure (Lo > 0 && Hi < MaxInt64) is necessary but NOT sufficient
-	// (RULING C) -- the first version of this check got that wrong. Closure
-	// only asks that some seed exists somewhere above and somewhere below,
-	// not that either is close: a capture seeded only every few ranks
-	// closes a wide window for everything in between, and the failure is
-	// correlated the wrong way -- a seed needs factConfidenceGate, so as OCR
-	// degrades across a capture, seeds thin out, windows widen, and closure
-	// becomes nearly free at exactly the moment corroboration should be
-	// hardest to claim. Demonstrated directly: a 5-row fixture seeded only
-	// at rank 1 and rank 5 closes every middle row's window widely enough
-	// that three mutually out-of-order, confidence-0.0000 misreads all
-	// satisfied it and would all have been written. pointsBound.AdjacentSeeds
-	// (points.go) is the fix -- it additionally requires the bracketing
-	// values to come from the IMMEDIATE rank neighbours (known[i-1] and
-	// known[i+1]), not merely the nearest known values at any distance. See
-	// AdjacentSeeds' own comment for the full fixture.
+	// Closure (Lo > 0 && Hi < MaxInt64) is necessary but NOT sufficient --
+	// it only asks that some seed exists somewhere above and somewhere
+	// below, not that either is close. RULING C tried fixing that with
+	// pointsBound.AdjacentSeeds (requiring the bracketing seeds to be the
+	// immediate rank neighbours) and was WITHDRAWN: measured against the
+	// real capture, not just the synthetic fixture that motivated it,
+	// adjacency cost two rows (ranks 38, 76) and both were correct -- it
+	// prevented zero wrong values here. See pointsBound's own comment
+	// (points.go) for the full history; the short version is that it was
+	// the identical mistake made with the original
+	// pointsOrderConfidenceFloor, a fence measured only against what it
+	// admits and never against what it excludes.
+	//
+	// The replacement is a WIDTH check: promote only when the window is no
+	// wider than the value itself, (Hi - Lo) <= points. Measured against
+	// this capture's real promoted population (7 rows): window-to-value
+	// ratios span 0.035 to 0.511. The synthetic counterexample from RULING
+	// C's review (three mutually out-of-order, confidence-0.0000 misreads
+	// sharing one wide window) sits at 1.18, 2.95 and 26.55 -- all wrong by
+	// construction. Any threshold in (0.511, 1.18] separates those two
+	// populations, with 0.669 of daylight; 1.0 sits mid-range with roughly
+	// 2x margin over the widest real row, and is what "<= points" (an
+	// implicit 1x multiplier, not a separately fitted constant) encodes.
+	//
+	// The honest limit, which must travel with this check rather than be
+	// left for someone to rediscover: those two populations are real
+	// versus SYNTHETIC, and the one REAL wrong promoted value this capture
+	// contains falls on the wrong side of the story they tell. Rank 7
+	// ("Mar 89") promotes 18,356,304 against a hand-checked 18,356,804 -- a
+	// single digit misread, 8 as 3 -- on a window of
+	// [17,219,876, 19,247,540], ratio 0.1105: the SECOND NARROWEST window in
+	// the promoted population. The right value and the wrong one both sit
+	// comfortably inside it, so no width threshold could have separated
+	// them, and tightening toward 0.1105 to try would first discard the five
+	// correct rows below it.
+	//
+	// So the scope of this check is bounded, in a way the ratio spread alone
+	// conceals: it excludes values of the wrong MAGNITUDE -- the crop that
+	// caught neighbouring content, the misread that moved a digit column --
+	// and it is structurally incapable of touching a LOW-ORDER digit error,
+	// which ordering cannot see by construction. Note what that means for
+	// the numbers above: the width check is not the reason the seven real
+	// rows are nearly all correct, so do not read 0.035-0.511 as evidence of
+	// its discriminating power. It is evidence of what real windows look
+	// like, and nothing more.
+	//
+	// The gate does not report rank 7 either -- 500 on 18.3M is 0.0027%,
+	// inside its 1% tolerance -- so this is visible only by reading promoted
+	// values against expected.yaml directly, which is how it was found. The
+	// cost is real regardless: rank 7's own OCR confidence is 0.638, which
+	// would have queued it for a human, and promotion wrote it at
+	// factConfidenceGate instead. That is the trade this check makes, at
+	// full price. If a WRONG-MAGNITUDE value is ever observed riding a
+	// narrow window through here, refit 1.0 against what it EXCLUDES, not
+	// just re-confirm it against what it admits -- the discipline RULING C's
+	// own withdrawal is the evidence for.
 	//
 	// It is raised to exactly factConfidenceGate and no further: invariant
 	// #5 is about what a number claims about itself, and being in order does
@@ -1071,12 +1139,17 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 	// There is deliberately no additional floor on the read's own OCR
 	// confidence here (see the removed pointsOrderConfidenceFloor comment
 	// next to residualMatchConfidence -- the const used to live there). On
-	// capture 6, with AdjacentSeeds now required, the row this mattered for
-	// is rank 10 at confidence 0.0853, correct; nothing wrong has been
-	// observed riding a closed, adjacency-bracketed window through here at
-	// any confidence. If that changes on a later capture, refit a
-	// confidence floor against what it excludes, not what it admits -- that
-	// is the mistake this floor's first fitting made.
+	// capture 6, with the width check now required, the row this mattered
+	// for is rank 10 at confidence 0.0853, correct. A floor would not have
+	// saved rank 7 either, for a reason worth stating rather than assuming
+	// the other way: rank 7 reads at 0.638, well ABOVE the two lowest
+	// correct promotions here (0.0853 and 0.2000), so any floor that
+	// excluded it would have excluded those first. Confidence and
+	// correctness are not ordered together in this population. If that ever
+	// changes on a later capture, refit a confidence floor against what it
+	// excludes, not what it admits -- that is the mistake this floor's first
+	// fitting made, and the same mistake RULING C's own adjacency check made
+	// in a different shape.
 	//
 	// This means a RETRIED row's own PointsConf can still promote it here,
 	// even though that identical confidence is exactly what the seeding loop
@@ -1087,31 +1160,31 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 	// defining the range its neighbours are then judged against, which is
 	// exactly the fabrication risk the bounds exist to prevent, reintroduced
 	// one level up. Promotion runs the other way: it requires two REAL,
-	// independent, ADJACENT neighbours' seeds to already bracket the value on
-	// both sides before its own confidence is even consulted, so the
+	// independent neighbours' seeds to already bracket the value on both
+	// sides, NARROWLY, before its own confidence is even consulted, so the
 	// structural evidence points AT the value rather than OUT from it toward
 	// a row that has not earned any corroboration of its own. A fabricated
-	// retry read has no reason to land inside a window it played no part in
-	// drawing, so closure-plus-adjacency is doing, in this context, the work
-	// a confidence floor would otherwise be asked to do for a row with no
-	// such bracketing.
+	// retry read has no reason to land inside a narrow window it played no
+	// part in drawing, so closure-plus-width is doing, in this context, the
+	// work a confidence floor would otherwise be asked to do for a row with
+	// no such bracketing.
 	//
 	// A REPAIRED value is excluded from this promotion outright (RULING E),
-	// regardless of closure or adjacency (see `repaired` above):
-	// repairPoints solves the damaged digit AGAINST bound, so withinBounds
-	// cannot fail for its own output -- the window check is vacuous for it,
-	// and "the window corroborates it" would really mean "the value was
-	// constructed to satisfy the window it is now being credited with
-	// satisfying." A repaired value has zero pixel evidence behind its
-	// damaged position; it must clear factConfidenceGate on the primary
-	// read's own confidence, or queue like anything else that doesn't. This
-	// is also an evidential correction, not only a mechanical one: the
-	// investigation that justified removing pointsOrderConfidenceFloor
-	// explicitly excluded repairPoints from what it measured, so crediting a
-	// repaired value with window promotion was, until now, resting on a
-	// population that investigation never surveyed.
+	// regardless of closure or width (see `repaired` above): repairPoints
+	// solves the damaged digit AGAINST bound, so withinBounds cannot fail
+	// for its own output -- the window check is vacuous for it, and "the
+	// window corroborates it" would really mean "the value was constructed
+	// to satisfy the window it is now being credited with satisfying." A
+	// repaired value has zero pixel evidence behind its damaged position; it
+	// must clear factConfidenceGate on the primary read's own confidence, or
+	// queue like anything else that doesn't. This is also an evidential
+	// correction, not only a mechanical one: the investigation that
+	// justified removing pointsOrderConfidenceFloor explicitly excluded
+	// repairPoints from what it measured, so crediting a repaired value with
+	// window promotion was, until now, resting on a population that
+	// investigation never surveyed.
 	conf := min(matchNorm, pointsConf)
-	corroborated := !repaired && bound.Lo > 0 && bound.Hi < math.MaxInt64 && bound.AdjacentSeeds
+	corroborated := !repaired && bound.Lo > 0 && bound.Hi < math.MaxInt64 && (bound.Hi-bound.Lo) <= points
 	if corroborated && conf < factConfidenceGate {
 		conf = factConfidenceGate
 	}
@@ -1140,44 +1213,61 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 // once the row's bounds were known -- attributeRow's second retry trigger
 // (see vsPointsRetry's doc comment and the call site above).
 //
-// It lives on *Ingester rather than *vsRun because it needs nothing from the
-// run beyond what its own parameters carry, and it takes the row's own
-// bound rather than looking it up, because attributeRow already has it in
-// hand from IngestVS's per-row loop.
+// It lives on *vsRun (not *Ingester alone) so it can memoize the decoded
+// frame in run.lateRetryFrame/lateRetryImg (Minor 6, fix round 1 findings):
+// rows are attributed in row order, which is screenshot order, so several
+// late retries in a row on a broadly degraded capture would otherwise
+// re-fetch and re-decode the SAME PNG from the blob store once per row. One
+// entry is enough -- see vsRun's own comment on those fields for why a miss
+// only happens on a genuine frame change.
 //
-// It reloads the frame from the blob store rather than being handed the
-// already-decoded image readVSRows held. That is a real, deliberate cost,
-// not an oversight: pass 1 (readVSRows) discards each frame's pixels once
-// it has read every band on it, because assignment cannot run until every
-// row's scores are known and the accumulated vsRow slice, not decoded
-// images, is what carries state across that boundary (see vsRow's own doc
-// comment). Threading every frame's image through to pass 2 so a handful of
-// late retries could avoid a re-decode would mean holding a whole capture's
-// worth of decoded PNGs in memory for the run's full duration, for a retry
-// that measured 4 of 142 bands on capture 6 (points.go's earlier sweep) plus
-// this trigger's own small addition -- not a trade worth making to save one
-// re-read of a screenshot already sitting in the blob store.
+// Before this cache existed, it reloaded the frame from the blob store
+// rather than being handed the already-decoded image readVSRows held. That
+// remains deliberate, not an oversight: pass 1 (readVSRows) discards each
+// frame's pixels once it has read every band on it, because assignment
+// cannot run until every row's scores are known and the accumulated vsRow
+// slice, not decoded images, is what carries state across that boundary
+// (see vsRow's own doc comment). Threading every frame's image through to
+// pass 2 so late retries could avoid a re-decode entirely would mean
+// holding a whole capture's worth of decoded PNGs in memory for the run's
+// full duration, for a retry that measured 4 of 142 bands on capture 6
+// (points.go's earlier sweep) plus this trigger's own small addition -- the
+// single-frame cache gets nearly all of the same benefit (consecutive rows
+// on one frame) without that cost.
 //
-// Returns ok=false, with no error, when the retried read itself fails to
-// parse or lands outside bound -- an ordinary "the retry didn't help either"
+// It takes the row's own bound rather than looking it up, because
+// attributeRow already has it in hand from IngestVS's per-row loop.
+//
+// The returned string is the retry's raw OCR text, returned REGARDLESS of
+// ok -- including when the retry did not help -- so a caller that ends up
+// queuing the row anyway can surface what the second read actually said
+// (Minor 7, fix round 1 findings), not just that a retry happened.
+//
+// ok=false, with no error, means the retried read itself failed to parse or
+// landed outside bound -- an ordinary "the retry didn't help either"
 // outcome, not a fault. A non-nil error is reserved for the two things that
 // ARE faults: the screenshot failing to reload, or the OCR engine failing to
 // run at all.
-func (i *Ingester) retryPointsLate(ctx context.Context, row vsRow, bound pointsBound) (int64, float64, bool, error) {
-	img, err := i.loadFrame(ctx, row.ScreenshotID)
-	if err != nil {
-		return 0, 0, false, fmt.Errorf("ingest: reloading screenshot %d for a late points retry: %w", row.ScreenshotID, err)
+func (run *vsRun) retryPointsLate(ctx context.Context, i *Ingester, row vsRow, bound pointsBound) (int64, float64, string, bool, error) {
+	img := run.lateRetryImg
+	if run.lateRetryFrame != row.ScreenshotID || img == nil {
+		var err error
+		img, err = i.loadFrame(ctx, row.ScreenshotID)
+		if err != nil {
+			return 0, 0, "", false, fmt.Errorf("ingest: reloading screenshot %d for a late points retry: %w", row.ScreenshotID, err)
+		}
+		run.lateRetryFrame, run.lateRetryImg = row.ScreenshotID, img
 	}
 	rect := fieldRect(row.Band, img, vsPointsXFrac0, vsPointsXFrac1, vsPointsYFrac0, vsPointsYFrac1)
 	res, err := i.readField(ctx, img, rect, vsPointsRetry.spec, vsPointsRetry.opts)
 	if err != nil {
-		return 0, 0, false, err
+		return 0, 0, "", false, err
 	}
 	v, perr := ParsePoints(trimPointsArtifact(res.Text))
 	if perr != nil || !withinBounds(v, bound) {
-		return 0, 0, false, nil
+		return 0, 0, res.Text, false, nil
 	}
-	return v, res.Confidence, true, nil
+	return v, res.Confidence, res.Text, true, nil
 }
 
 // queueReview mirrors rosterRun.queueReview: records one row that could not

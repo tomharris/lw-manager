@@ -718,6 +718,63 @@ func TestIngestVSAcceptsALowConfidencePointsReadThatSitsInOrder(t *testing.T) {
 	}
 }
 
+// Minor 8 (fix round 1 findings): PSM 7 (the primary) is preferred over
+// PSM 13 whenever it already parses, and this asserts it BY VALUE rather
+// than by the absence of a fake-engine-exhaustion error, which is all the
+// other late-retry tests incidentally do.
+//
+// The distinction is not pedantic. Exhaustion says only "some read
+// happened that should not have"; it fires identically for a retry
+// triggered on the wrong row, for an extra name mode, or for an off-by-one
+// in the harness itself, and it fires from whichever row happens to run out
+// of results first rather than from the row under test. A value assertion
+// names the row and names the wrong value. So this fixture supplies a full
+// retry result for EVERY row -- the engine never runs dry, and a regressed
+// trigger has to be caught by what it wrote.
+//
+// Only Bravo02's spare is in-window ([7,000,000, 9,000,000], from its two
+// neighbours' clean reads). Alpha01's and Charlie03's spares are outside
+// their own windows, so even a wrongly-fired retry is rejected there by
+// withinBounds and leaves their values alone -- which is deliberate:
+// it isolates the failure to the single row the assertion is about.
+func TestIngestVSPrefersThePrimaryReadByValueOverAnAvailableRetry(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Clean, parses, in-window -- the late-retry trigger (perr != nil)
+		// is never even evaluated true for this row.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		// Spares, one per row, consumed in row order by a regressed trigger
+		// and by nothing at all otherwise. Alpha01's is below its window's
+		// floor of 8,000,000 and Charlie03's is above its ceiling of
+		// 8,000,000; only Bravo02's 8,500,000 would actually be taken.
+		{Text: "100", Confidence: 0.90},
+		{Text: "8,500,000", Confidence: 0.90},
+		{Text: "99,000,000", Confidence: 0.90},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	bravoID := h.store.members[1].ID
+	f, ok := h.factFor(bravoID)
+	if !ok {
+		t.Fatalf("Bravo02 has no fact")
+	}
+	if f.Value != 8000000 {
+		t.Errorf("Bravo02's fact = %v, want 8,000,000 (the primary's own read, not the spare 8,500,000 a wrongly-triggered retry would have consumed)", f.Value)
+	}
+}
+
 // The other half, and the reason the first half is safe: a value that parses
 // but violates its bounds is the signature of a crop that caught neighbouring
 // content, which is exactly what vsPointsSpec's charset comment describes.
@@ -859,21 +916,29 @@ func TestIngestVSPromotesAClosedWindowReadEvenAtVeryLowConfidence(t *testing.T) 
 	}
 }
 
-// RULING C's regression test, built the way the review itself demonstrated
-// the gap rather than argued it: closure (some seed above, some seed below)
-// does not imply narrowness. Five ranks, seeded only at rank 1 (30,000,000)
-// and rank 5 (500,000) -- three ranks apart on both sides -- with the three
-// middle rows read at confidence 0.0000 as mutually OUT OF ORDER values
-// (1,111,111 / 25,000,000 / 9,999,999: rank 3's read is larger than rank 2's,
-// which cannot happen on a real ranking). Every one of those three sits
-// inside [500000, 30000000], the window closure alone provides, so before
-// pointsBound.AdjacentSeeds existed all three would have been written as
-// facts at factConfidenceGate with an empty review queue -- restoring the
-// old, removed pointsOrderConfidenceFloor does queue all three (it was doing
-// real work here), but AdjacentSeeds queues them too, structurally, without
-// reintroducing a fitted number: none of the three has a SEEDED row at both
-// i-1 and i+1, so none is corroborated regardless of confidence.
-func TestIngestVSRequiresAdjacentSeedsNotMerelyAnyClosure(t *testing.T) {
+// The counterexample that sank RULING C (adjacent seeds), kept because it
+// still demonstrates the underlying point and still must pass: closure
+// (some seed above, some seed below) does not imply narrowness. Five ranks,
+// seeded only at rank 1 (30,000,000) and rank 5 (500,000) -- three ranks
+// apart on both sides -- with the three middle rows read at confidence
+// 0.0000 as mutually OUT OF ORDER values (1,111,111 / 25,000,000 / 9,999,999:
+// rank 3's read is larger than rank 2's, which cannot happen on a real
+// ranking). Every one of those three sits inside [500000, 30000000], the
+// window closure alone provides, so before a width check existed all three
+// would have been written as facts at factConfidenceGate with an empty
+// review queue.
+//
+// The window-to-value ratios here are 26.55, 1.18 and 2.95 -- all well
+// above the 1.0 the width check (Hi-Lo <= points) now requires, so all
+// three are still correctly queued, but for a different, more honest reason
+// than RULING C's adjacency check: adjacency was withdrawn because measured
+// against the REAL capture (not just this synthetic fixture) it cost two
+// correct rows for zero rows of protection (see pointsBound's comment,
+// points.go). This fixture is still useful -- it is the sharpest available
+// SYNTHETIC counterexample -- but it is not, by itself, evidence that the
+// width check is right; see the width check's own comment for the honest
+// limit that applies to it too.
+func TestIngestVSRequiresANarrowWindowNotMerelyAnyClosure(t *testing.T) {
 	h := newVSHarness(t, "complete")
 	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03", "Delta04", "Echo05"} {
 		h.store.nextMemberID++
@@ -1142,6 +1207,57 @@ func TestIngestVSLateRetriesANonEmptyUnparseablePointsReadAndAcceptsAnInOrderVal
 	// treatment.
 	if f.Confidence != factConfidenceGate {
 		t.Errorf("Bravo02's promoted fact confidence = %v, want exactly factConfidenceGate (%v)", f.Confidence, factConfidenceGate)
+	}
+}
+
+// Minor 7 (fix round 1 findings): when the late retry ALSO fails to produce
+// a usable value, the row that reaches unparseable_points must surface what
+// the retry read, not only the primary's original garbled text -- a human
+// triaging the queue otherwise cannot tell "a second read was taken and
+// also failed" from "no second read was ever attempted".
+func TestIngestVSSurfacesTheFailedLateRetryTextToReview(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Two damaged positions: unparseable at the primary, triggering the
+		// late retry.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "€,00€,000", Confidence: 0.10},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		// The late retry's own read: parses fine, but out of window (bound
+		// is [7,000,000, 9,000,000]), so retryPointsLate reports ok=false --
+		// and the row is still queued, but its text must not be lost.
+		{Text: "1,000,000", Confidence: 0.40},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["unparseable_points"] != 1 {
+		t.Fatalf("unparseable_points = %d, want 1; all reasons: %v", reasons["unparseable_points"], reasons)
+	}
+	var found bool
+	for _, r := range h.store.Reviews {
+		if r.Reason != "unparseable_points" {
+			continue
+		}
+		found = true
+		if !strings.Contains(r.RawText, "€,00€,000") {
+			t.Errorf("queued RawText %q does not contain the primary's own read", r.RawText)
+		}
+		if !strings.Contains(r.RawText, "1,000,000") {
+			t.Errorf("queued RawText %q does not contain the late retry's read -- a reviewer cannot tell a retry was even attempted", r.RawText)
+		}
+	}
+	if !found {
+		t.Fatalf("no unparseable_points review row found")
 	}
 }
 
