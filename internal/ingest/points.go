@@ -4,6 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"math"
+	"regexp"
+	"strings"
+	"unicode/utf8"
 )
 
 // The weekly ranking is sorted descending by points, so once the assignment
@@ -148,4 +151,114 @@ func monotonicKnown(ctx context.Context, values []int64, known []bool) []bool {
 	}
 
 	return out
+}
+
+// trailingArtifactRe matches a trailing run of characters that are neither a
+// digit nor a comma -- the shape of a crop that caught a few pixels of
+// whatever sits just past the number: a stray space, an em-dash, a
+// scoreboard glyph. It is anchored at the end ONLY -- see
+// trimPointsArtifact's comment for why that restriction is the entire
+// safety property, not a simplification of something bidirectional.
+var trailingArtifactRe = regexp.MustCompile(`[^0-9,]+$`)
+
+// trimPointsArtifact strips a trailing run of non-digit, non-comma
+// characters from a points read, before ParsePoints ever sees it. Capture
+// 6's rank 20 read "12,090,000 —": every digit is right and the value is
+// lost only to a trailing space and em-dash that pointsRe correctly has no
+// business admitting. This recovers the string those digits were already
+// spelling; it constructs nothing, which is what lets it run unconditionally
+// on every read rather than being fenced like repairPoints below.
+//
+// Trailing-only is not a stylistic choice; it is the whole safety argument,
+// and it holds for two independent reasons:
+//
+//   - A crop that instead caught the START of the next row's points -- the
+//     failure vsPointsSpec's charset comment describes at length -- ends in
+//     a DIGIT ("12,090,000 8,671,806"), not a symbol. A trailing-only trim
+//     does not touch it, so the embedded space still fails pointsRe and the
+//     row still routes to review rather than writing the wrong row's value.
+//   - A LEADING corruption -- "¢,609,299" -- must NEVER be trimmed.
+//     Stripping "¢" produces a shorter, differently-grouped digit string
+//     that is wrong by roughly a factor of ten, and nothing downstream would
+//     know to doubt it -- it would parse cleanly and carry the read's own
+//     confidence like any other clean read. Restricting this function to the
+//     trailing end means there is no code path in it that could ever touch a
+//     leading character, which is a stronger guarantee than "we didn't
+//     intend to."
+//
+// The ordering bounds in points.go sit behind this as a second guard, the
+// same defense-in-depth relationship pointsRe already has with the old
+// charset whitelist -- but this trim is deliberately narrow enough that nothing
+// here should need to lean on them.
+func trimPointsArtifact(s string) string {
+	return trailingArtifactRe.ReplaceAllString(s, "")
+}
+
+// repairPoints recovers a value from a read with exactly one non-digit in a
+// digit position, by solving for the digit subject to the bounds.
+//
+// This is the only place in the pipeline that CONSTRUCTS a value rather than
+// validating one, and it is fenced accordingly. It refuses unless the string
+// is comma-grouped with exactly one damaged position, and unless the bounds
+// admit exactly one digit there. Two admissible digits is not a near miss, it
+// is a guess, and a guessed number on a leaderboard is the failure a review
+// queue cannot undo.
+//
+// The repaired value still carries the read's own confidence and still points
+// at the same crop of the same screenshot, so invariants #4 and #5 hold: it is
+// an observation about pixels, narrowed by an ordering the same capture
+// establishes.
+//
+// It never seeds a bound for another row, and that is not an extra check
+// here -- it is structural. pointsBounds runs once, over every row's
+// UNREPAIRED read, before the per-row loop that calls repairPoints even
+// starts (see the seeding loop in IngestVS); a repaired value is produced
+// too late in the pipeline to ever reach it. A constructed value must never
+// define another row's window, and the ordering of the pipeline is what
+// enforces that, not a flag threaded through this function.
+func repairPoints(raw string, b pointsBound) (int64, bool) {
+	t := strings.TrimSpace(raw)
+
+	// Exactly one damaged position, and the damage must be where a digit
+	// belongs -- a broken comma means the grouping is not intact and there is
+	// no shape left to solve against.
+	bad := -1
+	for i, r := range t {
+		switch {
+		case r >= '0' && r <= '9', r == ',':
+		case bad >= 0:
+			return 0, false // a second damaged position
+		default:
+			bad = i
+		}
+	}
+	if bad < 0 {
+		return 0, false // nothing to repair; the caller should have parsed it
+	}
+
+	// bad is a BYTE offset from range, and the damaged rune is usually
+	// multi-byte -- "¢" is two bytes and "€" is three -- so the tail has to
+	// skip the whole rune. Slicing by bad+1 would leave a stray continuation
+	// byte in the candidate, which ParsePoints rejects, and every digit would
+	// then look inadmissible for a reason that has nothing to do with the
+	// bounds.
+	_, width := utf8.DecodeRuneInString(t[bad:])
+
+	var found int64
+	hits := 0
+	for d := '0'; d <= '9'; d++ {
+		cand := t[:bad] + string(d) + t[bad+width:]
+		v, err := ParsePoints(cand)
+		if err != nil || !withinBounds(v, b) {
+			continue
+		}
+		found, hits = v, hits+1
+		if hits > 1 {
+			return 0, false // the bounds do not determine it; refuse
+		}
+	}
+	if hits != 1 {
+		return 0, false
+	}
+	return found, true
 }

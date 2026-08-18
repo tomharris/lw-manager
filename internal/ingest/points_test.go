@@ -173,3 +173,81 @@ func TestMonotonicKnownPermitsTies(t *testing.T) {
 		})
 	}
 }
+
+func TestRepairPointsSolvesASingleSymbolWhenTheBoundsAdmitOneDigit(t *testing.T) {
+	// "¢,609,299" with a window that admits only a leading 2.
+	got, ok := repairPoints("¢,609,299", pointsBound{Lo: 2_600_000, Hi: 2_613_585})
+	if !ok || got != 2_609_299 {
+		t.Errorf("repairPoints = %d, %v; want 2609299, true", got, ok)
+	}
+}
+
+func TestRepairPointsRefusesWhenTheBoundsAdmitTwoDigits(t *testing.T) {
+	// A window wide enough for both 1,609,299 and 2,609,299 determines
+	// nothing, and guessing is exactly what this must not do.
+	if got, ok := repairPoints("¢,609,299", pointsBound{Lo: 1_000_000, Hi: 3_000_000}); ok {
+		t.Errorf("repairPoints = %d, true; want refusal: the bounds admit more than one digit", got)
+	}
+}
+
+func TestRepairPointsRefusesMoreThanOneBadCharacter(t *testing.T) {
+	// Two unknowns is a guess with extra steps, whatever the bounds say.
+	if got, ok := repairPoints("¢,6¢9,299", pointsBound{Lo: 2_600_000, Hi: 2_613_585}); ok {
+		t.Errorf("repairPoints = %d, true; want refusal on two damaged positions", got)
+	}
+}
+
+func TestRepairPointsRefusesWhenTheGroupingIsBroken(t *testing.T) {
+	// Without intact comma grouping there is no shape to solve against, and
+	// the string could be anything.
+	if got, ok := repairPoints("¢6092 99", pointsBound{Lo: 2_600_000, Hi: 2_613_585}); ok {
+		t.Errorf("repairPoints = %d, true; want refusal on broken grouping", got)
+	}
+}
+
+// The three properties the controller ruling requires of trimPointsArtifact,
+// each verified against the exact string capture 6 produced or the exact
+// failure mode it must not create.
+
+func TestTrimPointsArtifactStripsATrailingSymbol(t *testing.T) {
+	// Rank 20's actual read: every digit is right, and only a trailing space
+	// plus em-dash stand between this and a clean parse.
+	got := trimPointsArtifact("12,090,000 —")
+	if got != "12,090,000" {
+		t.Errorf("trimPointsArtifact = %q, want %q", got, "12,090,000")
+	}
+	v, err := ParsePoints(got)
+	if err != nil || v != 12_090_000 {
+		t.Errorf("ParsePoints(%q) = %d, %v; want 12090000, nil", got, v, err)
+	}
+}
+
+func TestTrimPointsArtifactDoesNotRescueACropThatCaughtTheNextRow(t *testing.T) {
+	// The failure this trim could mask: a crop wide enough to catch the next
+	// row's points too. That string ends in a DIGIT, not a symbol, so a
+	// trailing-only trim must leave it untouched -- and it must still fail
+	// to parse, because writing this row's value into this row would be
+	// wrong in a way no review queue entry could catch.
+	got := trimPointsArtifact("12,090,000 8,671,806")
+	if got != "12,090,000 8,671,806" {
+		t.Errorf("trimPointsArtifact = %q, want it unchanged (trailing char is a digit)", got)
+	}
+	if _, err := ParsePoints(got); err == nil {
+		t.Errorf("ParsePoints(%q) succeeded; want ErrUnparseable", got)
+	}
+}
+
+func TestTrimPointsArtifactNeverTouchesALeadingCorruption(t *testing.T) {
+	// Rank 77's actual read. Stripping the leading "¢" would produce a
+	// shorter, differently-grouped number wrong by roughly a factor of ten,
+	// silently. trimPointsArtifact must leave this exact string alone --
+	// recovery here is repairPoints' job, fenced by the bounds, not this
+	// function's.
+	got := trimPointsArtifact("¢,609,299")
+	if got != "¢,609,299" {
+		t.Errorf("trimPointsArtifact = %q, want it unchanged (leading corruption must never be trimmed)", got)
+	}
+	if _, err := ParsePoints(got); err == nil {
+		t.Errorf("ParsePoints(%q) succeeded; want ErrUnparseable", got)
+	}
+}

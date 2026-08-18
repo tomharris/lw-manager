@@ -323,14 +323,22 @@ var vsNameModes = []readPlan{
 // empty at the primary and now read close but not exact at the retry --
 // "12,090,000 —", "¢,609,299", "e,2¢8,001" for ranks 20, 77 and 79 -- each
 // containing the right digits corrupted by a stray symbol raw-line mode
-// hallucinates from crop noise. pointsRe correctly refuses all three, so they
-// stay queued as unparseable_points rather than writing a near-miss value;
-// the M4 gate's aggregate line is therefore unchanged by this task on this
-// particular capture (79/86, matched=83, queued=7) even though the retry is
-// exercised and behaving exactly as designed -- see the task 7 report for the
-// full accounting. That is a property of this capture's specific noise, not
-// evidence against retrying: loosening pointsRe to admit these would be the
-// same mistake as lowering roster.AutoAccept, so it stays as is.
+// hallucinates from crop noise. pointsRe correctly refuses all three at this
+// point in the pipeline, so they stay queued as unparseable_points rather
+// than writing a near-miss value directly out of this retry -- loosening
+// pointsRe to admit these would be the same mistake as lowering
+// roster.AutoAccept.
+//
+// Two of the three are recovered downstream instead, by mechanisms that are
+// not part of this retry and do not loosen this regex at all.
+// trimPointsArtifact (points.go) strips rank 20's trailing " —" before
+// ParsePoints ever runs, because every digit in that read was already right.
+// repairPoints (points.go) solves for rank 77's single symbol-for-digit
+// character subject to the ordering bounds, because the bounds admit exactly
+// one digit there. Rank 79 has two damaged positions -- "e,2¢8,001" -- which
+// repairPoints refuses by construction: two unknowns is a guess with extra
+// steps, whatever the bounds say, and it stays queued as unparseable_points.
+// See the task 10 report for the exact before/after gate line.
 var vsPointsRetry = readPlan{
 	spec: ocr.Spec{MinConf: vsPointsSpec.MinConf, PSM: ocr.PSMRawLine},
 	opts: vsPointsOptions,
@@ -534,7 +542,14 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 		if assignments[n].Member < 0 {
 			continue
 		}
-		v, err := ParsePoints(row.PointsText)
+		// trimPointsArtifact runs here too, not just in attributeRow below:
+		// it constructs nothing, so there is no reason to withhold a row like
+		// rank 20's from seeding just because a trailing artifact would
+		// otherwise have failed the regex. repairPoints, by contrast, is
+		// never called in this loop -- a repaired value must never seed a
+		// bound (see repairPoints' own comment), and the simplest way to
+		// guarantee that is for this loop to never call it at all.
+		v, err := ParsePoints(trimPointsArtifact(row.PointsText))
 		if err != nil {
 			continue
 		}
@@ -848,7 +863,40 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 		matchNorm = residualMatchConfidence
 	}
 
-	points, perr := ParsePoints(row.PointsText)
+	// Order matters and is not arbitrary: trim first, then parse, then --
+	// only if that still fails -- attempt repair.
+	//
+	// Trimming has to come before parsing because it is what makes rank 20's
+	// otherwise-correct read parse at all; running it after a failed parse
+	// would work too, but running it first means the failed-parse path below
+	// only ever sees a read that is genuinely unparseable rather than one
+	// that merely had a trailing artifact, which is exactly what
+	// repairPoints below needs to be true of its input.
+	//
+	// repairPoints runs last, and only as a fallback, because it is the only
+	// step in this pipeline that CONSTRUCTS a value rather than validating
+	// one. Trying it before the plain parse would mean fencing every read
+	// through repairPoints' stricter, guess-refusing logic even when the
+	// trimmed text was already well-formed -- backwards for a check that
+	// exists specifically to be a last resort. It runs on the TRIMMED text,
+	// not the raw one, so a trailing artifact on an otherwise-repairable read
+	// cannot masquerade as a second damaged position and cause a correct
+	// repair to be refused for the wrong reason.
+	trimmed := trimPointsArtifact(row.PointsText)
+	points, perr := ParsePoints(trimmed)
+	if perr != nil {
+		if v, ok := repairPoints(trimmed, bound); ok {
+			// A repaired value never seeds another row's bound -- not
+			// because of a check here, but because it structurally cannot:
+			// every row's bound was already computed, from every row's
+			// UNREPAIRED read, before this per-row loop began (see the
+			// seeding loop above). It still carries the read's own
+			// confidence and still points at the same crop of the same
+			// screenshot below, exactly like any other read; it earns no
+			// confidence boost for having been repaired.
+			points, perr = v, nil
+		}
+	}
 	if perr != nil {
 		return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.PointsText, nil, "unparseable_points", 0)
 	}
