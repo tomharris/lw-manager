@@ -116,6 +116,14 @@ instead of creating a duplicate account.
   `m4probe`, needs the blob store and tesseract, no database.
   `-probe.detail` is the per-member view, `-probe.sweep` and `-probe.fbsweep`
   the option grids for the primary read and the retry.
+- `make probe-points` — **not a gate**: the same instrument for the points
+  field. It reads every band and reports rows exact, bands exact, within 1%,
+  unparseable, empty, low-confidence and retried, so a change can be read
+  against the column it was supposed to move. Note what it cannot tell you:
+  it attributes a band to a rank **by value**, so a misread band matches no
+  rank and simply drops out of the exact count — it can never show you what
+  a wrong number actually said. `-points.detail`, `-points.sweep`,
+  `-points.psm` and `-points.fbsweep` mirror the name probe's flags.
 - `make probe-assign` — **not a gate**: the measuring instrument for closed-set
   matching. Reach for it before changing `roster.ResidualFloor`,
   `ResidualMargin` or `residualMatchConfidence`, and after. Two of its modes
