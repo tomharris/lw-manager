@@ -231,11 +231,16 @@ var (
 // later capture disagrees, re-run `make probe-m4 PROBE_ARGS=-probe.fbsweep`
 // and believe the newer measurement.
 //
-// The points field has no retry at all, and the asymmetry is the point: a name
-// that reads badly fails to match a known roster and goes to review, while a
-// number has no such guard — a raw-line retry on a crop that caught
-// neighbouring content could manufacture a plausible value, which is exactly
-// the failure the vsPointsSpec charset comment above describes.
+// The points field's retry is vsPointsRetry, below. The asymmetry between the
+// two fields used to be absolute -- a name that reads badly fails to match a
+// known roster and goes to review, while a number has no such guard, and a
+// raw-line retry on a crop that caught neighbouring content could manufacture
+// a plausible value, which is exactly the failure the vsPointsSpec charset
+// comment above describes. It is now conditional rather than absolute: the
+// points bounds in points.go answer that objection for a retried read the
+// same way a roster answers it for a retried name, provided a retried value
+// is never allowed to seed the bound it is then judged against -- see
+// vsRow.PointsFromRetry.
 var (
 	vsName      = readPlan{spec: vsNameSpec, opts: vsNameOptions}
 	vsNameRetry = readPlan{
@@ -243,6 +248,67 @@ var (
 		opts: vision.Options{SkipEqualize: true, SkipThreshold: true, UpscaleFactor: 4},
 	}
 )
+
+// vsPointsRetry reads a points crop the primary PSM returned nothing for.
+//
+// The asymmetry with the name field was deliberate and is now conditional
+// rather than absolute. A name has a known roster behind it, so a bad read
+// simply fails to match; a number has no such guard, and a raw-line retry
+// could manufacture a plausible value from a crop that caught neighbouring
+// content. That objection is answered by the bounds in points.go and not
+// otherwise: a retried value is written only when it parses AND lands inside
+// the window its neighbours define, which a fabricated number has no reason
+// to do -- and never seeds a window itself, regardless of confidence, so a
+// fabrication can never define the range its neighbours are judged against
+// (see vsRow.PointsFromRetry and the seeding loop in IngestVS).
+//
+// It keeps vsPointsOptions rather than borrowing vsNameRetry's grayscale-plus-
+// invert at upscale 4, and this time inheriting is a measured result rather
+// than an assumption. `make probe-points PROBE_ARGS='-points.fbsweep'` sweeps
+// the retry's preprocessing over the same eight-shape grid while the primary
+// stays fixed at the shipped setting, over all 142 row bands of capture 6:
+//
+//	gray      x2/x3/x4   83/86 rows exact   (135/142 bands, 0 empty)  <- chosen (== vsPointsOptions)
+//	gray+inv  x2/x3/x4   83/86              (135/142,       0 empty)  <- tied
+//	full      x2/x3/x4   82/86              (133/142,       0 empty)
+//	gray+eq   x2/x3/x4   82/86              (133/142,       0 empty)
+//	gray+thr  x2/x3/x4   82/86              (133/142,       0 empty)
+//	(the remaining two-flag combinations tie with the single-flag ones above)
+//
+// Two things fall out of this, and neither is what the name-side sweep found:
+//
+//   - Upscale does not move the result at all -- x2, x3 and x4 score
+//     identically within every shape. That is not the broken-instrument
+//     uniformity CLAUDE.md warns about (which was identical scores ACROSS
+//     shapes that differ enormously elsewhere); shapes here still separate
+//     82 from 83. It is explained by how few bands the retry ever touches:
+//     of 142 bands only a handful read empty at the primary, so there is far
+//     less surface for an upscale factor to move than the name field's
+//     retry, which was fitted against fifteen empty bands.
+//   - Grayscale-alone beats grayscale-plus-invert's name-side win by exactly
+//     tying it rather than losing to it -- inverting costs nothing here but
+//     also buys nothing, unlike the name retry where it was worth one
+//     member. vsPointsOptions already IS "gray x3" in this grid, so the
+//     inheritance this comment used to only assume is now a checked result:
+//     the primary's options happen to be optimal for the retry too, on this
+//     capture.
+//
+// The three points failures this unblocks on the M4 gate's capture 6 read
+// empty at the primary and now read close but not exact at the retry --
+// "12,090,000 —", "¢,609,299", "e,2¢8,001" for ranks 20, 77 and 79 -- each
+// containing the right digits corrupted by a stray symbol raw-line mode
+// hallucinates from crop noise. pointsRe correctly refuses all three, so they
+// stay queued as unparseable_points rather than writing a near-miss value;
+// the M4 gate's aggregate line is therefore unchanged by this task on this
+// particular capture (79/86, matched=83, queued=7) even though the retry is
+// exercised and behaving exactly as designed -- see the task 7 report for the
+// full accounting. That is a property of this capture's specific noise, not
+// evidence against retrying: loosening pointsRe to admit these would be the
+// same mistake as lowering roster.AutoAccept, so it stays as is.
+var vsPointsRetry = readPlan{
+	spec: ocr.Spec{MinConf: vsPointsSpec.MinConf, PSM: ocr.PSMRawLine},
+	opts: vsPointsOptions,
+}
 
 // zeroInferenceConfidence is the confidence an inferred (not read) zero
 // carries. The weekly ranking lists only members with a nonzero score, so a
@@ -449,7 +515,22 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 		// Only a confident read seeds a bound. A weak read is what the bounds
 		// exist to adjudicate, and letting it define the window it is judged
 		// against would make the check circular.
-		if row.PointsConf >= factConfidenceGate {
+		//
+		// A retried read is excluded from seeding regardless of what
+		// confidence it reports, which is a stronger and separate condition
+		// from the confidence check above, not a special case of it. The
+		// confidence gate assumes a low number means a weak read and a high
+		// one means a trustworthy one -- true for the primary read, but a
+		// PSM-13 raw-line retry only runs because the primary came back
+		// empty, and it can report high confidence for a value manufactured
+		// from a crop that caught neighbouring content (see vsPointsRetry's
+		// comment). Letting a retried read seed a window would let a
+		// fabrication define the range its neighbours are judged against --
+		// the exact failure the bounds exist to prevent, reintroduced one
+		// level up. A retried value is still eligible to be WRITTEN, subject
+		// to the bounds its real neighbours define and the promotion rules
+		// below; it just may never define anyone else's window.
+		if row.PointsConf >= factConfidenceGate && !row.PointsFromRetry {
 			values[n], known[n] = v, true
 		}
 	}
@@ -543,6 +624,22 @@ type vsRow struct {
 	NameText     string
 	PointsText   string
 	PointsConf   float64
+	// PointsFromRetry records whether PointsText/PointsConf came from
+	// vsPointsRetry rather than the primary read -- a controller-level
+	// requirement, not something the retry's own gating implies.
+	// readFieldWithRetry already restricts WHEN the retry runs (an empty
+	// primary read, and nothing else); this is about what a retried value is
+	// allowed to DO once it exists. A PSM-13 raw-line retry can report a high
+	// OCR confidence while being the least trustworthy read in the pipeline --
+	// it only ran because the trustworthy mode returned nothing -- so if it
+	// were allowed to seed a neighbour's bound the way any other confident
+	// read does (see the seeding loop in IngestVS), a fabrication could define
+	// the window its neighbours are then judged against: exactly the failure
+	// the bounds exist to prevent, reintroduced one level up. A retried value
+	// stays eligible to be WRITTEN under the ordinary bounds and promotion
+	// rules; it just may never be the thing that defines someone else's
+	// window.
+	PointsFromRetry bool
 	// Scores is this row's name score against every member, indexed the same
 	// as the members slice IngestVS built. It comes from roster.Rank, so
 	// member aliases are already folded in and the assignment never has to
@@ -617,15 +714,15 @@ func (i *Ingester) readVSRows(ctx context.Context, frames []db.CaptureFrame, mem
 				continue // geometric duplicate; OCR never runs on it
 			}
 
-			nameRes, err := i.readFieldWithRetry(ctx, img,
+			nameRes, _, err := i.readFieldWithRetry(ctx, img,
 				fieldRect(band, img, vsNameXFrac0, vsNameXFrac1, vsNameYFrac0, vsNameYFrac1),
 				vsName, vsNameRetry)
 			if err != nil {
 				return nil, err
 			}
-			pointsRes, err := i.readField(ctx, img,
+			pointsRes, pointsRetried, err := i.readFieldWithRetry(ctx, img,
 				fieldRect(band, img, vsPointsXFrac0, vsPointsXFrac1, vsPointsYFrac0, vsPointsYFrac1),
-				vsPointsSpec, vsPointsOptions)
+				readPlan{spec: vsPointsSpec, opts: vsPointsOptions}, vsPointsRetry)
 			if err != nil {
 				return nil, err
 			}
@@ -635,12 +732,13 @@ func (i *Ingester) readVSRows(ctx context.Context, frames []db.CaptureFrame, mem
 				scores[idxByID[c.MemberID]] = c.Score
 			}
 			rows = append(rows, vsRow{
-				ScreenshotID: frame.ScreenshotID,
-				Band:         band,
-				NameText:     nameRes.Text,
-				PointsText:   pointsRes.Text,
-				PointsConf:   pointsRes.Confidence,
-				Scores:       scores,
+				ScreenshotID:    frame.ScreenshotID,
+				Band:            band,
+				NameText:        nameRes.Text,
+				PointsText:      pointsRes.Text,
+				PointsConf:      pointsRes.Confidence,
+				PointsFromRetry: pointsRetried,
+				Scores:          scores,
 			})
 		}
 	}

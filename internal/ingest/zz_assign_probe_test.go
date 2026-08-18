@@ -269,7 +269,7 @@ func readAssignRows(ctx context.Context, t *testing.T, engine *ocr.TesseractEngi
 			for _, psm := range psms {
 				primary := readPlan{spec: vsNameSpec, opts: vsNameOptions}
 				primary.spec.PSM = psm
-				read, err := ing.readFieldWithRetry(ctx, f.Img, rect, primary, vsNameRetry)
+				read, _, err := ing.readFieldWithRetry(ctx, f.Img, rect, primary, vsNameRetry)
 				if err != nil {
 					t.Fatalf("reading frame %d band %d: %v", f.Seq, band.Y0, err)
 				}

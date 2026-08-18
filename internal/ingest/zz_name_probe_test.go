@@ -309,7 +309,7 @@ func scoreConfig(ctx context.Context, t *testing.T, engine *ocr.TesseractEngine,
 			rect := fieldRect(band, f.Img, vsNameXFrac0, vsNameXFrac1, vsNameYFrac0, vsNameYFrac1)
 			// The production read path, retry and all, so the probe cannot
 			// drift from what IngestVS does.
-			read, err := ing.readFieldWithRetry(ctx, f.Img, rect, primary, retry)
+			read, _, err := ing.readFieldWithRetry(ctx, f.Img, rect, primary, retry)
 			if err != nil {
 				t.Fatalf("reading frame %d band %d: %v", f.Seq, band.Y0, err)
 			}

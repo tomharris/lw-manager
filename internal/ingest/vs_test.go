@@ -802,3 +802,105 @@ func TestIngestVSDoesNotPromoteBelowTheOrderConfidenceFloor(t *testing.T) {
 		t.Errorf("wrote %d facts, want 2: Alpha01 and Charlie03 only, Bravo02 held for review", len(h.store.Facts))
 	}
 }
+
+// The empty points read is the same PSM 7 layout blindness the name field
+// retries for. It is allowed here only because the value has to land inside
+// the window its neighbours define -- a manufactured number has no reason to.
+func TestIngestVSRetriesAnEmptyPointsReadAndAcceptsAnInOrderValue(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Empty at the primary PSM, read at the retry.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "", Confidence: 0},
+		{Text: "8,000,000", Confidence: 0.90},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if len(h.store.Facts) != 3 {
+		t.Errorf("wrote %d facts, want 3: the retry read a value that sits between its neighbours", len(h.store.Facts))
+	}
+}
+
+// The guard that makes the retry defensible at all. A raw-line retry on a crop
+// that caught neighbouring content can produce a well-formed number, and
+// nothing about the number itself says so -- only its position does.
+func TestIngestVSRejectsARetriedPointsValueThatBreaksTheOrder(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "", Confidence: 0},
+		{Text: "44,357,000", Confidence: 0.90}, // well-formed, and impossible at rank 2
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["points_out_of_order"] == 0 {
+		t.Errorf("a fabricated but well-formed retry value was written; all reasons: %v", reasons)
+	}
+}
+
+// The controller ruling: a retried value must never seed a bound, even when
+// its own reported confidence clears factConfidenceGate. Bravo02's retried
+// read is a well-formed, high-confidence, individually-in-range number -- so
+// if it were allowed to seed, it would hand rank 3 a Hi ceiling of 1,000,000
+// and reject Charlie03's genuine 7,000,000 read as out of order. Charlie03
+// must be written untouched, and Bravo02's own fabricated value is still
+// judged (and rejected) against the window its REAL neighbours define.
+func TestIngestVSNeverSeedsABoundFromARetriedRead(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Empty at the primary PSM; the retry reads a well-formed, confident,
+		// but fabricated value that a crop catching neighbouring content could
+		// plausibly produce. Bracketed by Alpha01 (9,000,000) and Charlie03
+		// (7,000,000) it is itself out of order and must be rejected -- but the
+		// real question this test asks is whether it also corrupts Charlie03.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "", Confidence: 0},
+		{Text: "1,000,000", Confidence: 0.90},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["points_out_of_order"] != 1 {
+		t.Errorf("points_out_of_order = %d, want exactly 1 (Bravo02's own fabricated read); all reasons: %v", reasons["points_out_of_order"], reasons)
+	}
+	if len(h.store.Facts) != 2 {
+		t.Fatalf("wrote %d facts, want 2: Alpha01 and Charlie03 -- Bravo02's retried value must not have narrowed Charlie03's window", len(h.store.Facts))
+	}
+	for _, f := range h.store.Facts {
+		if f.MemberID == h.store.members[2].ID && f.Value != 7000000 {
+			t.Errorf("Charlie03's fact = %v, want 7,000,000: Bravo02's retried 1,000,000 must not have capped it", f.Value)
+		}
+	}
+}
