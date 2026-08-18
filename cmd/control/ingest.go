@@ -244,8 +244,8 @@ func printRosterSummary(out io.Writer, captureID int64, periodKey string, res in
 // zeroes are recovered by clearing the queue and ingesting the same capture
 // again, not by re-capturing.
 func printVSSummary(out io.Writer, captureID int64, periodKey string, res ingest.VSResult) {
-	fmt.Fprintf(out, "capture=%d route=vs_ranking period=%s matched=%d queued=%d zeroed=%d unidentified=%d status=%s\n",
-		captureID, periodKey, res.Matched, res.Queued, res.Zeroed, res.Unidentified, res.Status)
+	fmt.Fprintf(out, "capture=%d route=vs_ranking period=%s matched=%d queued=%d zeroed=%d unidentified=%d duplicates=%d status=%s\n",
+		captureID, periodKey, res.Matched, res.Queued, res.Zeroed, res.Unidentified, res.Duplicates, res.Status)
 
 	if res.Unidentified > 0 && res.Status == "complete" {
 		fmt.Fprintf(out, "  no zeroes inferred: %d rows could not be attributed to a member, so absence is not proof of a zero score.\n", res.Unidentified)

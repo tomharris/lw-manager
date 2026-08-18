@@ -200,7 +200,12 @@ func TestRepairPointsRefusesMoreThanOneBadCharacter(t *testing.T) {
 func TestRepairPointsRefusesWhenTheGroupingIsBroken(t *testing.T) {
 	// Without intact comma grouping there is no shape to solve against, and
 	// the string could be anything.
-	if got, ok := repairPoints("¢6092 99", pointsBound{Lo: 2_600_000, Hi: 2_613_585}); ok {
+	//
+	// Exactly ONE damaged position, deliberately. This used to read
+	// "¢6092 99", which carries two (the ¢ and the space) and is therefore
+	// refused by the test above's rule before grouping is ever consulted --
+	// so it passed without exercising the property it is named for.
+	if got, ok := repairPoints("¢6092299", pointsBound{Lo: 2_600_000, Hi: 2_613_585}); ok {
 		t.Errorf("repairPoints = %d, true; want refusal on broken grouping", got)
 	}
 }

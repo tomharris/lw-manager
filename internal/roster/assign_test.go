@@ -46,8 +46,57 @@ func TestAssignNeverGivesOneMemberTwoRows(t *testing.T) {
 	if got[0].Member != 0 {
 		t.Fatalf("row 0 = %+v, want member 0", got[0])
 	}
-	if got[1].Member == 0 {
-		t.Errorf("row 1 = %+v, but member 0 is already row 0's", got[1])
+	// Asserted by PHASE, not merely by "not member 0". Row 1 comes back with
+	// Member -1 whether the duplicate check ran or not -- unresolved and
+	// duplicate-withheld look identical through Member alone -- so deleting
+	// the entire duplicate loop from Assign left the old assertion passing.
+	// PhaseDuplicate is the only observable that distinguishes them, and it
+	// is the one that matters: a duplicate is withheld from phase 2, where an
+	// ordinary unassigned row still competes.
+	if got[1].Phase != roster.PhaseDuplicate {
+		t.Errorf("row 1 = %+v, want PhaseDuplicate (member 0 is already row 0's)", got[1])
+	}
+	if got[1].Member != -1 {
+		t.Errorf("row 1 = %+v, want Member -1", got[1])
+	}
+}
+
+// Phase 1's margin refuses an exact tie. Row 0 scores identically against two
+// FREE members, both well above AutoAccept: there is no evidence in the
+// scores for choosing either, so the row must not be resolved to one on index
+// order. Deleting the margin (or setting it back to 0, which disables the
+// check entirely because top-second can never be negative) resolves row 0 to
+// member 0 and writes a fact under a name picked by a coin flip.
+//
+// Row 1 exists so the tie is between two members that both stay free through
+// phase 1 -- without it, one of them could be claimed first and the tie would
+// dissolve into an ordinary single-candidate win.
+func TestAssignRefusesAnExactTieBetweenTwoFreeMembers(t *testing.T) {
+	scores := [][]int{
+		{94, 94, 10},
+		{10, 10, 100},
+	}
+	got := roster.Assign(scores, roster.DefaultResidual)
+	if got[1].Member != 2 || got[1].Phase != roster.PhaseConfident {
+		t.Fatalf("row 1 = %+v, want member 2 at phase 1", got[1])
+	}
+	if got[0].Phase == roster.PhaseConfident {
+		t.Errorf("row 0 = %+v, but 94 vs 94 is a tie -- phase 1 must not pick one", got[0])
+	}
+}
+
+// The other half, and the reason the test above is safe to write: a margin of
+// 1 refuses ties and NOTHING else. A single point of separation is still a
+// win, so the guard cannot be quietly costing rows that had real evidence
+// behind them -- which is the failure mode this project has hit twice with
+// fences fitted against what they admit rather than what they exclude.
+func TestAssignAcceptsAOnePointWin(t *testing.T) {
+	scores := [][]int{
+		{95, 94, 10},
+	}
+	got := roster.Assign(scores, roster.DefaultResidual)
+	if got[0].Member != 0 || got[0].Phase != roster.PhaseConfident {
+		t.Errorf("row 0 = %+v, want member 0 at phase 1 (95 beats 94 by one)", got[0])
 	}
 }
 

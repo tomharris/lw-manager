@@ -339,3 +339,20 @@ func TestIngestLogsAndResultsGoToDifferentWriters(t *testing.T) {
 		t.Errorf("errOut = %q, want the underlying error in the log line", errOut.String())
 	}
 }
+
+// VSResult.Duplicates carries a doc comment promising it is "reported rather
+// than silent", and until this test it was written by ingest and read by
+// nobody — printVSSummary omitted it, so a capture that dropped duplicate
+// rows looked identical to one that had none. Asserted on the summary line
+// itself rather than on the field, because the field being populated was
+// never the thing in doubt.
+func TestVSSummaryReportsDuplicates(t *testing.T) {
+	var out bytes.Buffer
+	printVSSummary(&out, 42, "2026-W33", ingest.VSResult{
+		Matched: 84, Queued: 3, Zeroed: 0, Unidentified: 0, Duplicates: 2, Status: "complete",
+	})
+	got := out.String()
+	if !strings.Contains(got, "duplicates=2") {
+		t.Errorf("summary %q omits duplicates; the field's doc says it is reported rather than silent", got)
+	}
+}

@@ -59,7 +59,7 @@ var (
 	probeAssignPSMs = flag.String("probe.assignpsm", "",
 		"extra page-segmentation modes to union into each row's score vector, e.g. '13'; the shipped PSM always runs")
 	probeAssignDetail = flag.Bool("probe.assigndetail", false,
-		"print every row the assignment resolved that the threshold did not, and every row it got wrong")
+		"per-row view: the rows the assignment resolved that the threshold did not, every row it got wrong (including ones the threshold resolved too), and the rows still unassigned")
 	probeAssignShuffle = flag.Bool("probe.assignshuffle", false,
 		"CANARY: rotate the truth labels by one rank so every assignment is wrong by construction; if this still reports zero wrong, the instrument is not measuring attribution")
 	probeAssignDecoys = flag.Int("probe.assigndecoys", 0,
@@ -413,6 +413,35 @@ func printAssignDetail(t *testing.T, rows []assignRow, members []roster.Member, 
 		t.Logf("  rank %3d  truth %-24q read %-24q -> %-24q %s (score %d)",
 			rows[i].Rank, rows[i].Truth, rows[i].Text, got, verdict, rows[i].Score[res.By[i]])
 	}
+	// Every misattribution, regardless of whether the per-row baseline
+	// resolved the row too. This section exists because the one above cannot
+	// serve as it: its filter skips rows the baseline also resolved, and the
+	// only misattribution the decoy run actually produces is INHERITED from
+	// phase 1 -- so the baseline resolved it too, and it was skipped. The
+	// flag's help promised "every row it got wrong" while the detail view
+	// printed none, next to a grid one screen above reporting wrong 1.
+	//
+	// This is the number the whole probe exists to watch, so it gets its own
+	// unconditional pass rather than riding on another section's filter.
+	t.Log("--- rows the assignment got WRONG (all of them, baseline-resolved or not) ---")
+	wrong := 0
+	for i := range rows {
+		if res.By[i] < 0 || members[res.By[i]].Name == rows[i].Truth {
+			continue
+		}
+		wrong++
+		baseNote := "assignment-only"
+		if base.By[i] >= 0 {
+			baseNote = fmt.Sprintf("baseline also resolved it, to %q", members[base.By[i]].Name)
+		}
+		t.Logf("  rank %3d  truth %-24q read %-24q -> %-24q (score %d; %s)",
+			rows[i].Rank, rows[i].Truth, rows[i].Text, members[res.By[i]].Name,
+			rows[i].Score[res.By[i]], baseNote)
+	}
+	if wrong == 0 {
+		t.Log("  (none)")
+	}
+
 	t.Log("--- rows still unassigned ---")
 	for i := range rows {
 		if res.By[i] >= 0 {

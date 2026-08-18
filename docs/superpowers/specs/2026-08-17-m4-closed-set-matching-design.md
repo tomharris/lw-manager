@@ -523,7 +523,7 @@ among the 83; the other 82 are exact.
   trade the width check makes, stated at full price. A confidence floor would
   not have saved it: 0.638 is well *above* the two lowest correct promotions
   in this population, which `vs.go`'s promotion comment records at 0.0853 and
-  0.2000 — so any floor excluding rank 7 would have excluded those first.
+  0.3383 — so any floor excluding rank 7 would have excluded those first.
   Confidence and correctness are not ordered together here.
 - **The gate cannot see it.** 500 on 18.3M is 0.0027%, inside `gateTolerance`
   of 1%, so rank 7 is counted among the 83 rows that pass. The gate's own

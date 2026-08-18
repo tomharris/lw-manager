@@ -357,7 +357,13 @@ var vsNameModes = []readPlan{
 //     retries it -- but the corruption is exactly one damaged position, and
 //     the ordering bounds admit exactly one digit there, so repairPoints
 //     (points.go) reconstructs it from the PRIMARY read alone, with no retry
-//     involved at all.
+//     involved at all. Note that reconstructing it is NOT the same as
+//     resolving it: RULING E then declines to promote a repaired value on
+//     the strength of the window it was solved against, and the primary's
+//     own confidence does not reach factConfidenceGate, so this row QUEUES.
+//     It is on the gate's miss list, and it is the reason "three failures
+//     trace back to this retry" is a statement about mechanism, not about
+//     three recoveries.
 //   - Rank 79 ("e,2¢8,001") is also non-empty at the primary and has TWO
 //     damaged positions, which repairPoints refuses by construction -- two
 //     unknowns is a guess with extra steps, whatever the bounds say. This is
@@ -423,21 +429,39 @@ const residualMatchConfidence = 0.85
 // 0.70 (rank 83) -- and nobody had checked what it excluded.
 //
 // Measured directly against capture 6
-// (.superpowers/sdd/2026-08-17-m4-closed-set-matching/investigation-confidence-floor.md):
-// the population it actually gated -- a points read that parses and sits in
-// a window closed on both sides -- has exactly ONE row below 0.40 on this
-// capture, rank 10 (16,958,260 at confidence 0.0853), and it is CORRECT.
-// Zero rows in that population, above or below 0.40, are wrong. The two
-// reads that genuinely ARE wrong on this capture (ranks 77, 79) never reach
-// this population at all -- they fail to PARSE, so they are refused two
-// steps earlier, before confidence is ever consulted (see repairPoints and
-// the late retry below). So the floor was screening nothing here, and its
-// measured cost was one correct, structurally-corroborated row sent to
-// review for no offsetting protection. Removed.
+// (.superpowers/sdd/2026-08-17-m4-closed-set-matching/investigation-confidence-floor.md,
+// and re-measured against the SHIPPED pipeline afterwards -- the two differ,
+// see below). The population it gated is a points read that parses, sits in
+// a window closed on both sides, and is narrow enough to promote. On the
+// shipped pipeline that population is seven rows: ranks 7, 10, 20, 38, 76,
+// 79 and 83. Two of them sit below 0.40 -- rank 10 (16,958,260 at 0.0853)
+// and rank 79 (2,328,001 at 0.3383) -- and both are correct, so the floor's
+// measured cost is two correct, structurally-corroborated rows sent to
+// review. Removed.
 //
-// n=1 in the population this measured is thin, and that is the part worth
-// not forgetting: if a later capture ever shows a genuinely WRONG value that
-// parses and lands inside a closed window, at any confidence, the floor's
+// The original investigation recorded n=1 below the floor and zero wrong
+// rows anywhere in the population. Both figures moved once the rest of the
+// milestone landed, and BOTH corrections matter more than the conclusion
+// they leave standing:
+//
+//   - n is 2, not 1. Rank 79 joined the population because RULING B's late
+//     retry recovered it; the investigation predates that. The thinness the
+//     original comment warned about was real, and the thing that thickened
+//     it was a change elsewhere in the pipeline, which is the general
+//     hazard: a measurement of a population is invalidated by anything that
+//     changes who is IN the population, not just by a change to the rule.
+//   - The population is NOT clean. Rank 7 is wrong -- 18,356,304 against a
+//     hand-checked 18,356,804 -- at confidence 0.6380. So "zero rows in that
+//     population are wrong" is false on the shipped pipeline, and the floor
+//     would not have caught it either way: 0.6380 is well above 0.40, and
+//     above both correct rows below it. See attributeRow's promotion comment
+//     for the full account; the point here is only that the floor's removal
+//     does not rest on the population being clean, because it isn't.
+//
+// So the argument that survives is narrower than the original: the floor
+// screened nothing it should have screened, and cost two rows it should not
+// have. If a later capture shows a wrong value that parses, lands inside a
+// narrow closed window, AND sits below a candidate floor, the floor's
 // argument comes back -- and it must be refit against the set it EXCLUDES
 // this time, not (as happened the first time) the set it admits.
 
@@ -1143,7 +1167,7 @@ func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a ro
 	// for is rank 10 at confidence 0.0853, correct. A floor would not have
 	// saved rank 7 either, for a reason worth stating rather than assuming
 	// the other way: rank 7 reads at 0.638, well ABOVE the two lowest
-	// correct promotions here (0.0853 and 0.2000), so any floor that
+	// correct promotions here (0.0853 and 0.3383), so any floor that
 	// excluded it would have excluded those first. Confidence and
 	// correctness are not ordered together in this population. If that ever
 	// changes on a later capture, refit a confidence floor against what it
@@ -1271,10 +1295,18 @@ func (run *vsRun) retryPointsLate(ctx context.Context, i *Ingester, row vsRow, b
 }
 
 // queueReview mirrors rosterRun.queueReview: records one row that could not
-// be confidently resolved (or cleared to write) and counts it. confidence is
-// 0 when the reason carries no meaningful blended score (an unparseable
-// field, an ambiguous name, no match at all) — QueueReview stores that as
-// SQL NULL, not as a claimed zero-confidence read.
+// be confidently resolved (or cleared to write) and counts it. Callers pass 0
+// when the reason carries no meaningful blended score (an unparseable field,
+// an ambiguous name, no match at all), and QueueReview stores 0 as SQL NULL
+// rather than as a claimed zero-confidence read.
+//
+// The gap that leaves, stated because a reviewer reading the queue cannot
+// see it: low_confidence_points passes its REAL blended confidence, and on
+// capture 6 that value rounds to 0.00 for the one row queued under this
+// reason. It is stored as NULL too, so "we had no number" and "the number
+// was essentially zero" are indistinguishable in the queue -- and the second
+// is the more damning of the two. Fixing it means a nullable-at-the-caller
+// signal rather than an in-band 0, which is a change to db.ReviewItem.
 func (run *vsRun) queueReview(ctx context.Context, i *Ingester, screenshotID int64, band RowBand, rawText string, candidates []roster.Candidate, reason string, confidence float64) error {
 	if _, err := i.store.QueueReview(ctx, db.ReviewItem{
 		CaptureID: run.captureID, ScreenshotID: screenshotID,

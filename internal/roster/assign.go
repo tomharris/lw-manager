@@ -48,6 +48,11 @@ type AssignParams struct {
 	// Margin is how far the best free candidate must beat the next free one.
 	// It is what stops the assignment picking a winner by a nose, and it is
 	// the setting that measurably holds misattribution down.
+	//
+	// Note the arithmetic before choosing a value: the check is
+	// `top-second < Margin`, so 0 disables the rule entirely rather than
+	// requiring a bare win, and 1 is the smallest setting that rejects
+	// anything (an exact tie). See Assign's doc for why phase 1 is 1.
 	Margin int
 }
 
@@ -66,9 +71,31 @@ type Assignment struct {
 //
 // Two phases, one rule: a row may claim a member only when that member is the
 // best FREE candidate for it, clears the phase's floor, and beats the next
-// free candidate by the phase's margin. Phase 1 runs at AutoAccept with no
-// margin -- today's bar, which pins the confident rows first -- and phase 2
-// runs the caller's residual rule over what is left.
+// free candidate by the phase's margin. Phase 1 runs at AutoAccept -- today's
+// bar, which pins the confident rows first -- and phase 2 runs the caller's
+// residual rule over what is left.
+//
+// Phase 1's margin is 1, which refuses an EXACT TIE and nothing else. It was
+// 0, and 0 does not mean "no margin" here: the check is
+// `top-second < p.Margin`, and second can never exceed top, so at 0 the
+// condition is unreachable and a row scoring identically against two free
+// members was accepted for whichever happened to hold the lower index. That
+// row is then stamped PhaseConfident at >= 0.92 and its fact is written under
+// an arbitrary member's name, unqueued and unlogged -- the one failure a
+// review queue cannot undo, arrived at by a coin flip.
+//
+// ClosestPairScore does not cover this. It warns when two MEMBERS score
+// >= AutoAccept against each other, but edit distance obeys the triangle
+// inequality, so a read sitting one edit from each of two members can tie
+// >= AutoAccept against both while the two members score below it against
+// each other -- measured at 94/94 with the pair at 89, warning silent.
+//
+// The cost of refusing is nothing: a refused tie falls through to the
+// duplicate check and then to phase 2, so it is queued or residually matched
+// rather than guessed. Measured on capture 6 the change is inert -- the gate
+// line is byte-identical and the decoy grid unchanged -- because that capture
+// contains no tie. It is a guard against a shape this roster has not produced
+// yet, not a tuning change.
 //
 // Phase 2 is not a relaxed threshold. It is a different criterion, and a
 // stricter one where it counts: it is conditioned on every confident row
@@ -156,7 +183,7 @@ func Assign(scores [][]int, residual AssignParams) []Assignment {
 		}
 	}
 
-	claim(AssignParams{Floor: AutoAccept, Margin: 0}, PhaseConfident)
+	claim(AssignParams{Floor: AutoAccept, Margin: 1}, PhaseConfident)
 
 	// See the doc comment above for why this runs between the phases: a row
 	// that already matches a claimed member at AutoAccept must not be given

@@ -786,14 +786,16 @@ func TestIngestVSPrefersThePrimaryReadByValueOverAnAvailableRetry(t *testing.T) 
 // is ALSO rejected -- two rows queued and one fact written, not two -- and a
 // loose assertion would not notice.
 //
-// Bravo02's primary parses fine (it is well-formed) but lands outside its
-// window, which is now one of retryPointsLate's two triggers -- so this
-// fixture's engine queue carries a fourth result for Bravo02, standing in
-// for the late PSM-13 re-read attributeRow now attempts. It reads the same
-// bogus, still out-of-window value, so the row is still rejected the same
-// way -- proving the new trigger firing changes nothing about a row the
-// retry genuinely cannot help, not just that this test still happens to
-// pass.
+// Bravo02's primary PARSES fine and merely lands outside its window, so the
+// late retry never fires for it: RULING D confined that trigger to a parse
+// failure. This fixture briefly carried a fourth engine result standing in
+// for a late re-read, back when an out-of-window value was also a trigger,
+// and the comment here claimed it proved the trigger "changes nothing about
+// a row the retry cannot help". Once RULING D landed, the result was never
+// consumed and the claim proved nothing -- deleting it left this test
+// passing. Both are gone. What remains is the assertion that was always
+// doing the work, and it is mutation-checked: deleting monotonicKnown fails
+// it with points_out_of_order = 2.
 func TestIngestVSRejectsAPointsValueThatBreaksTheRankingOrder(t *testing.T) {
 	h := newVSHarness(t, "complete")
 	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
@@ -809,10 +811,6 @@ func TestIngestVSRejectsAPointsValueThatBreaksTheRankingOrder(t *testing.T) {
 		// Rank 2 cannot outscore rank 1.
 		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "99,000,000", Confidence: 0.95},
 		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
-		// The late retry's own read, consumed only after every row above has
-		// been read (see readVSRows' doc comment on ordering): still bogus,
-		// still out of order.
-		{Text: "99,000,000", Confidence: 0.90},
 	}
 
 	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
