@@ -22,7 +22,9 @@ import (
 // row. If the capture-side region ever moves, this constant must move with
 // it. The region already excludes the pinned self row (it sits outside the
 // scroll region entirely, per vs_capture.go's own comment), which is the
-// belt to the identity cross-check's braces below.
+// belt to roster.Assign's PhaseDuplicate braces: this region keeps the
+// pinned copy out of the scroll capture in the first place, and Assign
+// catches the case where a duplicate reaches attribution anyway.
 var vsListRegion = transport.Rect{X1: 0.03, Y1: 0.185, X2: 0.97, Y2: 0.80}
 
 // vsRowPitch is the ranking row height measured on the handset (see
@@ -365,8 +367,13 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 
 	assignments := roster.Assign(scoreMatrix(rows), roster.DefaultResidual)
 
-	// A row left unassigned whose best read IS a member somebody else already
-	// holds is a duplicate, not a failure -- see VSResult.Duplicates.
+	// assignedMember's keys are MEMBER indices -- roster.Assign's column
+	// space, the same indexing as `members` and every vsRow.Scores, not row
+	// position. It exists only for the zero-inference loop below: a member
+	// who already has a row, confident or residual, is not absent from the
+	// capture and must not be zeroed. Duplicate detection no longer needs it
+	// -- roster.Assign now reports a duplicate row directly via
+	// PhaseDuplicate, see below.
 	assignedMember := make(map[int]bool, len(assignments))
 	for _, a := range assignments {
 		if a.Member >= 0 {
@@ -376,15 +383,7 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 
 	for n, row := range rows {
 		a := assignments[n]
-		dup := false
-		if a.Member < 0 {
-			for j, s := range row.Scores {
-				if s >= roster.AutoAccept && assignedMember[j] {
-					dup = true
-					break
-				}
-			}
-		}
+		dup := a.Phase == roster.PhaseDuplicate
 		matched, err := run.attributeRow(ctx, i, row, a, dup, members)
 		if err != nil {
 			return VSResult{}, err

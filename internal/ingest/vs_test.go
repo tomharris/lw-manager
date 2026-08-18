@@ -309,6 +309,56 @@ func TestIngestVSInfersZeroesOnceEveryRowIsIdentified(t *testing.T) {
 	}
 }
 
+// Finding 2 (task-3-findings-round1.md): the assignedMember build loop that
+// feeds zero-inference must key on a.Member -- the MEMBER index -- not on the
+// row's own position in the assignments slice. Every other VS fixture reads
+// members in roster order (row i is always member i), so the two indexings
+// are indistinguishable there and a swap would go unnoticed; this fixture
+// reads them out of order on purpose. If the loop were keyed on row index
+// instead, row 0 (Member03, member index 2) would mark index 0 "assigned"
+// and row 1 (Member01, member index 0) would mark index 1 "assigned" --
+// zeroing Member03 despite it having a row, and never zeroing Member02, the
+// member genuinely absent from the capture.
+func TestIngestVSInfersZeroOnTheRightMemberWhenRowsArriveOutOfRosterOrder(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Member01", "Member02", "Member03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(2), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Member03", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "Member01", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
+	}
+
+	res, err := h.IngestVS(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if res.Zeroed != 1 {
+		t.Fatalf("zeroed %d, want 1 — Member02 is the only absent member", res.Zeroed)
+	}
+	want := h.store.members[1].ID // Member02
+	var zeroedID int64
+	var sawZero bool
+	for _, f := range h.store.Facts {
+		if f.Metric == "vs_points" && f.Value == 0 {
+			sawZero = true
+			zeroedID = f.MemberID
+		}
+	}
+	if !sawZero {
+		t.Fatal("no inferred zero was written at all")
+	}
+	if zeroedID != want {
+		t.Errorf("inferred zero landed on member %d, want Member02 (%d): the read rows were Member03 then Member01, out of roster order",
+			zeroedID, want)
+	}
+}
+
 // `control ingest` routes vs_ranking captures through IngestVS the same way
 // it routes roster captures through IngestRoster, so a fresh deployment hits
 // the identical CurrentAllianceID ErrNotFound dead end here — see
@@ -445,10 +495,15 @@ func TestIngestVSResolvesAWeakRowFromTheResidual(t *testing.T) {
 	h.addFrame(vsFrame(2), 0)
 	h.engine.Results = []ocr.Result{
 		{Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
-		// "Brav0z" scores below AutoAccept against Bravo02 and far below it
-		// against Alpha01 -- unmatchable per-row, unambiguous once Alpha01 is
-		// taken.
-		{Text: "Brav0z", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
+		// "Br4v0z" scores 68 against Bravo02 (roster.TokenSetRatio) -- inside
+		// the 60-79 residual band, well below AutoAccept, and 14 against
+		// Alpha01 -- unmatchable per-row, unambiguous once Alpha01 is taken.
+		// Landing the raw score inside that band (rather than, say, in the
+		// 80s where it would clear factConfidenceGate on score/100 alone) is
+		// deliberate: a reviewer proved by mutation that a fixture scoring in
+		// the 80s lets this test pass even with the residualMatchConfidence
+		// branch deleted, because score/100 alone already clears the gate.
+		{Text: "Br4v0z", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
 	}
 
 	res, err := h.IngestVS(context.Background(), 1, testPeriodKey)
@@ -477,6 +532,16 @@ func TestIngestVSResolvesAWeakRowFromTheResidual(t *testing.T) {
 	}
 	if residual.Confidence >= 0.95 {
 		t.Errorf("residual fact confidence %.2f, want it visibly below a clean match", residual.Confidence)
+	}
+	// The outright assertion: a residual match must carry EXACTLY
+	// residualMatchConfidence, not some blend that happens to also clear the
+	// two bounds above. Deleting the `matchNorm = residualMatchConfidence`
+	// branch in attributeRow must fail this line even if the fixture's raw
+	// string score had landed somewhere the bounds above would not have
+	// caught.
+	if residual.Confidence != residualMatchConfidence {
+		t.Errorf("residual fact confidence = %.2f, want exactly residualMatchConfidence (%.2f)",
+			residual.Confidence, residualMatchConfidence)
 	}
 }
 

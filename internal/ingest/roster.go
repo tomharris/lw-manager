@@ -636,8 +636,14 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 			// position"). Recon's roster notes (§1) record no such
 			// duplicate: the logged-in account's row is unremarkable except
 			// for lacking a Manage button. A pinned row is a property of the
-			// VS ranking screen, not of alliance_members, so the identity
-			// cross-check belongs to the VS ingest path, not here.
+			// VS ranking screen, not of alliance_members, so the duplicate
+			// it can produce is something only the VS ingest path needs to
+			// detect — and by now it does, not as a separate cross-check but
+			// as part of attribution itself: roster.Assign flags a row that
+			// scores AutoAccept-or-better against an already-claimed member
+			// as PhaseDuplicate before its residual phase ever runs (see
+			// vs.go and assign.go). This route has no such phenomenon to
+			// guard against in the first place.
 			if gt.lastRowY >= 0 && rowY <= gt.lastRowY+memberRowPitch/2 {
 				continue // geometric duplicate; OCR never runs on it
 			}

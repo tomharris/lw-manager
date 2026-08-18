@@ -30,10 +30,15 @@ const (
 // string that scored >= AutoAccept, and a phase-2 match is an elimination
 // argument. Those are not the same evidence and must not carry the same
 // confidence onto a leaderboard.
+//
+// PhaseDuplicate is neither: it is not a match at all, only a reason a row
+// was withheld from phase 2. See Assign's doc comment for why detecting it
+// between the phases, rather than after both, is load-bearing.
 const (
 	PhaseUnassigned = 0
 	PhaseConfident  = 1
 	PhaseResidual   = 2
+	PhaseDuplicate  = 3
 )
 
 // AssignParams is one phase's acceptance rule.
@@ -77,6 +82,24 @@ type Assignment struct {
 // n=86 and fits on a screen: an optimal matching maximizes the TOTAL and will
 // happily displace a pair scoring 100 to raise it, which is not a trade this
 // domain should ever make.
+//
+// Between the two claim passes, any row still unassigned is checked against
+// the members phase 1 already claimed. A row scoring >= AutoAccept against an
+// already-claimed member is a second sighting of that member -- the pinned
+// self row, structurally -- and is marked PhaseDuplicate and withheld from
+// phase 2 entirely, rather than left to compete for whatever else it
+// resembles.
+//
+// This has to sit BETWEEN the phases, not after both. A row like that can
+// also carry a middling score against some other, still-free member -- enough
+// to look like an ordinary residual candidate once phase 2 runs. But a second
+// sighting of a claimed member is not evidence about anyone else: it is
+// evidence about the member phase 1 already resolved, full stop. Letting it
+// compete in the residual turns a harmless duplicate into a misattribution --
+// a fact written under a real, different member's name, for a row that was
+// never theirs -- which is the one failure a review queue cannot undo. A row
+// dropped as a duplicate loses nothing recoverable; a row that duplicates its
+// way onto someone else's fact does.
 func Assign(scores [][]int, residual AssignParams) []Assignment {
 	out := make([]Assignment, len(scores))
 	for i := range out {
@@ -134,6 +157,24 @@ func Assign(scores [][]int, residual AssignParams) []Assignment {
 	}
 
 	claim(AssignParams{Floor: AutoAccept, Margin: 0}, PhaseConfident)
+
+	// See the doc comment above for why this runs between the phases: a row
+	// that already matches a claimed member at AutoAccept must not be given
+	// the chance to claim someone else's row on the strength of a lesser
+	// score.
+	for i, row := range scores {
+		if rowTaken[i] {
+			continue
+		}
+		for j, s := range row {
+			if memTaken[j] && s >= AutoAccept {
+				out[i] = Assignment{Member: -1, Phase: PhaseDuplicate}
+				rowTaken[i] = true
+				break
+			}
+		}
+	}
+
 	claim(residual, PhaseResidual)
 	return out
 }
