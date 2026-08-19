@@ -25,14 +25,14 @@ surface area at "a fast player."
 | Milestone | | |
 |---|---|---|
 | **M0** Foundations | ✅ | Postgres, migrations, config, `Transport`, capture → blob store |
-| **M1** Vision core | ✅ | **99.72%** recognizer accuracy (355/356) against a 98% gate |
+| **M1** Vision core | ✅ | **99.53%** recognizer accuracy (632/635) against a 98% gate. All three misses are missed detections, not misidentifications — the confusion matrix has no false positives at all, which is the property invariant #3 depends on: a screen the recognizer declines to name is a task that declines to act. |
 | **M2** Task runtime | ✅ | Runtime, screen graph, panic route, kill switch, scheduler, and all five Tier 1 task bodies. Gated on the handset over 24 unattended hours: **95.82%** (229/239) against a 95% bar, zero stuck runs, and invariant #3 held through a four-hour display outage. The three defects that run exposed — a panic route that recovered nothing, a scheduler planning in UTC, and `radar`'s wrong flow model — are fixed since; `mail_collect` still has no successful unattended observation. |
-| **M4** Analytics collection | 🚧 | Both routes run end to end on the handset: scroll-and-stitch with measured offsets, phase-locked row segmentation, per-field OCR (plus NCC for the rank badges no OCR can read), fuzzy roster matching, append-only facts, and uncertain reads triaged in `agent studio`. The gate runs against a real 86-row capture and **fails at 63/86 (73%)** against its 95% bar, up from 57/86. Conditions 2 and 3 pass: nothing is dropped silently, and the capture still reconciles. Three fixes got it there — a raw-line OCR retry for crops tesseract's layout analysis refuses outright, confusable-aware scoring in the matcher, and a rune/byte length bug that had been inflating scores for non-Latin names. The measuring instrument is committed this time (`make probe-m4`). What is left splits into names (language packs, ~5 members) and points (7 rows whose names matched but whose numbers did not parse or cleared no confidence gate). Measured in full in `docs/superpowers/specs/2026-08-17-m4-gate-name-matching-gap.md`. |
+| **M4** Analytics collection | 🚧 | Both routes run end to end on the handset: scroll-and-stitch with measured offsets, phase-locked row segmentation, per-field OCR (plus NCC for the rank badges no OCR can read), append-only facts, and uncertain reads triaged in `agent studio`. Against a real 86-row capture the gate now **passes at 85/86 (98.84%)** against its 95% bar, up from 63/86: every row matched to a member, one queued for review, nothing dropped silently, and the capture still reconciles. The gain came from matching the whole ranking as a **closed set** — one assignment over all rows and all members at once — rather than 86 independent threshold lookups, plus points bounded by the ranking's own order and decoration-stripping in the matcher. Language packs were the obvious fix for the two decorated names and were measured inert. Three instruments are committed with it: `make probe-m4`, `make probe-points`, `make probe-assign`, the last of which self-checks with a shuffled-truth canary and decoy padding. Measured in full in `docs/superpowers/specs/2026-08-17-m4-closed-set-matching-design.md`. |
 | **M5** Participation surface | ⬜ | Leaderboard, VS compliance, inactivity watchlist |
 | **M3** Fleet | 💤 | Deferred until after M5, and may not happen. Dashboard + WebSocket status; the registry and the multi-device run loop already shipped in M0/M2 |
 
-The M1 corpus is 356 frames across 14 screens with 57 negatives, captured from
-a moto g play 2024 at 720×1600 on game version 1.0.354.
+The M1 corpus is 635 frames across 15 screens with 55 negatives, captured from
+a moto g play 2024 at 720×1600 on game versions 1.0.354 and 1.0.358.
 
 ## Quickstart
 
@@ -57,6 +57,13 @@ With a device listed by `adb devices`:
 registration is the one cheap moment to prove the serial is real and reachable.
 It is idempotent, so re-running it corrects a typo instead of creating a
 duplicate.
+
+Turning captures into facts is a separate, idempotent pass:
+
+```bash
+./bin/control alliance set --tag <tag> --name <name>   # the one tracked alliance, once
+./bin/control ingest --capture <id>                    # roster or VS ranking, decided by the capture
+```
 
 ### Vision tooling
 
@@ -90,6 +97,16 @@ wait, sleep. There is no accessor for the underlying transport, and `Tap`
 accepts an anchor ID rather than a coordinate — the no-blind-taps invariant is
 enforced by the signature, not by review.
 
+**Ingest** turns captured frames into append-only facts: rows segmented on a
+fitted phase rather than a fixed pitch, each field read through its own
+preprocessing, and the VS ranking matched to the roster as a **closed set** —
+every row against every member in one assignment, so a name that is ambiguous
+on its own is resolved by which member is still unclaimed. Every number carries
+a confidence and a screenshot reference, and anything under the bar goes to a
+review queue rather than to a leaderboard. Misattributing one member's score to
+another is the one failure a queue cannot undo, which is why the threshold never
+moves to buy accuracy.
+
 **Scheduler** derives each account's offline window and plans from cadence,
 weekday, and role. The kill switch is checked between every step, globally and
 per account.
@@ -107,6 +124,8 @@ internal/capture     screenshot → blob → db
 internal/runtime     Ctx primitives, screen graph, panic route, kill switch
 internal/tasks       task catalogue; self-registering
 internal/scheduler   cadence-driven planner and loop
+internal/ingest      capture frames → facts; OCR, segmentation, reconciliation
+internal/roster      name normalization and fuzzy matching to known members
 internal/vision      matcher, recognizer, corpus scoring
 internal/corpus      record, index, push/pull of the fixture corpus
 internal/studio      served labelling and cropping UI
@@ -122,14 +141,29 @@ make test              # unit. Passes with nothing running — no device, no Doc
 make test-integration  # needs docker compose up; runs against lw_manager_test
 make test-device       # needs a device on adb; skips without one
 make gate              # M1 recognizer accuracy against the real corpus
+make gate-m4           # M4 ingest against a hand-checked 86-row capture
 ```
+
+The three M4 probes are **measuring instruments, not gates** — they assert
+nothing and always pass, and their output is the point:
+
+```bash
+make probe-m4          # the VS name field, scored against 86 hand-transcribed names
+make probe-points      # the points field: exact, within 1%, unparseable, retried
+make probe-assign      # closed-set matching, with a shuffled-truth canary and decoys
+```
+
+Reach for one before changing a crop, a preprocessing option, a
+page-segmentation mode or a matcher constant — and again afterwards. A crop
+"verified by eye" against a handful of rows is not measured: all three original
+M4 crops passed that review and scored 0 of 86 rows on the first real capture.
 
 Integration tests read `LW_TEST_DATABASE_URL`, never the application's
 `LW_DATABASE_URL`, and `internal/dbtest` refuses any database not named
 `*_test`. The guard, not the default, is what keeps a developer with the app's
 variable exported from pointing the suite at real data.
 
-The corpus itself is not in git — 356 full-resolution screenshots is several
+The corpus itself is not in git — 635 full-resolution screenshots is several
 hundred megabytes that git would keep forever. Only `fixtures/corpus/index.yaml`
 is tracked; `agent corpus pull` materializes the rest.
 

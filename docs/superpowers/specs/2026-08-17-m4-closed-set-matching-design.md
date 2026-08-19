@@ -378,6 +378,19 @@ row producing a wrong value.
 
 ## 9. Results
 
+> **Superseded in part by two later commits on this same branch.** Every number
+> below stands as measured at `d1c6a35` and the reasoning is unchanged, but two
+> of the three queued rows have since been resolved and the gate has moved.
+> `479d941` measured the Greek and Arabic language packs against ranks 31 and 39
+> and found them **inert** — both rows come back byte-identical under `+grc`,
+> `+ara` and `+ell` — so this section's claim that they are "the missing
+> language pack `CLAUDE.md` describes" is **wrong**, and `CLAUDE.md` has been
+> corrected accordingly. `87163d2` then fixed both from the matcher instead
+> (`roster.stripDecoration`). `make gate-m4` re-run 2026-08-19 reports
+> **85/86 rows within 1%, matched=86 queued=1 zeroed=0, status complete** — the
+> one remaining queued row is rank 77's repaired points, which is a points-stage
+> failure and is described below.
+
 Measured 2026-08-18 on branch `m4-closed-set-matching` at commit `d1c6a35`,
 against **capture 6, game version 1.0.358, period `2026-W34`** — the same
 21-frame hand-transcribed capture §1 was measured on, and the only one there
