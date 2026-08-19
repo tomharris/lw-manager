@@ -171,10 +171,13 @@ const (
 // they are the only list; they simply have nothing to say about these rows.
 //
 // The conclusion is that no language pack fixes these two names, and the
-// place to look instead is the MATCHER: strip the decoration run from both
-// the stored name and the read before scoring, so "ϟϟ Leo ϟϟ" vs ">> Lea >>"
-// becomes "Leo" vs "Lea". That is a roster.Normalize question, not an OCR
-// one, and it is not attempted here.
+// place to look instead is the MATCHER, not OCR. That is what
+// roster.stripDecoration now does: it drops leading and trailing non-ASCII
+// runs from an already-normalized string when a Latin core survives, so
+// "ϟϟ Leo ϟϟ" against ">> Lea >>" becomes "leo" against "lea". Both of these
+// rows resolve now, and the gate reads 85/86 with every row matched. See that
+// function for why it must run after homoglyph folding and why a name with no
+// Latin core is left alone.
 //
 // The whole gain is CJK. Three of the packs this roster's scripts appear to
 // call for actively cost members, and rus is the clearest: Cyrillic's capitals

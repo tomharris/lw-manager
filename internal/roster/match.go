@@ -65,12 +65,32 @@ func TokenSetRatio(a, b string) int {
 	sort.Strings(ta)
 	sort.Strings(tb)
 
-	stripped := ratio(na, nb)
-	tokenSet := ratio(strings.Join(ta, " "), strings.Join(tb, " "))
-	if tokenSet > stripped {
-		return tokenSet
+	best := ratio(na, nb)
+	if tokenSet := ratio(strings.Join(ta, " "), strings.Join(tb, " ")); tokenSet > best {
+		best = tokenSet
 	}
-	return stripped
+
+	// A third comparison, with leading and trailing non-ASCII runs removed
+	// from both sides (see stripDecoration). It is taken as a MAXIMUM
+	// alongside the other two rather than replacing either, and that is a
+	// safety property, not a stylistic choice: a maximum can only raise a
+	// score, so no pair that matched before can stop matching because of it.
+	// The risk it does carry runs the other way -- raising the score of a
+	// pair that should NOT match -- and that is what ClosestPairScore
+	// measures. On capture 6 the closest pair is unmoved at 60.
+	//
+	// Guarded on the strings actually differing so an all-ASCII roster, which
+	// is most of them, pays one comparison rather than three.
+	da, db := stripDecoration(na), stripDecoration(nb)
+	if da != na || db != nb {
+		if da == "" || db == "" {
+			return best
+		}
+		if deco := ratio(da, db); deco > best {
+			best = deco
+		}
+	}
+	return best
 }
 
 // ratio scores two non-empty, already-normalized strings in 0..100 by

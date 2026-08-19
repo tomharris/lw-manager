@@ -56,8 +56,20 @@ import (
 var (
 	probeAssign = flag.Bool("probe.assign", false,
 		"measure closed-set assignment against today's per-row threshold matching")
+	// WARNING, and it is not a small one: the DEFAULT of this flag does not
+	// measure production. IngestVS reads every name crop at PSM 7 AND PSM 13
+	// and takes the better per member (vsNameModes); with this flag empty the
+	// probe unions ONE mode, so it models a weaker pipeline than the one that
+	// ships. Pass -probe.assignpsm=13 for a production-equivalent reading.
+	//
+	// This is not theoretical. Measuring decoration stripping, the default
+	// reported correct 84/86 with WRONG 1 -- a misattribution, the one
+	// failure a review queue cannot undo -- while the same change at
+	// -probe.assignpsm=13 reported 86/86 with wrong 0, and the gate agreed
+	// with the latter. Reading the default's wrong column as production's
+	// would have rejected a change that is strictly better.
 	probeAssignPSMs = flag.String("probe.assignpsm", "",
-		"extra page-segmentation modes to union into each row's score vector, e.g. '13'; the shipped PSM always runs")
+		"extra page-segmentation modes to union into each row's score vector, e.g. '13'; the shipped PSM always runs. Pass 13 to match production: vsNameModes reads at PSM 7 and 13, so the DEFAULT models a weaker pipeline than ships")
 	probeAssignLangs = flag.String("probe.assignlangs", "",
 		"override vsNameLanguages on both the primary read and the retry, e.g. 'eng+kor+chi_sim+jpn+grc'; empty uses whatever vsNameSpec ships with")
 	probeAssignDetail = flag.Bool("probe.assigndetail", false,

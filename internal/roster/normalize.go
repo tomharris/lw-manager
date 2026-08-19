@@ -11,6 +11,7 @@ package roster
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -129,4 +130,68 @@ func NormalizeTokens(s string) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// stripDecoration removes leading and trailing runs of non-ASCII characters
+// from an ALREADY-NORMALIZED string, provided an ASCII core survives.
+//
+// It exists because Normalize cannot drop these characters and should not try
+// to. Normalize keeps letters and digits, and Unicode classifies the two
+// ornaments this roster actually uses as exactly that: U+03DF GREEK SMALL
+// LETTER KOPPA is Ll, and the Arabic-Indic digits in "٣١٢ A l i ٣١٢" are Nd.
+// They survive normalization by the same rule that keeps any real character,
+// and there is no property of the character itself that marks it as ornament.
+// Position is the only signal available, which is why this works on runs at
+// the ends rather than on a character class.
+//
+// Three properties carry the safety argument, and none of them is optional:
+//
+//   - It runs AFTER foldHomoglyph, on Normalize's output. A homoglyph is not
+//     decoration: the player typed a character that RENDERS like a Latin one,
+//     and folding turns it into that Latin one. "ΔKΔŽΔ" has already become
+//     "akaza" by the time this sees it, so nothing is stripped. Strip first
+//     instead and it reduces to "K".
+//
+//     Be precise about how that fails, because it is not how it looks: inside
+//     TokenSetRatio the decoration score is taken as a MAXIMUM, so a strip
+//     applied to raw text does not break a match -- it scores near zero,
+//     loses the maximum, and contributes NOTHING while every other test still
+//     passes. The failure is silent uselessness, not a regression, which is
+//     the harder kind to notice. Only a pair whose sole route to a match runs
+//     through folding AND stripping at once can detect it; that is what
+//     TestDecorationStrippingSeesHomoglyphsAlreadyFolded is for.
+//
+//   - A string with NO ASCII core is returned untouched. "한씨아저씨" is a
+//     name, not a decorated name, and there is nothing to strip it to.
+//     Returning "" would be worse than useless: TokenSetRatio scores an empty
+//     normalization as 0 against everything including another empty one, so
+//     that member would stop matching even its own clean read.
+//
+//   - Only the ENDS are stripped, never the interior. A non-ASCII character
+//     between two Latin runs is far likelier to be a homoglyph the fold table
+//     does not yet carry than an ornament, and dropping it would silently
+//     join two halves of a name that were never adjacent.
+//
+// The cost is separation: two members differing only in decoration collapse
+// onto the same string. That is real and it is why ClosestPairScore is the
+// budget this is read against, exactly as confusableCost is. On capture 6 the
+// closest pair is unmoved at 60, against an AutoAccept of 92.
+func stripDecoration(s string) string {
+	r := []rune(s)
+	core := func(c rune) bool { return c < utf8.RuneSelf }
+
+	lo, hi := 0, len(r)
+	for lo < hi && !core(r[lo]) {
+		lo++
+	}
+	for hi > lo && !core(r[hi-1]) {
+		hi--
+	}
+	if lo >= hi {
+		return s
+	}
+	if lo == 0 && hi == len(r) {
+		return s
+	}
+	return string(r[lo:hi])
 }

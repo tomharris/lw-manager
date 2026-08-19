@@ -444,6 +444,26 @@ residual pool in production always holds members no row can claim. Any
 measurement that keys on the closed-set structure must be re-run with
 `-probe.assigndecoys` before it means anything about a real capture.
 
+### A probe's default is not necessarily production's configuration
+
+`make probe-assign` unions one page-segmentation mode by default; `IngestVS`
+reads every name crop at PSM 7 **and** PSM 13 and takes the better per member.
+So the bare invocation models a **weaker** pipeline than the one that ships,
+and the gap is not cosmetic. Measuring decoration stripping, the default
+reported `84/86 correct, wrong 1` — a misattribution, which is the one failure
+this project treats as unrecoverable — while `-probe.assignpsm=13` reported
+`86/86, wrong 0` on the same change, and `make gate-m4` agreed with the
+second. Acting on the default would have rejected a change that is strictly
+better.
+
+The general form: an instrument that models the pipeline has a configuration,
+and "the default" is a choice someone made for speed, not a claim that it
+matches production. Before believing a probe's headline — especially a
+`wrong` count, which is the number most likely to stop a change — check that
+what it is reading matches what ships. This is the same defect shape as a
+documented invocation that silently runs the wrong test; the output is honest
+about what it measured and says nothing about what you assumed it measured.
+
 ### A passing aggregate hides everything its tolerance is wider than
 
 `make gate-m4` counts a row correct when its parsed points land within 1% of
