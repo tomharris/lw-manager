@@ -91,6 +91,12 @@ type probeCapture struct {
 type probeFrame struct {
 	Seq    int    `yaml:"seq"`
 	SHA256 string `yaml:"sha256"`
+	// OffsetPx is how far the list scrolled between this frame and the
+	// previous one, as measured at capture time. Only the assignment probe
+	// reads it — the name probe deliberately scores every band of every frame
+	// with no deduplication at all — but it lives here because this is the
+	// struct that mirrors fixtures/m4gate/expected.yaml.
+	OffsetPx int `yaml:"offset_px"`
 }
 
 type probeRow struct {
@@ -150,12 +156,22 @@ func TestM4NameProbe(t *testing.T) {
 	// genuinely different names on this roster ever reaches AutoAccept, the
 	// matcher can attribute one member's row to another — the one failure
 	// here that a human cannot undo later.
-	names := make([]string, 0, len(exp.Rows))
-	for _, row := range exp.Rows {
-		names = append(names, row.Name)
+	//
+	// Built from `members` (probeMembers(exp)), not straight off exp.Rows, so
+	// this widens automatically the day a fixture carries a broader roster --
+	// see ClosestPairScore's doc comment for why the ranked rows are the wrong
+	// set in general. It does NOT widen anything today: probeMembers builds
+	// its list 1:1 from exp.Rows, because this probe has no roster to draw on
+	// beyond the hand-transcribed capture, so `names` below is still exactly
+	// the 86 ranked names. The real widening -- checking members who never
+	// scored -- only happens in production IngestVS, which has the full
+	// alliance roster to check against.
+	names := make([]string, 0, len(members))
+	for _, m := range members {
+		names = append(names, m.Name)
 	}
 	closest, a, b := roster.ClosestPairScore(names)
-	t.Logf("closest pair among the %d real names: %d (%q vs %q); AutoAccept is %d, margin %d",
+	t.Logf("closest pair among the %d ranked rows (probe has no broader roster to check): %d (%q vs %q); AutoAccept is %d, margin %d",
 		len(names), closest, a, b, roster.AutoAccept, roster.AutoAccept-closest)
 	if closest >= roster.AutoAccept {
 		t.Errorf("two distinct members score %d against each other — at or above AutoAccept (%d). "+
@@ -293,7 +309,7 @@ func scoreConfig(ctx context.Context, t *testing.T, engine *ocr.TesseractEngine,
 			rect := fieldRect(band, f.Img, vsNameXFrac0, vsNameXFrac1, vsNameYFrac0, vsNameYFrac1)
 			// The production read path, retry and all, so the probe cannot
 			// drift from what IngestVS does.
-			read, err := ing.readFieldWithRetry(ctx, f.Img, rect, primary, retry)
+			read, _, err := ing.readFieldWithRetry(ctx, f.Img, rect, primary, retry)
 			if err != nil {
 				t.Fatalf("reading frame %d band %d: %v", f.Seq, band.Y0, err)
 			}

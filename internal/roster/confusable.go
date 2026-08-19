@@ -109,6 +109,19 @@ func substitutionCost(a, b rune) int {
 // is that two real members score alike, and this measures that directly on a
 // real roster instead of arguing about it.
 //
+// It must be measured over the WHOLE member list a matcher will actually run
+// against, never over a ranking's rows: a weekly ranking lists only members
+// who scored, so a set built from it systematically excludes exactly the
+// members most likely to be an unnoticed near-neighbour of a ranked name — a
+// non-scoring member is invisible to a check built that way, and the pair
+// that breaks the matcher is disproportionately one of those. Production
+// IngestVS now calls this over the full alliance roster for exactly that
+// reason. `make probe-m4` still measures it over the 86 hand-transcribed
+// ranked names -- the probe has no broader roster to draw on -- and read a
+// comfortable margin throughout, while the shipped matcher misattributed a
+// row once a decoy one confusable substitution from a real name was added to
+// the member set the assignment probe checked against.
+//
 // A result at or above AutoAccept means the roster contains two members the
 // matcher can no longer tell apart, and the cost constant is too low — or those
 // two members are genuinely indistinguishable to OCR, which is worth knowing

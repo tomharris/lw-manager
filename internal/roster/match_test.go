@@ -101,3 +101,71 @@ func TestRankMatchesALetterSpacedName(t *testing.T) {
 		t.Errorf("got score %d, want >= %d", got[0].Score, AutoAccept)
 	}
 }
+
+// The case this was built for: rank 31 of capture 6. The stored name carries
+// Greek koppa decoration; OCR reads the koppas as ">>", which Normalize drops
+// as punctuation while keeping the stored koppas as letters. The two then
+// share almost nothing.
+func TestTokenSetRatioMatchesADecoratedNameAgainstAnUndecoratedRead(t *testing.T) {
+	got := TokenSetRatio("ϟϟ Leo ϟϟ", ">> Lea >>")
+	if got < ResidualFloor {
+		t.Errorf("TokenSetRatio = %d, want >= ResidualFloor (%d); without decoration stripping this scores 28", got, ResidualFloor)
+	}
+	if got >= AutoAccept {
+		t.Errorf("TokenSetRatio = %d, but 'Leo' vs 'Lea' is a real one-character disagreement and must not auto-accept", got)
+	}
+}
+
+// Purely additive, and that is the safety property worth asserting rather
+// than assuming: the decoration comparison is taken as a MAXIMUM alongside
+// the other two, so it can raise a score and can never lower one. A pair that
+// matched before still matches at least as well.
+func TestDecorationStrippingNeverLowersAScore(t *testing.T) {
+	pairs := [][2]string{
+		{"GersonGamer", "GersonGamer"},
+		{"MICHELL", "M I C H E L L"},
+		{"ALBAN80", "ALBANSO"},
+		{"한씨아저씨", "한씨아저씨"},
+		{"mq the beast", "MQ the Beast"},
+		{"ΔKΔŽΔ", "AKAZA"},
+	}
+	for _, p := range pairs {
+		if got := TokenSetRatio(p[0], p[1]); got < ratio(Normalize(p[0]), Normalize(p[1])) {
+			t.Errorf("TokenSetRatio(%q, %q) = %d, below the undecorated comparison", p[0], p[1], got)
+		}
+	}
+}
+
+// A member whose name is only decoration must not become matchable against
+// everything by collapsing to the empty string, which is what a naive strip
+// would do. Empty normalizations score 0 by construction; this asserts the
+// strip does not manufacture one.
+func TestTokenSetRatioDoesNotCollapseAScriptOnlyNameToEmpty(t *testing.T) {
+	if got := TokenSetRatio("한씨아저씨", "한씨아저씨"); got != 100 {
+		t.Errorf("a script-only name no longer matches itself: %d", got)
+	}
+	if got := TokenSetRatio("한씨아저씨", "Innovo"); got != 0 {
+		t.Errorf("a script-only name matched an unrelated Latin name at %d", got)
+	}
+}
+
+// Pins the ORDERING inside TokenSetRatio, which the direct stripDecoration
+// tests cannot: they call it on Normalize's output by construction, so they
+// are true whatever the scoring path does.
+//
+// The ordering needs its own guard precisely because the decoration score is
+// taken as a maximum. A strip applied to raw text instead of normalized text
+// does not break a match loudly -- it reduces "ϟϟ ΔKΔŽΔ ϟϟ" to "K", scores
+// near zero, loses the maximum, and contributes NOTHING while every existing
+// test still passes. Silent uselessness is the failure mode here, not a
+// regression, and only a pair whose sole route to a match runs through both
+// mechanisms at once can detect it.
+//
+// The name is synthetic -- capture 6 has decorated names and homoglyph names
+// but none that is both. It is a regression test for an ordering constraint,
+// not a claim about the roster.
+func TestDecorationStrippingSeesHomoglyphsAlreadyFolded(t *testing.T) {
+	if got := TokenSetRatio("ϟϟ ΔKΔŽΔ ϟϟ", "AKAZA"); got != 100 {
+		t.Errorf("TokenSetRatio = %d, want 100; the koppas must strip and the deltas must fold, which only happens if stripping runs on normalized text", got)
+	}
+}

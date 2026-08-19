@@ -78,3 +78,56 @@ func TestNormalizeKeepsDistinctNamesDistinct(t *testing.T) {
 		t.Error("normalization must not collapse genuinely different names")
 	}
 }
+
+// stripDecoration exists for one observed shape: a name whose Latin core is
+// wrapped in characters from another script that OCR cannot read back. These
+// cases are drawn from capture 6's roster, not invented.
+func TestStripDecorationKeepsTheLatinCore(t *testing.T) {
+	cases := []struct{ in, want string }{
+		// U+03DF GREEK SMALL LETTER KOPPA. Unicode says Ll, a letter, which
+		// is exactly why Normalize keeps it and why this function is needed.
+		{"ϟϟleoϟϟ", "leo"},
+		// Arabic-Indic digits, Unicode Nd. Same story from the digit side.
+		{"٣١٢ali٣١٢", "ali"},
+		{"danny狂", "danny"},
+		{"zap" + "ꙅઉ", "zap"},
+		// Interior decoration is NOT stripped: only leading and trailing runs
+		// are. A character between two Latin runs is far more likely to be a
+		// homoglyph the fold missed than an ornament, and dropping it would
+		// silently join two halves of a name that were never adjacent.
+		{"ab狂cd", "ab狂cd"},
+		// Already clean: unchanged, and cheap.
+		{"gersongamer", "gersongamer"},
+	}
+	for _, c := range cases {
+		if got := stripDecoration(c.in); got != c.want {
+			t.Errorf("stripDecoration(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// The guard that makes the whole thing safe. A name with no Latin core at all
+// is returned untouched, because there is nothing to strip it TO -- stripping
+// would leave the empty string, and TokenSetRatio scores an empty
+// normalization as 0 against everything, so this member would stop matching
+// its own clean read.
+func TestStripDecorationLeavesAScriptOnlyNameAlone(t *testing.T) {
+	for _, in := range []string{"한씨아저씨", "狂", "٣١٢"} {
+		if got := stripDecoration(in); got != in {
+			t.Errorf("stripDecoration(%q) = %q, want it untouched", in, got)
+		}
+	}
+}
+
+// Ordering is the load-bearing detail. A homoglyph is not decoration: the
+// player typed a character that RENDERS like a Latin one, and foldHomoglyph
+// turns it into that Latin one. Because stripping runs on Normalize's output,
+// ΔKΔŽΔ has already become "akaza" -- all ASCII -- and nothing is stripped.
+// Strip before folding instead and this name reduces to "K", which is both a
+// destroyed match and a one-character string that would score alarmingly
+// against short names.
+func TestDecorationStrippingRunsAfterHomoglyphFolding(t *testing.T) {
+	if got := stripDecoration(Normalize("ΔKΔŽΔ")); got != "akaza" {
+		t.Errorf("ΔKΔŽΔ normalized+stripped = %q, want %q", got, "akaza")
+	}
+}

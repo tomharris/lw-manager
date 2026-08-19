@@ -1,5 +1,9 @@
 # M4 gate: the name-matching gap
 
+**Superseded** by `2026-08-17-m4-closed-set-matching-design.md` for everything
+under "What is left". Its account of how the name field reached 71/86 stands,
+and so does its lesson about two aggregates read as one causal claim.
+
 **Status:** open. M4's collection tier works end to end; its gate does not pass.
 **Measured:** 2026-08-17, against capture 6 (game version 1.0.358, period 2026-W34).
 

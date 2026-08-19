@@ -636,8 +636,14 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 			// position"). Recon's roster notes (§1) record no such
 			// duplicate: the logged-in account's row is unremarkable except
 			// for lacking a Manage button. A pinned row is a property of the
-			// VS ranking screen, not of alliance_members, so the identity
-			// cross-check belongs to the VS ingest path, not here.
+			// VS ranking screen, not of alliance_members, so the duplicate
+			// it can produce is something only the VS ingest path needs to
+			// detect — and by now it does, not as a separate cross-check but
+			// as part of attribution itself: roster.Assign flags a row that
+			// scores AutoAccept-or-better against an already-claimed member
+			// as PhaseDuplicate before its residual phase ever runs (see
+			// vs.go and assign.go). This route has no such phenomenon to
+			// guard against in the first place.
 			if gt.lastRowY >= 0 && rowY <= gt.lastRowY+memberRowPitch/2 {
 				continue // geometric duplicate; OCR never runs on it
 			}
@@ -1034,12 +1040,24 @@ type readPlan struct {
 //     known roster behind it and a bad read simply fails to match; a number
 //     has no such guard, and a retry could manufacture a plausible value out
 //     of a crop that caught neighbouring content.
-func (i *Ingester) readFieldWithRetry(ctx context.Context, img image.Image, rect transport.Rect, primary, retry readPlan) (ocr.Result, error) {
+//
+// The bool return reports whether the retry path was taken at all -- not
+// whether it produced anything usable, only whether the primary came back
+// empty and the retry ran. The points field needs this: a retried read can
+// carry a confidently-reported number while being the least trustworthy read
+// in the pipeline (it only runs because the trustworthy mode returned
+// nothing), so a caller that seeds a downstream check from "high confidence"
+// alone needs a way to exclude a retried read from that regardless of what
+// confidence it claims. The name field's caller ignores this return; nothing
+// about a name read needs it, since a bad name read simply fails to match a
+// known roster on its own.
+func (i *Ingester) readFieldWithRetry(ctx context.Context, img image.Image, rect transport.Rect, primary, retry readPlan) (ocr.Result, bool, error) {
 	res, err := i.readField(ctx, img, rect, primary.spec, primary.opts)
 	if err != nil || res.Text != "" {
-		return res, err
+		return res, false, err
 	}
-	return i.readField(ctx, img, rect, retry.spec, retry.opts)
+	res, err = i.readField(ctx, img, rect, retry.spec, retry.opts)
+	return res, true, err
 }
 
 // visionPreprocess is vision.Preprocess behind a package-level variable

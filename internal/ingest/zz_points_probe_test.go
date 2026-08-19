@@ -17,6 +17,7 @@
 //	make probe-points PROBE_ARGS='-points.detail'        # per-row, to localize
 //	make probe-points PROBE_ARGS='-points.sweep'         # the full options sweep
 //	make probe-points PROBE_ARGS='-points.charset=0123456789,'   # re-measure the no-charset decision
+//	make probe-points PROBE_ARGS='-points.fbsweep'       # sweep the RETRY's preprocessing, primary fixed
 //
 // It is a measuring instrument, not a gate: it asserts nothing and always
 // passes. Reading its output is the point.
@@ -70,9 +71,13 @@ var (
 	pointsPSMs = flag.String("points.psm", "",
 		"comma-separated page-segmentation modes to compare, e.g. '7,13'; empty uses the engine default")
 	pointsCharset = flag.String("points.charset", "",
-		"set vsPointsSpec.Charset, e.g. '0123456789,'; empty ships as-is. The charset was removed deliberately -- see vsPointsSpec's comment -- and this re-measures that decision rather than re-reasoning it")
+		"set vsPointsSpec.Charset, e.g. '0123456789,'; empty ships as-is. The charset was removed deliberately -- see vsPointsSpec's comment -- and this re-measures that decision rather than re-reasoning it. Applied to the PRIMARY spec only, matching production (the retry carries no charset) -- so a band the charset-constrained primary leaves empty is then read by a charset-free retry, and this flag's result is partly confounded by that rather than a clean charset-alone comparison")
 	pointsDump = flag.String("points.dump", "",
 		"directory to write the crops of bands that did not read exactly: both the raw band and the preprocessed points crop, so the pixels can be looked at rather than reasoned about")
+	pointsFBSweep = flag.Bool("points.fbsweep", false,
+		"sweep the RETRY's preprocessing over the same grid while the primary stays fixed at the shipped setting -- vsPointsRetry inherited vsPointsOptions, and inheriting is an assumption, not a result; mirrors the name probe's -probe.fbsweep")
+	pointsFallbackPSM = flag.Int("points.psmfallback", ocr.PSMRawLine,
+		"page-segmentation mode the retry runs at when the primary read is empty; matches vsPointsRetry's shipped PSM 13 by default")
 )
 
 // pointsResult is one configuration's score.
@@ -91,6 +96,15 @@ type pointsResult struct {
 	Unparseable int // read did not clear pointsRe
 	Empty       int // OCR returned nothing
 	LowConf     int // parsed, but below MinConf: would queue rather than write
+
+	// Retried counts bands where the primary read came back empty and
+	// readFieldWithRetry actually ran the retry -- the measured version of
+	// what vsPointsRetry's doc comment otherwise only infers from a
+	// before/after aggregate. "Two aggregates side by side are not a causal
+	// claim" applies here as much as it did to the name field's language
+	// packs: this is the number that either backs the doc comment's "how few
+	// bands the retry ever touches" or contradicts it.
+	Retried int
 
 	// Best is each expected row's best showing across every band, keyed by
 	// rank, so a row that read correctly once is never reported by one of its
@@ -156,23 +170,62 @@ func TestM4PointsProbe(t *testing.T) {
 			if *pointsCharset != "" {
 				spec.Charset = *pointsCharset
 			}
-			label := fmt.Sprintf("psm%d %s", psm, cfg.label)
-			res := scorePointsConfig(ctx, t, engine, frames, exp, spec, cfg.opts, label)
+			for _, fb := range pointsFallbackConfigs() {
+				// The primary plan is always the shipped setting (psm sweep
+				// aside); the retry plan is what -points.fbsweep varies. A
+				// bare `make probe-points` measures exactly what IngestVS
+				// does: readFieldWithRetry with vsPointsRetry, firing only on
+				// an empty primary read, so sweeping fb.opts here can only
+				// ever move bands that were empty at the primary -- the same
+				// property that made the name probe's -probe.fbsweep a valid
+				// apples-to-apples comparison rather than a sweep over every
+				// band regardless of whether the retry ever touches it.
+				//
+				// Derived from vsPointsRetry.spec rather than rebuilt field by
+				// field, so a spec field added to the shipped retry later (a
+				// charset, a language) is measured automatically instead of
+				// silently going unmeasured here -- the same probe-drifts-
+				// from-production hazard this file's header warns about.
+				retry := vsPointsRetry
+				retry.opts = fb.opts
+				retry.spec.PSM = *pointsFallbackPSM
+				label := fmt.Sprintf("psm%d %s", psm, cfg.label)
+				if *pointsFBSweep {
+					// Composed onto the psm/primary label rather than
+					// replacing it: combined with -points.sweep or
+					// -points.psm, a replaced label would make rows that
+					// differ in PSM or primary shape indistinguishable.
+					label = fmt.Sprintf("%s fb:%-13s", label, fb.label)
+				}
+				res := scorePointsConfig(ctx, t, engine, frames, exp, spec, cfg.opts, retry, label)
 
-			t.Logf("%-22s  %2d/%d rows exact  %3d/%d bands exact  %3d within 1%%  %3d unparseable  %3d empty  %3d low-conf",
-				res.Label, res.rowsExact(), scored, res.Exact, res.TotalBand,
-				res.Within1Pct, res.Unparseable, res.Empty, res.LowConf)
+				t.Logf("%-22s  %2d/%d rows exact  %3d/%d bands exact  %3d within 1%%  %3d unparseable  %3d empty  %3d low-conf  %3d retried",
+					res.Label, res.rowsExact(), scored, res.Exact, res.TotalBand,
+					res.Within1Pct, res.Unparseable, res.Empty, res.LowConf, res.Retried)
 
-			if *pointsDetail {
-				// Printed before the per-row list because it is the number a
-				// gate result is read against; the list explains it.
-				t.Logf("%-22s  %2d/%d rows had ONE band yielding both an accepted name and exact points "+
-					"— the condition IngestVS actually writes on",
-					res.Label, len(res.Joint), scored)
-				printPointsDetail(t, exp, res)
+				if *pointsDetail {
+					// Printed before the per-row list because it is the number a
+					// gate result is read against; the list explains it.
+					t.Logf("%-22s  %2d/%d rows had ONE band yielding both an accepted name and exact points "+
+						"— the condition IngestVS actually writes on",
+						res.Label, len(res.Joint), scored)
+					printPointsDetail(t, exp, res)
+				}
 			}
 		}
 	}
+}
+
+// pointsFallbackConfigs is what the retry preprocesses with: the shipped
+// vsPointsRetry options (which today equal vsPointsOptions) unless
+// -points.fbsweep asks for the whole grid. Mirrors the name probe's
+// fallbackConfigs -- inheriting the primary's options was an assumption there
+// too, and sweeping it separately was worth two members.
+func pointsFallbackConfigs() []probeConfig {
+	if !*pointsFBSweep {
+		return []probeConfig{{label: "shipped-retry", opts: vsPointsRetry.opts}}
+	}
+	return probeShapeGrid()
 }
 
 // pointsConfigs is the shipped options unless -points.sweep asks for the full
@@ -197,7 +250,7 @@ func pointsPSMList(t *testing.T, def int) []int {
 
 // scorePointsConfig reads the points field of every band of every frame under
 // one configuration and scores the parsed values against the hand-checked ones.
-func scorePointsConfig(ctx context.Context, t *testing.T, engine *ocr.TesseractEngine, frames []probeLoadedFrame, exp probeCapture, spec ocr.Spec, opts vision.Options, label string) pointsResult {
+func scorePointsConfig(ctx context.Context, t *testing.T, engine *ocr.TesseractEngine, frames []probeLoadedFrame, exp probeCapture, spec ocr.Spec, opts vision.Options, retry readPlan, label string) pointsResult {
 	t.Helper()
 
 	res := pointsResult{Label: label, Best: map[int]pointsRead{}, Joint: map[int]bool{}, want: wantByRank(exp)}
@@ -227,13 +280,17 @@ func scorePointsConfig(ctx context.Context, t *testing.T, engine *ocr.TesseractE
 			res.TotalBand++
 
 			rect := fieldRect(band, f.Img, vsPointsXFrac0, vsPointsXFrac1, vsPointsYFrac0, vsPointsYFrac1)
-			// The production read path. Note there is no retry: the points
-			// field deliberately has none (see vsNameRetry's comment for the
-			// asymmetry), and giving the probe one would measure a pipeline
-			// that does not exist.
-			read, err := ing.readField(ctx, f.Img, rect, spec, opts)
+			// The production read path, retry and all, so the probe cannot
+			// drift from what IngestVS does -- the same discipline the name
+			// probe follows. readFieldWithRetry fires the retry only on an
+			// empty primary read, so a band that already reads at the
+			// primary is untouched by anything -points.fbsweep varies.
+			read, retried, err := ing.readFieldWithRetry(ctx, f.Img, rect, readPlan{spec: spec, opts: opts}, retry)
 			if err != nil {
 				t.Fatalf("reading frame %d band %d: %v", f.Seq, band.Y0, err)
+			}
+			if retried {
+				res.Retried++
 			}
 
 			cur := pointsRead{
@@ -405,7 +462,7 @@ func bandName(ctx context.Context, t *testing.T, ing *Ingester, f probeLoadedFra
 	t.Helper()
 
 	rect := fieldRect(band, f.Img, vsNameXFrac0, vsNameXFrac1, vsNameYFrac0, vsNameYFrac1)
-	read, err := ing.readFieldWithRetry(ctx, f.Img, rect, vsName, vsNameRetry)
+	read, _, err := ing.readFieldWithRetry(ctx, f.Img, rect, vsName, vsNameRetry)
 	if err != nil {
 		t.Fatalf("reading name of frame %d band %d: %v", f.Seq, band.Y0, err)
 	}

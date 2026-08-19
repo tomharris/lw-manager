@@ -147,7 +147,10 @@ func TestIngestVSPassesEachFieldsMeasuredOptions(t *testing.T) {
 		t.Fatalf("IngestVS: %v", err)
 	}
 
-	want := []vision.Options{vsNameOptions, vsPointsOptions}
+	// Both vsNameModes entries share vsNameOptions (see vsNameModes's own
+	// comment), so the name field now preprocesses twice with the same
+	// Options before the points field's single call.
+	want := []vision.Options{vsNameOptions, vsNameOptions, vsPointsOptions}
 	if len(*calls) != len(want) {
 		t.Fatalf("visionPreprocess called %d times, want %d (calls: %+v)", len(*calls), len(want), *calls)
 	}

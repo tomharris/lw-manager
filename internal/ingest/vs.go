@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"image"
 	"log/slog"
+	"math"
+	"sort"
 	"time"
 
 	"github.com/tomharris/lw-manager/internal/db"
@@ -23,7 +25,9 @@ import (
 // row. If the capture-side region ever moves, this constant must move with
 // it. The region already excludes the pinned self row (it sits outside the
 // scroll region entirely, per vs_capture.go's own comment), which is the
-// belt to the identity cross-check's braces below.
+// belt to roster.Assign's PhaseDuplicate braces: this region keeps the
+// pinned copy out of the scroll capture in the first place, and Assign
+// catches the case where a duplicate reaches attribution anyway.
 var vsListRegion = transport.Rect{X1: 0.03, Y1: 0.185, X2: 0.97, Y2: 0.80}
 
 // vsRowPitch is the ranking row height measured on the handset (see
@@ -131,6 +135,50 @@ const (
 //	eng+kor+chi_sim+jpn    73/86            (120/142)  <- chosen
 //	all seven installed    70/86            (116/142)
 //
+// Re-measured against the SHIPPED pipeline after closed-set assignment,
+// the residual phase and the PSM 7+13 union landed, because the table above
+// was taken under per-row AutoAccept matching and that is not the population
+// this constant now feeds. The two rows the packs are always proposed for are
+// ranks 31 ("ϟϟ Leo ϟϟ") and 39 ("٣١٢ A l i ٣١٢"), the gate's only two
+// name-stage misses:
+//
+//	eng+kor+chi_sim+jpn        73/86 distinct  (120/142)  <- shipped
+//	eng+kor+chi_sim+jpn+grc    73/86           (120/142)
+//	eng+kor+chi_sim+jpn+ara    73/86           (120/142)
+//	eng+kor+chi_sim+jpn+ell    72/86           (119/142)
+//
+// and on the closed-set metric `make probe-assign` reports correct 71/86,
+// wrong 0, unassigned 15 both with the shipped list and with +grc+ara -- not
+// one row moves.
+//
+// Ranks 31 and 39 are byte-identical under every one of those: rank 31 still
+// reads ">> Lea >>" at score 28, rank 39 still loses its own band to
+// "HAL 9000". So the packs are INERT ON THE ROWS THEY ARE FOR, which is a
+// stronger statement than the cost accounting above and is the one to quote.
+//
+// grc (Ancient Greek) is the interesting negative and the reason this was
+// re-run at all. Rank 31's decoration is U+03DF GREEK SMALL LETTER KOPPA, an
+// archaic letter dropped from the classical alphabet and surviving mainly as
+// the numeral 90 -- so ell, trained on modern Greek, cannot contain it, and
+// the original table's rejection of ell was not evidence about Greek at all.
+// grc can contain it and still changes nothing: at this resolution the glyph
+// genuinely looks like ">>", and a decoration carries no word context for a
+// language model to bring to bear. That is the same reason ara is inert on
+// rank 39 -- Arabic-Indic *digits* used as ornament are not words.
+//
+// Guard against believing that uniformity: `-probe.langs=grc` alone scores
+// 0/86 on 0/142 bands, as does ara alone. The packs load and dominate when
+// they are the only list; they simply have nothing to say about these rows.
+//
+// The conclusion is that no language pack fixes these two names, and the
+// place to look instead is the MATCHER, not OCR. That is what
+// roster.stripDecoration now does: it drops leading and trailing non-ASCII
+// runs from an already-normalized string when a Latin core survives, so
+// "ϟϟ Leo ϟϟ" against ">> Lea >>" becomes "leo" against "lea". Both of these
+// rows resolve now, and the gate reads 85/86 with every row matched. See that
+// function for why it must run after homoglyph folding and why a name with no
+// Latin core is left alone.
+//
 // The whole gain is CJK. Three of the packs this roster's scripts appear to
 // call for actively cost members, and rus is the clearest: Cyrillic's capitals
 // are drawn like Latin's, so the pack adds hypotheses nothing in the image can
@@ -228,11 +276,16 @@ var (
 // later capture disagrees, re-run `make probe-m4 PROBE_ARGS=-probe.fbsweep`
 // and believe the newer measurement.
 //
-// The points field has no retry at all, and the asymmetry is the point: a name
-// that reads badly fails to match a known roster and goes to review, while a
-// number has no such guard — a raw-line retry on a crop that caught
-// neighbouring content could manufacture a plausible value, which is exactly
-// the failure the vsPointsSpec charset comment above describes.
+// The points field's retry is vsPointsRetry, below. The asymmetry between the
+// two fields used to be absolute -- a name that reads badly fails to match a
+// known roster and goes to review, while a number has no such guard, and a
+// raw-line retry on a crop that caught neighbouring content could manufacture
+// a plausible value, which is exactly the failure the vsPointsSpec charset
+// comment above describes. It is now conditional rather than absolute: the
+// points bounds in points.go answer that objection for a retried read the
+// same way a roster answers it for a retried name, provided a retried value
+// is never allowed to seed the bound it is then judged against -- see
+// vsRow.PointsFromRetry.
 var (
 	vsName      = readPlan{spec: vsNameSpec, opts: vsNameOptions}
 	vsNameRetry = readPlan{
@@ -240,6 +293,140 @@ var (
 		opts: vision.Options{SkipEqualize: true, SkipThreshold: true, UpscaleFactor: 4},
 	}
 )
+
+// vsNameModes are the segmentation modes every name crop is read at. Each
+// produces its own read; the per-member best score across all of them is what
+// the assignment sees.
+//
+// PSM 13 alone is much worse than PSM 7 alone -- 55/86 members against 73/86
+// -- but their miss sets are DISJOINT in four places on capture 6, so the
+// union beats either. Worth +6 at the per-row baseline and +1 once closed-set
+// assignment is in, which makes this insurance rather than accuracy: it earns
+// its keep on a capture where the assignment has less structure to work with,
+// which is exactly the case a single fixture cannot measure.
+//
+// This is not the thing CLAUDE.md warns against when it says gating a retry on
+// a low match score "would put the matcher upstream of OCR". Both reads happen
+// unconditionally, so nothing about the roster decides what OCR is asked to
+// do; taking the better of two independent readings of the same pixels is the
+// move the probes already make across overlapping frames.
+//
+// Cost is one extra tesseract invocation per row, roughly 27s to 53s over 86
+// rows, in a batch that runs once a day.
+var vsNameModes = []readPlan{
+	vsName,
+	{spec: ocr.Spec{MinConf: vsNameSpec.MinConf, PSM: ocr.PSMRawLine, Languages: vsNameLanguages}, opts: vsNameOptions},
+}
+
+// vsPointsRetry is the PSM-13 read plan used to re-read a points crop the
+// primary PSM (7) failed on. Two different call sites trigger it, for two
+// different, independently measured failure shapes:
+//
+//   - readVSRows (pass 1, via readFieldWithRetry) fires it the moment the
+//     primary returns the EMPTY string -- tesseract's layout analysis
+//     refusing the crop outright.
+//   - vsRun.attributeRow (pass 2, via retryPointsLate below) fires it when
+//     the primary returned something NON-EMPTY that still turned out to be
+//     unusable -- it failed to parse (even after repairPoints), or it
+//     parsed but landed outside the window its neighbours define. This
+//     second trigger cannot live in pass 1: the window is only known once
+//     every row's points has been read and the seeding pass has run, which
+//     is after readVSRows has already returned.
+//
+// This comment used to claim the retry's three recovered rows on capture 6
+// (ranks 20, 77, 79) "read empty at the primary and now read close but not
+// exact at the retry." Measured
+// (.superpowers/sdd/2026-08-17-m4-closed-set-matching/investigation-retry-confidence.md),
+// that was true only for rank 20. Ranks 77 and 79 return NON-EMPTY, corrupted
+// text ("¢,609,299", "e,2¢8,001") with real, if low, confidences of their
+// own -- readFieldWithRetry's empty-only guard never invoked this retry for
+// them at all, in either direction: not because the guard was wrong (a
+// non-empty, if wrong, primary read is still trusted over an unneeded retry,
+// by design), but because nothing existed to catch the case where trusting
+// it was the mistake. retryPointsLate is that second catch.
+//
+// The asymmetry with the name field was deliberate and is now conditional
+// rather than absolute. A name has a known roster behind it, so a bad read
+// simply fails to match; a number has no such guard, and a raw-line retry
+// could manufacture a plausible value from a crop that caught neighbouring
+// content. That objection is answered by the bounds in points.go and not
+// otherwise: a retried value is written only when it parses AND lands inside
+// the window its neighbours define, which a fabricated number has no reason
+// to do -- and never seeds a window itself, regardless of confidence, so a
+// fabrication can never define the range its neighbours are judged against
+// (see vsRow.PointsFromRetry and the seeding loop in IngestVS).
+//
+// It keeps vsPointsOptions rather than borrowing vsNameRetry's grayscale-plus-
+// invert at upscale 4, and this time inheriting is a measured result rather
+// than an assumption. `make probe-points PROBE_ARGS='-points.fbsweep'` sweeps
+// the retry's preprocessing over the same eight-shape grid while the primary
+// stays fixed at the shipped setting, over all 142 row bands of capture 6:
+//
+//	gray      x2/x3/x4   83/86 rows exact   (135/142 bands, 0 empty)  <- chosen (== vsPointsOptions)
+//	gray+inv  x2/x3/x4   83/86              (135/142,       0 empty)  <- tied
+//	full      x2/x3/x4   82/86              (133/142,       0 empty)
+//	gray+eq   x2/x3/x4   82/86              (133/142,       0 empty)
+//	gray+thr  x2/x3/x4   82/86              (133/142,       0 empty)
+//	(the remaining two-flag combinations tie with the single-flag ones above)
+//
+// Two things fall out of this, and neither is what the name-side sweep found:
+//
+//   - Upscale does not move the result at all -- x2, x3 and x4 score
+//     identically within every shape. That is not the broken-instrument
+//     uniformity CLAUDE.md warns about (which was identical scores ACROSS
+//     shapes that differ enormously elsewhere); shapes here still separate
+//     82 from 83. It is explained by how few bands the retry ever touches --
+//     measured, not inferred from the before/after aggregate above: `make
+//     probe-points` reports a Retried count alongside the rest of the row,
+//     and it reads 4 of 142 bands on this capture. That is far less surface
+//     for an upscale factor to move than the name field's retry, which was
+//     fitted against fifteen empty bands.
+//   - Grayscale-alone beats grayscale-plus-invert's name-side win by exactly
+//     tying it rather than losing to it -- inverting costs nothing here but
+//     also buys nothing, unlike the name retry where it was worth one
+//     member. vsPointsOptions already IS "gray x3" in this grid, so the
+//     inheritance this comment used to only assume is now a checked result:
+//     the primary's options happen to be optimal for the retry too, on this
+//     capture.
+//
+// Three points failures on the M4 gate's capture 6 trace back to this retry
+// or its neighbouring mechanisms, and it is worth naming which one resolves
+// each, because none of the three take the same path:
+//
+//   - Rank 20 ("12,090,000 —") is genuinely empty at the primary, so PASS 1's
+//     empty-primary trigger fires directly. trimPointsArtifact (points.go)
+//     then strips the trailing " —" before ParsePoints ever runs, because
+//     every digit the retry read was already right.
+//   - Rank 77 ("¢,609,299") is non-empty at the primary, so pass 1 never
+//     retries it -- but the corruption is exactly one damaged position, and
+//     the ordering bounds admit exactly one digit there, so repairPoints
+//     (points.go) reconstructs it from the PRIMARY read alone, with no retry
+//     involved at all. Note that reconstructing it is NOT the same as
+//     resolving it: RULING E then declines to promote a repaired value on
+//     the strength of the window it was solved against, and the primary's
+//     own confidence does not reach factConfidenceGate, so this row QUEUES.
+//     It is on the gate's miss list, and it is the reason "three failures
+//     trace back to this retry" is a statement about mechanism, not about
+//     three recoveries.
+//   - Rank 79 ("e,2¢8,001") is also non-empty at the primary and has TWO
+//     damaged positions, which repairPoints refuses by construction -- two
+//     unknowns is a guess with extra steps, whatever the bounds say. This is
+//     the row retryPointsLate exists for: the primary read is unusable, pass
+//     1 never retried it (not empty), and repairPoints declines to guess, so
+//     the late, pass-2 retry re-reads the crop at PSM 13 and recovers
+//     "2,328,001" cleanly -- accepted because it both parses and lands inside
+//     the window rank 79's real neighbours define, exactly as any other
+//     retried points value must.
+//
+// Loosening pointsRe to admit any of these three directly out of a raw read
+// would be the same mistake as lowering roster.AutoAccept -- every recovery
+// here goes through a structural check (trim, repair-within-bounds, or
+// retry-within-bounds) that a fabricated value has no reason to satisfy,
+// never through relaxing what counts as a parse.
+var vsPointsRetry = readPlan{
+	spec: ocr.Spec{MinConf: vsPointsSpec.MinConf, PSM: ocr.PSMRawLine},
+	opts: vsPointsOptions,
+}
 
 // zeroInferenceConfidence is the confidence an inferred (not read) zero
 // carries. The weekly ranking lists only members with a nonzero score, so a
@@ -254,6 +441,74 @@ var (
 // above) 1.0.
 const zeroInferenceConfidence = 0.90
 
+// residualMatchConfidence is the name-match confidence a phase-2 assignment
+// carries.
+//
+// It exists because score/100 is the wrong confidence model for an
+// assignment, and using it would silently erase the whole gain: a row
+// resolved at string-score 60 blends to 0.60, falls under
+// factConfidenceGate (0.80), and is queued for review despite having been
+// resolved. Lowering that gate is not the fix -- it protects every other row.
+//
+// The claim a phase-2 assignment makes is not "these two strings are 60%
+// similar". It is "this member is the unambiguous winner among the
+// unclaimed, by a margin of at least ResidualMargin, in a closed set where
+// every confident row is already pinned." That claim's strength does not vary
+// with the string score, so neither does this number.
+//
+// 0.85 sits above factConfidenceGate and visibly below a clean match, so the
+// distinction survives into the fact and a human triaging later can see how a
+// row was resolved. UpsertFact only overwrites on strictly higher confidence,
+// so a later clean read of the same member supersedes a residual match by
+// itself -- which is the correct direction.
+//
+// Fitted, like confusableCost. Re-measure with `make probe-assign`; do not
+// re-reason.
+const residualMatchConfidence = 0.85
+
+// There used to be a pointsOrderConfidenceFloor here: a 0.40 OCR-confidence
+// gate a row's own points read had to clear, in addition to a CLOSED window
+// on both sides, before promotion to factConfidenceGate. It was fitted
+// against two POSITIVE examples only -- correct reads at 0.52 (rank 38) and
+// 0.70 (rank 83) -- and nobody had checked what it excluded.
+//
+// Measured directly against capture 6
+// (.superpowers/sdd/2026-08-17-m4-closed-set-matching/investigation-confidence-floor.md,
+// and re-measured against the SHIPPED pipeline afterwards -- the two differ,
+// see below). The population it gated is a points read that parses, sits in
+// a window closed on both sides, and is narrow enough to promote. On the
+// shipped pipeline that population is seven rows: ranks 7, 10, 20, 38, 76,
+// 79 and 83. Two of them sit below 0.40 -- rank 10 (16,958,260 at 0.0853)
+// and rank 79 (2,328,001 at 0.3383) -- and both are correct, so the floor's
+// measured cost is two correct, structurally-corroborated rows sent to
+// review. Removed.
+//
+// The original investigation recorded n=1 below the floor and zero wrong
+// rows anywhere in the population. Both figures moved once the rest of the
+// milestone landed, and BOTH corrections matter more than the conclusion
+// they leave standing:
+//
+//   - n is 2, not 1. Rank 79 joined the population because RULING B's late
+//     retry recovered it; the investigation predates that. The thinness the
+//     original comment warned about was real, and the thing that thickened
+//     it was a change elsewhere in the pipeline, which is the general
+//     hazard: a measurement of a population is invalidated by anything that
+//     changes who is IN the population, not just by a change to the rule.
+//   - The population is NOT clean. Rank 7 is wrong -- 18,356,304 against a
+//     hand-checked 18,356,804 -- at confidence 0.6380. So "zero rows in that
+//     population are wrong" is false on the shipped pipeline, and the floor
+//     would not have caught it either way: 0.6380 is well above 0.40, and
+//     above both correct rows below it. See attributeRow's promotion comment
+//     for the full account; the point here is only that the floor's removal
+//     does not rest on the population being clean, because it isn't.
+//
+// So the argument that survives is narrower than the original: the floor
+// screened nothing it should have screened, and cost two rows it should not
+// have. If a later capture shows a wrong value that parses, lands inside a
+// narrow closed window, AND sits below a candidate floor, the floor's
+// argument comes back -- and it must be refit against the set it EXCLUDES
+// this time, not (as happened the first time) the set it admits.
+
 // VSResult summarizes one IngestVS run.
 //
 // Unidentified counts rows whose name matched no member confidently enough to
@@ -264,7 +519,13 @@ const zeroInferenceConfidence = 0.90
 // that needs its review queue cleared.
 type VSResult struct {
 	Matched, Queued, Zeroed, Unidentified int
-	Status                                string
+	// Duplicates counts rows dropped because the member they read was
+	// already assigned to another row -- the pinned self row, structurally.
+	// Reported rather than silent because "the capture contained a duplicate"
+	// and "the capture contained a row nobody could attribute" are different
+	// outcomes, and only one of them is a problem.
+	Duplicates int
+	Status     string
 }
 
 // vsRun carries the state one IngestVS call accumulates across frames.
@@ -273,6 +534,16 @@ type vsRun struct {
 	observedAt time.Time
 	periodKey  string
 	res        VSResult
+	// lateRetryFrame/lateRetryImg memoize the single most recently decoded
+	// frame for retryPointsLate (Minor 6, fix round 1 findings). Rows are
+	// attributed in row order, which is screenshot order (readVSRows walks
+	// frame by frame), so a broadly degraded capture can call
+	// retryPointsLate several times in a row for the SAME screenshot -- one
+	// entry is enough, because a cache miss only ever happens on a genuine
+	// frame change, never because an unrelated row's retry evicted the one
+	// that mattered.
+	lateRetryFrame int64
+	lateRetryImg   image.Image
 }
 
 // IngestVS turns one VS-ranking capture's frames into vs_points facts.
@@ -312,6 +583,31 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 	}
 	members := toRosterMembers(dbMembers, aliases)
 
+	// The safety half of confusable-aware scoring, checked against the roster
+	// this run will actually match against. Two members scoring at or above
+	// AutoAccept are a pair the matcher cannot tell apart, which no threshold
+	// fixes and only an alias can -- and attributing one member's score to the
+	// other is the single failure here a review queue cannot undo.
+	//
+	// Over the WHOLE member list, not the ranked rows. `make probe-m4`
+	// measured it over the 86 transcribed names, which is the set least
+	// likely to contain the problem: the ranking lists scorers only, so the
+	// near-neighbour that breaks a match is disproportionately a member who
+	// did not score and was therefore invisible to the check.
+	names := make([]string, 0, len(members))
+	for _, m := range members {
+		names = append(names, m.Name)
+	}
+	if closest, a, b := roster.ClosestPairScore(names); closest >= roster.AutoAccept {
+		// ClosestPairScore reports only the single highest-scoring pair, so
+		// this is the closest pair, not necessarily the only one at or above
+		// AutoAccept -- a third or fourth near-indistinguishable pair could
+		// exist below it and this warning would not say so.
+		slog.WarnContext(ctx, "ingest: two roster members are indistinguishable to the matcher (closest pair; others may exist below it)",
+			"capture_id", captureID, "score", closest, "auto_accept", roster.AutoAccept,
+			"member_a", a, "member_b", b)
+	}
+
 	// observedAt is the capture's own started_at, not wall-clock now — see
 	// IngestRoster's doc comment for why: a replayed ingest run must write
 	// the same facts it would have written on capture day.
@@ -323,67 +619,108 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 		res:        VSResult{Status: capture.Status},
 	}
 
-	// scored is the identity-dedupe set: which members already have a
-	// vs_points fact written (or attempted) from this capture. It is also
-	// the belt-and-braces cross-check's other half — see the disagreement
-	// check below.
-	scored := map[int64]bool{}
-	var matchedRowCount, totalParsed int
-	var lastFrameShotID int64
-	contentY, lastRowY := 0, -1
-	havePrev := false
+	rows, err := i.readVSRows(ctx, frames, members)
+	if err != nil {
+		return VSResult{}, err
+	}
+	totalParsed := len(rows)
+	lastFrameShotID := int64(0)
+	if len(frames) > 0 {
+		lastFrameShotID = frames[len(frames)-1].ScreenshotID
+	}
 
-	for _, frame := range frames {
-		img, err := i.loadFrame(ctx, frame.ScreenshotID)
-		if err != nil {
-			return VSResult{}, fmt.Errorf("ingest: loading screenshot %d: %w", frame.ScreenshotID, err)
-		}
-		lastFrameShotID = frame.ScreenshotID
+	assignments := roster.Assign(scoreMatrix(rows), roster.DefaultResidual)
 
-		if havePrev {
-			contentY += frame.OffsetPx
-		}
-		havePrev = true
-
-		bands, err := SegmentRows(img, vsListRegion, vsRowPitch)
-		if err != nil {
-			return VSResult{}, fmt.Errorf("ingest: segmenting screenshot %d: %w", frame.ScreenshotID, err)
-		}
-
-		regionTop := int(vsListRegion.Y1 * float64(img.Bounds().Dy()))
-		for _, band := range bands {
-			rowY := contentY + (band.Y0 - regionTop)
-			if lastRowY >= 0 && rowY <= lastRowY+vsRowPitch/2 {
-				continue // geometric duplicate; OCR never runs on it
-			}
-			lastRowY = rowY
-			totalParsed++
-
-			matched, err := run.processRow(ctx, i, img, band, frame.ScreenshotID, members, scored)
-			if err != nil {
-				return VSResult{}, err
-			}
-			if matched {
-				matchedRowCount++
-			} else {
-				run.res.Unidentified++
-			}
+	// assignedMember's keys are MEMBER indices -- roster.Assign's column
+	// space, the same indexing as `members` and every vsRow.Scores, not row
+	// position. It exists only for the zero-inference loop below: a member
+	// who already has a row, confident or residual, is not absent from the
+	// capture and must not be zeroed. Duplicate detection no longer needs it
+	// -- roster.Assign now reports a duplicate row directly via
+	// PhaseDuplicate, see below.
+	assignedMember := make(map[int]bool, len(assignments))
+	for _, a := range assignments {
+		if a.Member >= 0 {
+			assignedMember[a.Member] = true
 		}
 	}
 
-	// The identity cross-check the roster route deliberately omitted (see
-	// roster.go's dedupe-site comment, and CLAUDE.md: it exists to catch the
-	// pinned self row). Geometric dedupe only compares a row's position to
-	// the one immediately before it, so it cannot see the same member
-	// matched at two unrelated positions in the same capture.
-	// matchedRowCount counts every row whose name auto-accepted a match,
-	// including a repeat; len(scored) counts only the distinct members that
-	// made it past deduplication. A mismatch is not silently resolved — it
-	// is flagged, so a problem bigger than the one known, structurally
-	// excluded pinned row does not go unnoticed.
-	if matchedRowCount != len(scored) {
-		slog.WarnContext(ctx, "ingest: vs ranking identity cross-check found a disagreement between geometric and identity match counts",
-			"capture_id", captureID, "geometric_matches", matchedRowCount, "identity_matches", len(scored))
+	// Points resolve against the ranking's own order, which needs every row's
+	// value in hand -- so parse first, bound second, write third. Rows are in
+	// rank order because they are in screen order.
+	values := make([]int64, len(rows))
+	known := make([]bool, len(rows))
+	for n, row := range rows {
+		// A row without a confident NAME match is excluded from seeding even
+		// when its points read is itself confident and would otherwise
+		// tighten its neighbours' windows for free. That is deliberate
+		// conservatism, not an oversight: a row that reached here without a
+		// name match includes a spurious segmentation band (no real row at
+		// all), and letting an ungrounded band seed a bound risks narrowing
+		// real neighbours' windows off of content that was never a ranking
+		// row to begin with. The cost is a missed tightening opportunity on
+		// an already-review-bound row; the alternative risks corrupting
+		// rows that would otherwise resolve cleanly.
+		if assignments[n].Member < 0 {
+			continue
+		}
+		// trimPointsArtifact runs here too, not just in attributeRow below:
+		// it constructs nothing, so there is no reason to withhold a row like
+		// rank 20's from seeding just because a trailing artifact would
+		// otherwise have failed the regex. repairPoints, by contrast, is
+		// never called in this loop -- a repaired value must never seed a
+		// bound (see repairPoints' own comment), and the simplest way to
+		// guarantee that is for this loop to never call it at all.
+		v, err := ParsePoints(trimPointsArtifact(row.PointsText))
+		if err != nil {
+			continue
+		}
+		// Only a confident read seeds a bound. A weak read is what the bounds
+		// exist to adjudicate, and letting it define the window it is judged
+		// against would make the check circular.
+		//
+		// A retried read is excluded from seeding regardless of what
+		// confidence it reports, which is a stronger and separate condition
+		// from the confidence check above, not a special case of it. The
+		// confidence gate assumes a low number means a weak read and a high
+		// one means a trustworthy one -- true for the primary read, but a
+		// PSM-13 raw-line retry only runs because the primary came back
+		// empty, and it can report high confidence for a value manufactured
+		// from a crop that caught neighbouring content (see vsPointsRetry's
+		// comment). Letting a retried read seed a window would let a
+		// fabrication define the range its neighbours are judged against --
+		// the exact failure the bounds exist to prevent, reintroduced one
+		// level up. A retried value is still eligible to be WRITTEN, subject
+		// to the bounds its real neighbours define and the promotion rules
+		// below; it just may never define anyone else's window.
+		if row.PointsConf >= factConfidenceGate && !row.PointsFromRetry {
+			values[n], known[n] = v, true
+		}
+	}
+	// A seed that is greater than the nearest better-ranked seed already
+	// accepted cannot be a genuine ranking row -- see monotonicKnown's own
+	// comment for why a value like that (most notably the pinned self row,
+	// which Task 3's assignment keeps out of this array by Member < 0, but
+	// which does not by itself rule out every other kind of out-of-order
+	// value) must be dropped rather than allowed to seed a window.
+	known = monotonicKnown(ctx, values, known)
+	bounds := pointsBounds(values, known)
+
+	for n, row := range rows {
+		a := assignments[n]
+		dup := a.Phase == roster.PhaseDuplicate
+		matched, err := run.attributeRow(ctx, i, row, a, dup, bounds[n], members)
+		if err != nil {
+			return VSResult{}, err
+		}
+		switch {
+		case dup:
+			run.res.Duplicates++
+		case matched:
+			// counted inside attributeRow via run.res.Matched
+		default:
+			run.res.Unidentified++
+		}
 	}
 
 	// Absence means zero, but only on a complete capture whose every row was
@@ -414,8 +751,8 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 	// clear the review queue and re-ingest, and this same capture writes them
 	// once every row is accounted for.
 	if capture.Status == "complete" && run.res.Unidentified == 0 {
-		for _, m := range members {
-			if scored[m.ID] {
+		for n, m := range members {
+			if assignedMember[n] {
 				continue
 			}
 			if _, _, err := i.store.UpsertFact(ctx, db.Fact{
@@ -436,81 +773,584 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 	return run.res, nil
 }
 
-// processRow reads one row's name and points fields, matches the name, and
-// routes the row to a fact, a duplicate no-op, or the review queue. It never
-// creates a member: the roster route is the only writer of that table, so a
-// name that matches nothing here goes to review, full stop — minting a
-// member from a misread ranking row would corrupt the very count
-// reconciliation depends on.
+// vsRow is one deduped ranking row: where it came from and what both fields
+// read, held until every row has been read.
 //
-// Returns whether the row's name auto-accepted a match at all, independent
-// of whether that member had already been scored this capture — a duplicate
-// still counts toward the caller's matchedRowCount, or the disagreement it
-// represents would cancel itself out and the cross-check would never fire.
-func (run *vsRun) processRow(ctx context.Context, i *Ingester, img image.Image, band RowBand, screenshotID int64, members []roster.Member, scored map[int64]bool) (bool, error) {
-	nameRes, err := i.readFieldWithRetry(ctx, img, fieldRect(band, img, vsNameXFrac0, vsNameXFrac1, vsNameYFrac0, vsNameYFrac1), vsName, vsNameRetry)
+// Assignment cannot be streamed -- no row may be attributed until every row's
+// scores are known -- so the frame walk stops writing anything and accumulates
+// these instead. That also strengthens invariant #2 rather than straining it:
+// a crash midway through the walk now leaves nothing written, where it used to
+// leave a partial set of facts.
+type vsRow struct {
+	ScreenshotID int64
+	Band         RowBand
+	NameText     string
+	PointsText   string
+	PointsConf   float64
+	// PointsFromRetry records whether PointsText/PointsConf came from
+	// vsPointsRetry rather than the primary read -- a controller-level
+	// requirement, not something the retry's own gating implies.
+	// readFieldWithRetry already restricts WHEN the retry runs (an empty
+	// primary read, and nothing else); this is about what a retried value is
+	// allowed to DO once it exists. A PSM-13 raw-line retry can report a high
+	// OCR confidence while being the least trustworthy read in the pipeline --
+	// it only ran because the trustworthy mode returned nothing -- so if it
+	// were allowed to seed a neighbour's bound the way any other confident
+	// read does (see the seeding loop in IngestVS), a fabrication could define
+	// the window its neighbours are then judged against: exactly the failure
+	// the bounds exist to prevent, reintroduced one level up. A retried value
+	// stays eligible to be WRITTEN under the ordinary bounds and promotion
+	// rules; it just may never be the thing that defines someone else's
+	// window.
+	PointsFromRetry bool
+	// Scores is this row's name score against every member, indexed the same
+	// as the members slice IngestVS built. It comes from roster.Rank, so
+	// member aliases are already folded in and the assignment never has to
+	// know they exist.
+	Scores []int
+}
+
+// vsRowCursor replays the geometric dedupe across a capture's frames.
+//
+// It is a type rather than four local variables so the probes can share it.
+// An instrument that reimplements the dedupe drifts from what IngestVS does,
+// and then reports a row set production never sees -- which is the failure
+// mode CLAUDE.md records for the probe whose retry was happening inside the
+// engine before the probe ever saw it.
+type vsRowCursor struct {
+	contentY int
+	lastRowY int
+	havePrev bool
+}
+
+func newVSRowCursor() *vsRowCursor { return &vsRowCursor{lastRowY: -1} }
+
+// nextFrame advances to a new frame, accumulating its measured scroll offset.
+func (c *vsRowCursor) nextFrame(offsetPx int) {
+	if c.havePrev {
+		c.contentY += offsetPx
+	}
+	c.havePrev = true
+}
+
+// accept reports whether a band is a new row rather than a geometric
+// duplicate of the one before it, and advances the cursor when it is.
+func (c *vsRowCursor) accept(band RowBand, regionTop int) bool {
+	rowY := c.contentY + (band.Y0 - regionTop)
+	if c.lastRowY >= 0 && rowY <= c.lastRowY+vsRowPitch/2 {
+		return false
+	}
+	c.lastRowY = rowY
+	return true
+}
+
+// readVSRows is pass 1: walk the frames, drop geometric duplicates, and read
+// both fields of every surviving row. It writes nothing.
+//
+// The field order -- name read at every vsNameModes entry in order, then
+// points, per band -- is load-bearing for the tests: ocr.FakeEngine returns
+// queued results in call order and every VS fixture builds that queue
+// name-name-then-points per row (one name result per vsNameModes entry, plus
+// one more for either read's own retry if it comes back empty).
+//
+// retryPointsLate's engine calls are NOT part of this ordering: that retry
+// runs later, in attributeRow's pass-2 loop over already-read rows, so its
+// calls land strictly after every one of pass 1's -- for every row this
+// function reads, in order -- not interleaved with them. A fixture that
+// expects a late retry queues that result at the end of its Results slice,
+// after every row's primary name/points reads, not next to the row it
+// belongs to.
+func (i *Ingester) readVSRows(ctx context.Context, frames []db.CaptureFrame, members []roster.Member) ([]vsRow, error) {
+	idxByID := make(map[int64]int, len(members))
+	for n, m := range members {
+		idxByID[m.ID] = n
+	}
+
+	var rows []vsRow
+	cursor := newVSRowCursor()
+
+	for _, frame := range frames {
+		img, err := i.loadFrame(ctx, frame.ScreenshotID)
+		if err != nil {
+			return nil, fmt.Errorf("ingest: loading screenshot %d: %w", frame.ScreenshotID, err)
+		}
+		cursor.nextFrame(frame.OffsetPx)
+
+		bands, err := SegmentRows(img, vsListRegion, vsRowPitch)
+		if err != nil {
+			return nil, fmt.Errorf("ingest: segmenting screenshot %d: %w", frame.ScreenshotID, err)
+		}
+		regionTop := int(vsListRegion.Y1 * float64(img.Bounds().Dy()))
+
+		for _, band := range bands {
+			if !cursor.accept(band, regionTop) {
+				continue // geometric duplicate; OCR never runs on it
+			}
+
+			scores := make([]int, len(members))
+			nameText := ""
+			bestTop := -1
+			for _, mode := range vsNameModes {
+				nameRes, _, err := i.readFieldWithRetry(ctx, img,
+					fieldRect(band, img, vsNameXFrac0, vsNameXFrac1, vsNameYFrac0, vsNameYFrac1),
+					mode, vsNameRetry)
+				if err != nil {
+					return nil, err
+				}
+				if nameRes.Text == "" {
+					continue
+				}
+				top := 0
+				for _, c := range roster.Rank(nameRes.Text, members) {
+					if j := idxByID[c.MemberID]; c.Score > scores[j] {
+						scores[j] = c.Score
+					}
+					if c.Score > top {
+						top = c.Score
+					}
+				}
+				// NameText is only ever shown to a human in the review queue,
+				// so it carries whichever read got closest to a real member --
+				// the one worth looking at when deciding what the row says.
+				if top > bestTop {
+					bestTop, nameText = top, nameRes.Text
+				}
+			}
+
+			pointsRes, pointsRetried, err := i.readFieldWithRetry(ctx, img,
+				fieldRect(band, img, vsPointsXFrac0, vsPointsXFrac1, vsPointsYFrac0, vsPointsYFrac1),
+				readPlan{spec: vsPointsSpec, opts: vsPointsOptions}, vsPointsRetry)
+			if err != nil {
+				return nil, err
+			}
+
+			rows = append(rows, vsRow{
+				ScreenshotID:    frame.ScreenshotID,
+				Band:            band,
+				NameText:        nameText,
+				PointsText:      pointsRes.Text,
+				PointsConf:      pointsRes.Confidence,
+				PointsFromRetry: pointsRetried,
+				Scores:          scores,
+			})
+		}
+	}
+	return rows, nil
+}
+
+// scoreMatrix projects the rows' score vectors into the shape roster.Assign
+// takes.
+func scoreMatrix(rows []vsRow) [][]int {
+	out := make([][]int, len(rows))
+	for i, r := range rows {
+		out[i] = r.Scores
+	}
+	return out
+}
+
+// candidatesFor rebuilds the ranked candidate list from a row's stored score
+// vector, so a review row can still record what the matcher was choosing
+// between without pass 1 carrying a second copy of it.
+func candidatesFor(row vsRow, members []roster.Member) []roster.Candidate {
+	out := make([]roster.Candidate, 0, len(members))
+	for j, m := range members {
+		out = append(out, roster.Candidate{MemberID: m.ID, Name: m.Name, Score: row.Scores[j]})
+	}
+	sort.SliceStable(out, func(a, b int) bool { return out[a].Score > out[b].Score })
+	return out
+}
+
+// attributeRow routes one already-read row to a fact, a duplicate no-op, or
+// the review queue. It never creates a member: the roster route is the only
+// writer of that table, so a row matching nothing goes to review, full stop.
+//
+// It no longer decides WHO the row is -- roster.Assign did that across the
+// whole capture, using the constraint that a member appears at most once.
+// What is left here is what to do about it.
+func (run *vsRun) attributeRow(ctx context.Context, i *Ingester, row vsRow, a roster.Assignment, dup bool, bound pointsBound, members []roster.Member) (bool, error) {
+	if dup {
+		// Same member, a different screen position: the pinned self row.
+		// Counted by the caller, deliberately not queued.
+		return false, nil
+	}
+	if a.Member < 0 {
+		candidates := candidatesFor(row, members)
+		reason := "no_confident_match"
+		if len(candidates) > 0 && candidates[0].Score >= roster.ReviewFloor {
+			reason = "ambiguous_name_match"
+		}
+		return false, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.NameText, candidates, reason, 0)
+	}
+
+	memberID := members[a.Member].ID
+	run.res.Matched++
+
+	// A phase-1 match is a string that scored >= AutoAccept and is weighted
+	// as one. A phase-2 match is an elimination argument whose strength does
+	// not vary with the string score -- see residualMatchConfidence.
+	matchNorm := float64(a.Score) / 100.0
+	if a.Phase == roster.PhaseResidual {
+		matchNorm = residualMatchConfidence
+	}
+
+	// Order matters and is not arbitrary: trim first, then parse, then --
+	// only if that still fails -- attempt repair.
+	//
+	// Trimming has to come before parsing because it is what makes rank 20's
+	// otherwise-correct read parse at all; running it after a failed parse
+	// would work too, but running it first means the failed-parse path below
+	// only ever sees a read that is genuinely unparseable rather than one
+	// that merely had a trailing artifact, which is exactly what
+	// repairPoints below needs to be true of its input.
+	//
+	// repairPoints runs last, and only as a fallback, because it is the only
+	// step in this pipeline that CONSTRUCTS a value rather than validating
+	// one. Trying it before the plain parse would mean fencing every read
+	// through repairPoints' stricter, guess-refusing logic even when the
+	// trimmed text was already well-formed -- backwards for a check that
+	// exists specifically to be a last resort. It runs on the TRIMMED text,
+	// not the raw one, so a trailing artifact on an otherwise-repairable read
+	// cannot masquerade as a second damaged position and cause a correct
+	// repair to be refused for the wrong reason.
+	trimmed := trimPointsArtifact(row.PointsText)
+	points, perr := ParsePoints(trimmed)
+	// repaired records whether the final value was CONSTRUCTED by
+	// repairPoints rather than read cleanly. It matters below: repairPoints
+	// solves the damaged digit AGAINST bound, so withinBounds cannot fail
+	// for its own output -- the window check is vacuous for a repaired
+	// value, and the "corroborated" promotion below must not credit it with
+	// having been confirmed by a window it was built to satisfy (RULING E;
+	// see the promotion comment below for the full argument).
+	repaired := false
+	if perr != nil {
+		if v, ok := repairPoints(trimmed, bound); ok {
+			// A repaired value never seeds another row's bound -- not
+			// because of a check here, but because it structurally cannot:
+			// every row's bound was already computed, from every row's
+			// UNREPAIRED read, before this per-row loop began (see the
+			// seeding loop above). It still carries the read's own
+			// confidence and still points at the same crop of the same
+			// screenshot below, exactly like any other read; it earns no
+			// confidence boost for having been repaired, and (see below) no
+			// window-based promotion either.
+			points, perr, repaired = v, nil, true
+		}
+	}
+	pointsConf := row.PointsConf
+
+	// A late, second-shape retry: the primary read is non-empty (so pass 1's
+	// readFieldWithRetry never touched it) but still failed to parse, even
+	// after repair. Rank 79 on capture 6 is this shape (see vsPointsRetry's
+	// doc comment); readFieldWithRetry's empty-only trigger was never wrong
+	// to trust a non-empty primary by default, it just had nothing to fall
+	// back to when that trust was misplaced. This is that fallback.
+	//
+	// It fires on a PARSE failure only -- NOT on "parsed but landed outside
+	// the window", which was this trigger's original condition and has been
+	// removed (RULING D). Nothing has ever measured that half: both
+	// investigations behind this retry (investigation-retry-confidence.md,
+	// investigation-confidence-floor.md) concern parse failures, and this
+	// change's own gate gain is rank 79, a parse failure. Had the
+	// out-of-window half stayed, firing it means the primary's parsed value
+	// is by hypothesis in conflict with the window -- which can mean a
+	// genuinely bad primary, but can also mean a strong primary that
+	// monotonicKnown's tie-break dropped in favour of an earlier seed (see
+	// TestIngestVSRejectsAPointsValueThatBreaksTheRankingOrder's comment) --
+	// and PSM 13, documented below to introduce a +3,000,000 leading-digit
+	// artifact on 6 of 142 bands, would then be adjudicated by that same
+	// suspect window and written at factConfidenceGate. Re-adding it needs
+	// its own measurement -- a capture with a genuine non-empty,
+	// out-of-window primary whose PSM-13 retry is checked against ground
+	// truth the way capture 6's parse failures were -- not an inference from
+	// the parse-failure case, which says nothing about this one.
+	//
+	// !row.PointsFromRetry excludes a row pass 1 already retried: its
+	// PointsText already IS this same PSM 13 read (same crop, same plan),
+	// so re-reading it here would spend a tesseract invocation to reproduce
+	// a result already in hand, for no chance of a different answer.
+	//
+	// PSM 7 (the primary) is preferred over PSM 13 whenever it already
+	// parses, which is exactly what this condition now encodes: the late
+	// retry only ever runs once the primary's own path -- trim, parse,
+	// repair -- has already failed outright. That preference is not a
+	// stylistic default; it is the safety property, and the measurement
+	// behind it is narrower than it looks: where both PSMs parse AND both
+	// land in-window, they disagree on 2 of 142 bands and PSM 7 is exactly
+	// right both times, while PSM 13 is badly wrong (roughly +3,000,000) on
+	// 6 further bands outside that pairing (investigation-confidence-floor.md).
+	// That measured PSM 13 consulted behind an in-window guard; it does not
+	// license consulting PSM 13 for a value that already parsed, which is
+	// exactly why this trigger no longer does.
+	//
+	// A value recovered here never seeds another row's bound, and not
+	// because of a flag threaded through this call: IngestVS's seeding loop
+	// and pointsBounds already ran, for every row, before the per-row loop
+	// that calls attributeRow ever started (see IngestVS). This retry is
+	// pass 2. There is no bound left uncomputed for it to reach.
+	// lateRetryText/lateRetryAttempted (Minor 7, fix round 1 findings) let
+	// the unparseable_points queue below show a human what the second read
+	// said too, not only that a retry was taken -- populated regardless of
+	// whether the retry helped, since a failed retry's text is exactly what
+	// a reviewer needs to judge whether a THIRD read stands any chance.
+	var lateRetryText string
+	var lateRetryAttempted bool
+	if perr != nil && !row.PointsFromRetry {
+		v, conf, text, ok, err := run.retryPointsLate(ctx, i, row, bound)
+		if err != nil {
+			return true, fmt.Errorf("ingest: late points retry for screenshot %d: %w", row.ScreenshotID, err)
+		}
+		lateRetryText, lateRetryAttempted = text, true
+		if ok {
+			// No confidence boost for having been retried -- conf is the
+			// retry's own reported OCR confidence, unmodified, exactly like
+			// repairPoints leaves a repaired value at the primary's own
+			// confidence above. Whatever this value ultimately writes at is
+			// decided by the ordinary corroboration check below, the same
+			// as any other row's. repaired stays false: this value was
+			// READ by PSM 13, not constructed, so it remains eligible for
+			// window-based promotion.
+			points, pointsConf, perr = v, conf, nil
+		}
+	}
+
+	if perr != nil {
+		// Both reads go to review, labelled, when a retry was taken. Not a
+		// bare concatenation: a reviewer looking at one string has no other
+		// way to tell which engine produced which half, and the whole value
+		// of surfacing the second read is that its disagreement with the
+		// first is the evidence about whether a third read could help.
+		rawText := row.PointsText
+		if lateRetryAttempted {
+			rawText = fmt.Sprintf("%s | retry: %s", row.PointsText, lateRetryText)
+		}
+		return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, rawText, nil, "unparseable_points", 0)
+	}
+	if !withinBounds(points, bound) {
+		// A value outside the window its neighbours define is the signature
+		// of a crop that caught neighbouring content -- the failure
+		// vsPointsSpec's charset comment describes, caught structurally.
+		return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.PointsText, nil, "points_out_of_order", 0)
+	}
+	// Everything past here is in order, but "in order" alone does not mean
+	// "corroborated": the windows are open at the ends -- out[0].Hi is
+	// always MaxInt64, out[len-1].Lo is always 0 -- and when NOTHING seeds a
+	// bound at all, every window is [0, MaxInt64], so withinBounds is
+	// unconditionally true and this check degrades to "did the regex match",
+	// which is the guard the old low_confidence_points branch already
+	// applied on its own. Promoting on that alone would invert the failure
+	// mode: a capture where OCR broadly degrades used to queue everything,
+	// and would instead write everything at factConfidenceGate with an empty
+	// review queue -- worse OCR producing fewer queued rows.
+	//
+	// Closure (Lo > 0 && Hi < MaxInt64) is necessary but NOT sufficient --
+	// it only asks that some seed exists somewhere above and somewhere
+	// below, not that either is close. RULING C tried fixing that with
+	// pointsBound.AdjacentSeeds (requiring the bracketing seeds to be the
+	// immediate rank neighbours) and was WITHDRAWN: measured against the
+	// real capture, not just the synthetic fixture that motivated it,
+	// adjacency cost two rows (ranks 38, 76) and both were correct -- it
+	// prevented zero wrong values here. See pointsBound's own comment
+	// (points.go) for the full history; the short version is that it was
+	// the identical mistake made with the original
+	// pointsOrderConfidenceFloor, a fence measured only against what it
+	// admits and never against what it excludes.
+	//
+	// The replacement is a WIDTH check: promote only when the window is no
+	// wider than the value itself, (Hi - Lo) <= points. Measured against
+	// this capture's real promoted population (7 rows): window-to-value
+	// ratios span 0.035 to 0.511. The synthetic counterexample from RULING
+	// C's review (three mutually out-of-order, confidence-0.0000 misreads
+	// sharing one wide window) sits at 1.18, 2.95 and 26.55 -- all wrong by
+	// construction. Any threshold in (0.511, 1.18] separates those two
+	// populations, with 0.669 of daylight; 1.0 sits mid-range with roughly
+	// 2x margin over the widest real row, and is what "<= points" (an
+	// implicit 1x multiplier, not a separately fitted constant) encodes.
+	//
+	// The honest limit, which must travel with this check rather than be
+	// left for someone to rediscover: those two populations are real
+	// versus SYNTHETIC, and the one REAL wrong promoted value this capture
+	// contains falls on the wrong side of the story they tell. Rank 7
+	// ("Mar 89") promotes 18,356,304 against a hand-checked 18,356,804 -- a
+	// single digit misread, 8 as 3 -- on a window of
+	// [17,219,876, 19,247,540], ratio 0.1105: the SECOND NARROWEST window in
+	// the promoted population. The right value and the wrong one both sit
+	// comfortably inside it, so no width threshold could have separated
+	// them, and tightening toward 0.1105 to try would first discard the five
+	// correct rows below it.
+	//
+	// So the scope of this check is bounded, in a way the ratio spread alone
+	// conceals: it excludes values of the wrong MAGNITUDE -- the crop that
+	// caught neighbouring content, the misread that moved a digit column --
+	// and it is structurally incapable of touching a LOW-ORDER digit error,
+	// which ordering cannot see by construction. Note what that means for
+	// the numbers above: the width check is not the reason the seven real
+	// rows are nearly all correct, so do not read 0.035-0.511 as evidence of
+	// its discriminating power. It is evidence of what real windows look
+	// like, and nothing more.
+	//
+	// The gate does not report rank 7 either -- 500 on 18.3M is 0.0027%,
+	// inside its 1% tolerance -- so this is visible only by reading promoted
+	// values against expected.yaml directly, which is how it was found. The
+	// cost is real regardless: rank 7's own OCR confidence is 0.638, which
+	// would have queued it for a human, and promotion wrote it at
+	// factConfidenceGate instead. That is the trade this check makes, at
+	// full price. If a WRONG-MAGNITUDE value is ever observed riding a
+	// narrow window through here, refit 1.0 against what it EXCLUDES, not
+	// just re-confirm it against what it admits -- the discipline RULING C's
+	// own withdrawal is the evidence for.
+	//
+	// It is raised to exactly factConfidenceGate and no further: invariant
+	// #5 is about what a number claims about itself, and being in order does
+	// not make a 0.09 read a 0.95 one -- it only makes it worth writing once
+	// the ordering has actually corroborated it.
+	//
+	// There is deliberately no additional floor on the read's own OCR
+	// confidence here (see the removed pointsOrderConfidenceFloor comment
+	// next to residualMatchConfidence -- the const used to live there). On
+	// capture 6, with the width check now required, the row this mattered
+	// for is rank 10 at confidence 0.0853, correct. A floor would not have
+	// saved rank 7 either, for a reason worth stating rather than assuming
+	// the other way: rank 7 reads at 0.638, well ABOVE the two lowest
+	// correct promotions here (0.0853 and 0.3383), so any floor that
+	// excluded it would have excluded those first. Confidence and
+	// correctness are not ordered together in this population. If that ever
+	// changes on a later capture, refit a confidence floor against what it
+	// excludes, not what it admits -- that is the mistake this floor's first
+	// fitting made, and the same mistake RULING C's own adjacency check made
+	// in a different shape.
+	//
+	// This means a RETRIED row's own PointsConf can still promote it here,
+	// even though that identical confidence is exactly what the seeding loop
+	// above refuses to trust at all (see vsRow.PointsFromRetry). That is not
+	// a contradiction -- the two checks ask different questions of the same
+	// number. Seeding lets a value constrain OTHER rows with nothing external
+	// checking it: a retried value seeding a window is one unverified read
+	// defining the range its neighbours are then judged against, which is
+	// exactly the fabrication risk the bounds exist to prevent, reintroduced
+	// one level up. Promotion runs the other way: it requires two REAL,
+	// independent neighbours' seeds to already bracket the value on both
+	// sides, NARROWLY, before its own confidence is even consulted, so the
+	// structural evidence points AT the value rather than OUT from it toward
+	// a row that has not earned any corroboration of its own. A fabricated
+	// retry read has no reason to land inside a narrow window it played no
+	// part in drawing, so closure-plus-width is doing, in this context, the
+	// work a confidence floor would otherwise be asked to do for a row with
+	// no such bracketing.
+	//
+	// A REPAIRED value is excluded from this promotion outright (RULING E),
+	// regardless of closure or width (see `repaired` above): repairPoints
+	// solves the damaged digit AGAINST bound, so withinBounds cannot fail
+	// for its own output -- the window check is vacuous for it, and "the
+	// window corroborates it" would really mean "the value was constructed
+	// to satisfy the window it is now being credited with satisfying." A
+	// repaired value has zero pixel evidence behind its damaged position; it
+	// must clear factConfidenceGate on the primary read's own confidence, or
+	// queue like anything else that doesn't. This is also an evidential
+	// correction, not only a mechanical one: the investigation that
+	// justified removing pointsOrderConfidenceFloor explicitly excluded
+	// repairPoints from what it measured, so crediting a repaired value with
+	// window promotion was, until now, resting on a population that
+	// investigation never surveyed.
+	conf := min(matchNorm, pointsConf)
+	corroborated := !repaired && bound.Lo > 0 && bound.Hi < math.MaxInt64 && (bound.Hi-bound.Lo) <= points
+	if corroborated && conf < factConfidenceGate {
+		conf = factConfidenceGate
+	}
+	if conf < factConfidenceGate {
+		return true, run.queueReview(ctx, i, row.ScreenshotID, row.Band, row.PointsText, nil, "low_confidence_points", conf)
+	}
+	// UpsertFact, not InsertFact, for the reason IngestRoster's writeFacts
+	// documents at length: observed_at is pinned to the capture's own
+	// started_at, so re-running ingest over this same capture recomputes the
+	// identical (member_id, metric, period_key, source, observed_at) key and
+	// a plain INSERT rejects it -- which is not hypothetical, since resolving
+	// a review tells the operator to ingest the capture again.
+	if _, _, err := i.store.UpsertFact(ctx, db.Fact{
+		MemberID: memberID, Metric: "vs_points", Value: float64(points),
+		ObservedAt: run.observedAt, PeriodKey: run.periodKey,
+		Source: "ocr:vs_ranking", ScreenshotID: row.ScreenshotID,
+		Confidence: conf,
+	}); err != nil {
+		return true, fmt.Errorf("ingest: writing vs_points fact for member %d: %w", memberID, err)
+	}
+	return true, nil
+}
+
+// retryPointsLate re-reads one row's points crop at vsPointsRetry's PSM 13
+// plan, for a primary read that was non-empty but still turned out unusable
+// once the row's bounds were known -- attributeRow's second retry trigger
+// (see vsPointsRetry's doc comment and the call site above).
+//
+// It lives on *vsRun (not *Ingester alone) so it can memoize the decoded
+// frame in run.lateRetryFrame/lateRetryImg (Minor 6, fix round 1 findings):
+// rows are attributed in row order, which is screenshot order, so several
+// late retries in a row on a broadly degraded capture would otherwise
+// re-fetch and re-decode the SAME PNG from the blob store once per row. One
+// entry is enough -- see vsRun's own comment on those fields for why a miss
+// only happens on a genuine frame change.
+//
+// Before this cache existed, it reloaded the frame from the blob store
+// rather than being handed the already-decoded image readVSRows held. That
+// remains deliberate, not an oversight: pass 1 (readVSRows) discards each
+// frame's pixels once it has read every band on it, because assignment
+// cannot run until every row's scores are known and the accumulated vsRow
+// slice, not decoded images, is what carries state across that boundary
+// (see vsRow's own doc comment). Threading every frame's image through to
+// pass 2 so late retries could avoid a re-decode entirely would mean
+// holding a whole capture's worth of decoded PNGs in memory for the run's
+// full duration, for a retry that measured 4 of 142 bands on capture 6
+// (points.go's earlier sweep) plus this trigger's own small addition -- the
+// single-frame cache gets nearly all of the same benefit (consecutive rows
+// on one frame) without that cost.
+//
+// It takes the row's own bound rather than looking it up, because
+// attributeRow already has it in hand from IngestVS's per-row loop.
+//
+// The returned string is the retry's raw OCR text, returned REGARDLESS of
+// ok -- including when the retry did not help -- so a caller that ends up
+// queuing the row anyway can surface what the second read actually said
+// (Minor 7, fix round 1 findings), not just that a retry happened.
+//
+// ok=false, with no error, means the retried read itself failed to parse or
+// landed outside bound -- an ordinary "the retry didn't help either"
+// outcome, not a fault. A non-nil error is reserved for the two things that
+// ARE faults: the screenshot failing to reload, or the OCR engine failing to
+// run at all.
+func (run *vsRun) retryPointsLate(ctx context.Context, i *Ingester, row vsRow, bound pointsBound) (int64, float64, string, bool, error) {
+	img := run.lateRetryImg
+	if run.lateRetryFrame != row.ScreenshotID || img == nil {
+		var err error
+		img, err = i.loadFrame(ctx, row.ScreenshotID)
+		if err != nil {
+			return 0, 0, "", false, fmt.Errorf("ingest: reloading screenshot %d for a late points retry: %w", row.ScreenshotID, err)
+		}
+		run.lateRetryFrame, run.lateRetryImg = row.ScreenshotID, img
+	}
+	rect := fieldRect(row.Band, img, vsPointsXFrac0, vsPointsXFrac1, vsPointsYFrac0, vsPointsYFrac1)
+	res, err := i.readField(ctx, img, rect, vsPointsRetry.spec, vsPointsRetry.opts)
 	if err != nil {
-		return false, err
+		return 0, 0, "", false, err
 	}
-	pointsRes, err := i.readField(ctx, img, fieldRect(band, img, vsPointsXFrac0, vsPointsXFrac1, vsPointsYFrac0, vsPointsYFrac1), vsPointsSpec, vsPointsOptions)
-	if err != nil {
-		return false, err
+	v, perr := ParsePoints(trimPointsArtifact(res.Text))
+	if perr != nil || !withinBounds(v, bound) {
+		return 0, 0, res.Text, false, nil
 	}
-
-	candidates := roster.Rank(nameRes.Text, members)
-	switch {
-	case len(candidates) > 0 && candidates[0].Score >= roster.AutoAccept:
-		memberID := candidates[0].MemberID
-		if scored[memberID] {
-			// Same member, a different screen position: the pinned self row
-			// (or a genuine bug surfacing elsewhere). Deduplicate by member
-			// id — do not write a second fact for it.
-			return true, nil
-		}
-		scored[memberID] = true
-		run.res.Matched++
-
-		matchNorm := float64(candidates[0].Score) / 100.0
-		points, perr := ParsePoints(pointsRes.Text)
-		if perr != nil {
-			return true, run.queueReview(ctx, i, screenshotID, band, pointsRes.Text, nil, "unparseable_points", 0)
-		}
-		conf := min(matchNorm, pointsRes.Confidence)
-		if conf < factConfidenceGate {
-			return true, run.queueReview(ctx, i, screenshotID, band, pointsRes.Text, nil, "low_confidence_points", conf)
-		}
-		// UpsertFact, not InsertFact, for the reason IngestRoster's
-		// writeFacts already documents at length: observed_at is pinned to
-		// the capture's own started_at, so re-running ingest over this same
-		// capture recomputes the identical (member_id, metric, period_key,
-		// source, observed_at) key and a plain INSERT rejects it. That is not
-		// hypothetical here — resolving a review in studio tells the operator
-		// to ingest the capture again, so the second run is the whole point
-		// of the review loop, and it died on a unique-constraint violation
-		// before it could correct anything.
-		if _, _, err := i.store.UpsertFact(ctx, db.Fact{
-			MemberID: memberID, Metric: "vs_points", Value: float64(points),
-			ObservedAt: run.observedAt, PeriodKey: run.periodKey,
-			Source: "ocr:vs_ranking", ScreenshotID: screenshotID,
-			Confidence: conf,
-		}); err != nil {
-			return true, fmt.Errorf("ingest: writing vs_points fact for member %d: %w", memberID, err)
-		}
-		return true, nil
-
-	case len(candidates) > 0 && candidates[0].Score >= roster.ReviewFloor:
-		return false, run.queueReview(ctx, i, screenshotID, band, nameRes.Text, candidates, "ambiguous_name_match", 0)
-
-	default:
-		return false, run.queueReview(ctx, i, screenshotID, band, nameRes.Text, candidates, "no_confident_match", 0)
-	}
+	return v, res.Confidence, res.Text, true, nil
 }
 
 // queueReview mirrors rosterRun.queueReview: records one row that could not
-// be confidently resolved (or cleared to write) and counts it. confidence is
-// 0 when the reason carries no meaningful blended score (an unparseable
-// field, an ambiguous name, no match at all) — QueueReview stores that as
-// SQL NULL, not as a claimed zero-confidence read.
+// be confidently resolved (or cleared to write) and counts it. Callers pass 0
+// when the reason carries no meaningful blended score (an unparseable field,
+// an ambiguous name, no match at all), and QueueReview stores 0 as SQL NULL
+// rather than as a claimed zero-confidence read.
+//
+// The gap that leaves, stated because a reviewer reading the queue cannot
+// see it: low_confidence_points passes its REAL blended confidence, and on
+// capture 6 that value rounds to 0.00 for the one row queued under this
+// reason. It is stored as NULL too, so "we had no number" and "the number
+// was essentially zero" are indistinguishable in the queue -- and the second
+// is the more damning of the two. Fixing it means a nullable-at-the-caller
+// signal rather than an in-band 0, which is a change to db.ReviewItem.
 func (run *vsRun) queueReview(ctx context.Context, i *Ingester, screenshotID int64, band RowBand, rawText string, candidates []roster.Candidate, reason string, confidence float64) error {
 	if _, err := i.store.QueueReview(ctx, db.ReviewItem{
 		CaptureID: run.captureID, ScreenshotID: screenshotID,

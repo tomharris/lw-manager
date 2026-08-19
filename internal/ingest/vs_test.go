@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"log/slog"
 	"strconv"
 	"strings"
 	"testing"
@@ -210,12 +211,47 @@ func newVSIngestHarness(t *testing.T, fx vsFixture) *vsIngestHarness {
 	for _, r := range rows {
 		results = append(results,
 			ocr.Result{Text: r.name, Confidence: 0.95},
+			ocr.Result{Text: r.name, Confidence: 0.95},
 			ocr.Result{Text: r.points, Confidence: 0.95},
 		)
 	}
 	h.engine.Results = results
 
 	return h
+}
+
+// reviewReasons counts the queued review rows by reason, mirroring
+// rosterIngestHarness's helper. The VS route now has several distinct reasons
+// a row can be held for, and the assertions below care which gate a row hit
+// rather than only that it was queued.
+func (h *vsIngestHarness) reviewReasons() map[string]int {
+	out := map[string]int{}
+	for _, r := range h.store.Reviews {
+		out[r.Reason]++
+	}
+	return out
+}
+
+// factFor returns the fact written for memberID, or ok=false if none was.
+//
+// Exists so a test can assert a fact EXISTS rather than only that any fact it
+// happens to find carries the right value -- a bare count comparison or a
+// "for every fact, if it matches this member, check its value" loop is
+// vacuous against a bug that drops the row entirely (no fact ever iterated,
+// so the value check never runs) while an unrelated bug changes the total
+// count to something that still satisfies a `!= N` assertion elsewhere. See
+// TestIngestVSNeverSeedsABoundFromARetriedRead's history for a case that
+// actually happened: without the never-seed guard, Charlie03's row is the one
+// dropped (queued as points_out_of_order via monotonicKnown, not Bravo02's),
+// and a loop that only checks matching facts it finds never notices Charlie03
+// is missing.
+func (h *vsIngestHarness) factFor(memberID int64) (db.Fact, bool) {
+	for _, f := range h.store.Facts {
+		if f.MemberID == memberID {
+			return f, true
+		}
+	}
+	return db.Fact{}, false
 }
 
 // --- tests -------------------------------------------------------------------
@@ -294,6 +330,56 @@ func TestIngestVSInfersZeroesOnceEveryRowIsIdentified(t *testing.T) {
 	}
 	if res.Zeroed != 1 {
 		t.Errorf("zeroed %d, want 1 — 3 members less 2 ranked", res.Zeroed)
+	}
+}
+
+// Finding 2 (task-3-findings-round1.md): the assignedMember build loop that
+// feeds zero-inference must key on a.Member -- the MEMBER index -- not on the
+// row's own position in the assignments slice. Every other VS fixture reads
+// members in roster order (row i is always member i), so the two indexings
+// are indistinguishable there and a swap would go unnoticed; this fixture
+// reads them out of order on purpose. If the loop were keyed on row index
+// instead, row 0 (Member03, member index 2) would mark index 0 "assigned"
+// and row 1 (Member01, member index 0) would mark index 1 "assigned" --
+// zeroing Member03 despite it having a row, and never zeroing Member02, the
+// member genuinely absent from the capture.
+func TestIngestVSInfersZeroOnTheRightMemberWhenRowsArriveOutOfRosterOrder(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Member01", "Member02", "Member03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(2), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Member03", Confidence: 0.95}, {Text: "Member03", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "Member01", Confidence: 0.95}, {Text: "Member01", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
+	}
+
+	res, err := h.IngestVS(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if res.Zeroed != 1 {
+		t.Fatalf("zeroed %d, want 1 — Member02 is the only absent member", res.Zeroed)
+	}
+	want := h.store.members[1].ID // Member02
+	var zeroedID int64
+	var sawZero bool
+	for _, f := range h.store.Facts {
+		if f.Metric == "vs_points" && f.Value == 0 {
+			sawZero = true
+			zeroedID = f.MemberID
+		}
+	}
+	if !sawZero {
+		t.Fatal("no inferred zero was written at all")
+	}
+	if zeroedID != want {
+		t.Errorf("inferred zero landed on member %d, want Member02 (%d): the read rows were Member03 then Member01, out of roster order",
+			zeroedID, want)
 	}
 }
 
@@ -418,6 +504,96 @@ func TestIngestVSInferredZeroCarriesLowerConfidenceThanARead(t *testing.T) {
 	}
 }
 
+// A row nothing matches at AutoAccept, whose member is nonetheless the only
+// candidate left once every other row is pinned. This is the whole gain: on
+// capture 6 it is twelve members, including "Syłar" read as "cular" at 60.
+func TestIngestVSResolvesAWeakRowFromTheResidual(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(2), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// "Br4v0z" scores 68 against Bravo02 (roster.TokenSetRatio) -- inside
+		// the 60-79 residual band, well below AutoAccept, and 14 against
+		// Alpha01 -- unmatchable per-row, unambiguous once Alpha01 is taken.
+		// Landing the raw score inside that band (rather than, say, in the
+		// 80s where it would clear factConfidenceGate on score/100 alone) is
+		// deliberate: a reviewer proved by mutation that a fixture scoring in
+		// the 80s lets this test pass even with the residualMatchConfidence
+		// branch deleted, because score/100 alone already clears the gate.
+		{Text: "Br4v0z", Confidence: 0.95}, {Text: "Br4v0z", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
+	}
+
+	res, err := h.IngestVS(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if res.Matched != 2 {
+		t.Errorf("matched %d, want 2: the residual row's member was the only one left", res.Matched)
+	}
+	if len(h.store.Facts) != 2 {
+		t.Fatalf("wrote %d facts, want 2", len(h.store.Facts))
+	}
+	// The residual match must carry residualMatchConfidence, not score/100 --
+	// a string score of ~60 blended into the fact would fall under
+	// factConfidenceGate and the row would be queued anyway, silently undoing
+	// the entire assignment.
+	var residual db.Fact
+	for _, f := range h.store.Facts {
+		if f.MemberID == h.store.members[1].ID {
+			residual = f
+		}
+	}
+	if residual.Confidence < factConfidenceGate {
+		t.Errorf("residual fact confidence %.2f is below factConfidenceGate %.2f; it would never be written",
+			residual.Confidence, factConfidenceGate)
+	}
+	if residual.Confidence >= 0.95 {
+		t.Errorf("residual fact confidence %.2f, want it visibly below a clean match", residual.Confidence)
+	}
+	// The outright assertion: a residual match must carry EXACTLY
+	// residualMatchConfidence, not some blend that happens to also clear the
+	// two bounds above. Deleting the `matchNorm = residualMatchConfidence`
+	// branch in attributeRow must fail this line even if the fixture's raw
+	// string score had landed somewhere the bounds above would not have
+	// caught.
+	if residual.Confidence != residualMatchConfidence {
+		t.Errorf("residual fact confidence = %.2f, want exactly residualMatchConfidence (%.2f)",
+			residual.Confidence, residualMatchConfidence)
+	}
+}
+
+// The pinned self row appears twice by design (recon section 2). It is
+// structurally expected, so it is counted and dropped -- never queued. A
+// review row every week for something the screen always does trains an
+// operator to ignore the queue.
+func TestIngestVSCountsADuplicateRowRatherThanQueueingIt(t *testing.T) {
+	h := newVSIngestHarness(t, vsFixture{
+		captureComplete: true, rosterSize: 3, rankedRows: 3, duplicateSelfRow: true,
+	})
+
+	res, err := h.IngestVS(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if res.Duplicates != 1 {
+		t.Errorf("duplicates %d, want 1", res.Duplicates)
+	}
+	if reasons := h.reviewReasons(); reasons["no_confident_match"] != 0 {
+		t.Errorf("the duplicate self row reached the review queue; all reasons: %v", reasons)
+	}
+	if res.Unidentified != 0 {
+		t.Errorf("unidentified %d, want 0: a duplicate is not an unattributed row, and counting it as one would block every inferred zero",
+			res.Unidentified)
+	}
+}
+
 // Replay: IngestVS already took periodKey as an explicit argument, but
 // ObservedAt was still stamped from time.Now() internally — the same defect
 // TestIngestRosterStampsFactsWithTheCapturesStartedAtNotWallClockNow checks
@@ -452,5 +628,856 @@ func TestIngestVSStampsFactsWithTheCapturesStartedAtNotWallClockNow(t *testing.T
 	}
 	if !sawRead || !sawInferredZero {
 		t.Fatalf("expected both a read fact and an inferred zero in this fixture, sawRead=%v sawInferredZero=%v", sawRead, sawInferredZero)
+	}
+}
+
+// Two members the matcher cannot tell apart are a hazard no threshold fixes
+// and only an alias can, so ingest says so out loud rather than silently
+// attributing one of them.
+func TestIngestVSWarnsWhenTwoMembersAreIndistinguishable(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	h := newVSHarness(t, "complete")
+	// ALBAN80 and ALBANSO differ by one confusable substitution, which
+	// confusable.go charges 2 tenths of an edit -- they score above
+	// AutoAccept against each other.
+	for _, name := range []string{"ALBAN80", "ALBANSO"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(1), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "ALBAN80", Confidence: 0.95}, {Text: "ALBAN80", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	log := buf.String()
+	if !strings.Contains(log, "indistinguishable") {
+		t.Errorf("no warning logged for two members scoring above AutoAccept against each other; log was:\n%s", log)
+	}
+	// Not just that some warning fired: that it names the right two members,
+	// rather than a garbled or empty pair the "indistinguishable" substring
+	// check alone cannot tell apart from a correct one.
+	if !strings.Contains(log, "ALBAN80") || !strings.Contains(log, "ALBANSO") {
+		t.Errorf("warning did not name both indistinguishable members (ALBAN80, ALBANSO); log was:\n%s", log)
+	}
+}
+
+// A value that parses and sits in a window CLOSED on both sides is
+// corroborated by the ordering, so it no longer rests on OCR confidence
+// alone. Measured on capture 6: two of the six points failures were EXACTLY
+// RIGHT and rejected for confidence -- 8,835,180 at 0.52 and 1,242,375 at
+// 0.70.
+func TestIngestVSAcceptsALowConfidencePointsReadThatSitsInOrder(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.52},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if len(h.store.Facts) != 3 {
+		t.Errorf("wrote %d facts, want 3: 8,000,000 sits between its neighbours (a window closed on both sides) and is corroborated by the ordering", len(h.store.Facts))
+	}
+	if reasons := h.reviewReasons(); reasons["low_confidence_points"] != 0 {
+		t.Errorf("an in-order, doubly-bracketed value was rejected on OCR confidence alone; all reasons: %v", reasons)
+	}
+	// Not just that a fact was written, but that it was written at the
+	// promoted confidence and not at its own weak 0.52: UpsertFact only
+	// supersedes on a STRICTLY higher confidence, so a fact left at 0.52
+	// could never be superseded by a later genuine read landing at exactly
+	// factConfidenceGate.
+	bravoID := h.store.members[1].ID // Bravo02
+	var bravoConf float64 = -1
+	for _, f := range h.store.Facts {
+		if f.MemberID == bravoID {
+			bravoConf = f.Confidence
+		}
+	}
+	if bravoConf != factConfidenceGate {
+		t.Errorf("Bravo02's promoted fact confidence = %v, want exactly factConfidenceGate (%v)", bravoConf, factConfidenceGate)
+	}
+}
+
+// Minor 8 (fix round 1 findings): PSM 7 (the primary) is preferred over
+// PSM 13 whenever it already parses, and this asserts it BY VALUE rather
+// than by the absence of a fake-engine-exhaustion error, which is all the
+// other late-retry tests incidentally do.
+//
+// The distinction is not pedantic. Exhaustion says only "some read
+// happened that should not have"; it fires identically for a retry
+// triggered on the wrong row, for an extra name mode, or for an off-by-one
+// in the harness itself, and it fires from whichever row happens to run out
+// of results first rather than from the row under test. A value assertion
+// names the row and names the wrong value. So this fixture supplies a full
+// retry result for EVERY row -- the engine never runs dry, and a regressed
+// trigger has to be caught by what it wrote.
+//
+// Only Bravo02's spare is in-window ([7,000,000, 9,000,000], from its two
+// neighbours' clean reads). Alpha01's and Charlie03's spares are outside
+// their own windows, so even a wrongly-fired retry is rejected there by
+// withinBounds and leaves their values alone -- which is deliberate:
+// it isolates the failure to the single row the assertion is about.
+func TestIngestVSPrefersThePrimaryReadByValueOverAnAvailableRetry(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Clean, parses, in-window -- the late-retry trigger (perr != nil)
+		// is never even evaluated true for this row.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		// Spares, one per row, consumed in row order by a regressed trigger
+		// and by nothing at all otherwise. Alpha01's is below its window's
+		// floor of 8,000,000 and Charlie03's is above its ceiling of
+		// 8,000,000; only Bravo02's 8,500,000 would actually be taken.
+		{Text: "100", Confidence: 0.90},
+		{Text: "8,500,000", Confidence: 0.90},
+		{Text: "99,000,000", Confidence: 0.90},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	bravoID := h.store.members[1].ID
+	f, ok := h.factFor(bravoID)
+	if !ok {
+		t.Fatalf("Bravo02 has no fact")
+	}
+	if f.Value != 8000000 {
+		t.Errorf("Bravo02's fact = %v, want 8,000,000 (the primary's own read, not the spare 8,500,000 a wrongly-triggered retry would have consumed)", f.Value)
+	}
+}
+
+// The other half, and the reason the first half is safe: a value that parses
+// but violates its bounds is the signature of a crop that caught neighbouring
+// content, which is exactly what vsPointsSpec's charset comment describes.
+//
+// The assertion is exact rather than merely "at least one", because a broken
+// monotonicKnown can produce a rejection for the WRONG reason and still trip
+// a "!= 0" check: with monotonicKnown deleted entirely, Bravo02's bogus 99M
+// seeds Lo = 99,000,000 for Alpha01, so the correct rank-1 read (9,000,000)
+// is ALSO rejected -- two rows queued and one fact written, not two -- and a
+// loose assertion would not notice.
+//
+// Bravo02's primary PARSES fine and merely lands outside its window, so the
+// late retry never fires for it: RULING D confined that trigger to a parse
+// failure. This fixture briefly carried a fourth engine result standing in
+// for a late re-read, back when an out-of-window value was also a trigger,
+// and the comment here claimed it proved the trigger "changes nothing about
+// a row the retry cannot help". Once RULING D landed, the result was never
+// consumed and the claim proved nothing -- deleting it left this test
+// passing. Both are gone. What remains is the assertion that was always
+// doing the work, and it is mutation-checked: deleting monotonicKnown fails
+// it with points_out_of_order = 2.
+func TestIngestVSRejectsAPointsValueThatBreaksTheRankingOrder(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Rank 2 cannot outscore rank 1.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "99,000,000", Confidence: 0.95},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["points_out_of_order"] != 1 {
+		t.Errorf("points_out_of_order = %d, want exactly 1 (only Bravo02's own bogus read, not its neighbours too); all reasons: %v", reasons["points_out_of_order"], reasons)
+	}
+	if len(h.store.Facts) != 2 {
+		t.Errorf("wrote %d facts, want 2: Alpha01 (9,000,000) and Charlie03 (7,000,000) are untouched by Bravo02's bad read", len(h.store.Facts))
+	}
+}
+
+// The Critical-1 guard: an in-order read must not be promoted on the
+// strength of an OPEN-ended window, because withinBounds is unconditionally
+// true against an open end and proves nothing about correctness -- it only
+// proves the parser matched, which the old low_confidence_points guard
+// already established on its own. Alpha01 sits at rank 1, where Hi is always
+// open (nothing ranks above it), so a weak Alpha01 read must still queue
+// even though it is numerically "in order" relative to its one real
+// neighbour below.
+func TestIngestVSDoesNotPromoteAnOpenEndedWindow(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		// Rank 1: reads fine but weakly, and its window is open above.
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.52},
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.95},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["low_confidence_points"] != 1 {
+		t.Errorf("low_confidence_points = %d, want 1: rank 1's window is open above and must not be promoted; all reasons: %v", reasons["low_confidence_points"], reasons)
+	}
+	if len(h.store.Facts) != 2 {
+		t.Errorf("wrote %d facts, want 2: Bravo02 and Charlie03 only, Alpha01 held for review", len(h.store.Facts))
+	}
+}
+
+// There used to be a Critical-1-adjacent guard here: a window closed on BOTH
+// sides was still not enough on its own, and the read's own OCR confidence
+// also had to clear pointsOrderConfidenceFloor (0.40). Measured against
+// capture 6 (investigation-confidence-floor.md), the only row that floor
+// ever excluded on real data was correct (rank 10, confidence 0.0853), and
+// the floor caught nothing wrong. It was removed, so a window closed on both
+// sides now promotes regardless of how low the read's own confidence is --
+// this test proves that directly, at a confidence (0.09) below where the old
+// floor sat.
+func TestIngestVSPromotesAClosedWindowReadEvenAtVeryLowConfidence(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Rank 2's window is closed on both sides (bracketed by Alpha01 and
+		// Charlie03) and its own OCR confidence (0.09) is far below the old,
+		// now-removed 0.40 floor -- the shape of capture 6's rank 10.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "8,000,000", Confidence: 0.09},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["low_confidence_points"] != 0 {
+		t.Errorf("low_confidence_points = %d, want 0: Bravo02's window is closed on both sides, and there is no confidence floor left to block it; all reasons: %v", reasons["low_confidence_points"], reasons)
+	}
+	if len(h.store.Facts) != 3 {
+		t.Errorf("wrote %d facts, want 3: Alpha01, Bravo02 and Charlie03 all write", len(h.store.Facts))
+	}
+	bravoID := h.store.members[1].ID
+	f, ok := h.factFor(bravoID)
+	if !ok {
+		t.Fatalf("Bravo02 has no fact: its closed-window 8,000,000 read must have been promoted, not queued")
+	}
+	if f.Value != 8000000 {
+		t.Errorf("Bravo02's fact = %v, want 8,000,000", f.Value)
+	}
+	// Promoted to exactly factConfidenceGate, not left at its own weak 0.09 --
+	// same requirement TestIngestVSAcceptsALowConfidencePointsReadThatSitsInOrder
+	// makes for the 0.52 case; this is the same promotion path at a much lower
+	// starting confidence, which is the whole point of removing the floor.
+	if f.Confidence != factConfidenceGate {
+		t.Errorf("Bravo02's promoted fact confidence = %v, want exactly factConfidenceGate (%v)", f.Confidence, factConfidenceGate)
+	}
+}
+
+// The counterexample that sank RULING C (adjacent seeds), kept because it
+// still demonstrates the underlying point and still must pass: closure
+// (some seed above, some seed below) does not imply narrowness. Five ranks,
+// seeded only at rank 1 (30,000,000) and rank 5 (500,000) -- three ranks
+// apart on both sides -- with the three middle rows read at confidence
+// 0.0000 as mutually OUT OF ORDER values (1,111,111 / 25,000,000 / 9,999,999:
+// rank 3's read is larger than rank 2's, which cannot happen on a real
+// ranking). Every one of those three sits inside [500000, 30000000], the
+// window closure alone provides, so before a width check existed all three
+// would have been written as facts at factConfidenceGate with an empty
+// review queue.
+//
+// The window-to-value ratios here are 26.55, 1.18 and 2.95 -- all well
+// above the 1.0 the width check (Hi-Lo <= points) now requires, so all
+// three are still correctly queued, but for a different, more honest reason
+// than RULING C's adjacency check: adjacency was withdrawn because measured
+// against the REAL capture (not just this synthetic fixture) it cost two
+// correct rows for zero rows of protection (see pointsBound's comment,
+// points.go). This fixture is still useful -- it is the sharpest available
+// SYNTHETIC counterexample -- but it is not, by itself, evidence that the
+// width check is right; see the width check's own comment for the honest
+// limit that applies to it too.
+func TestIngestVSRequiresANarrowWindowNotMerelyAnyClosure(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03", "Delta04", "Echo05"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(5), 0)
+	h.engine.Results = []ocr.Result{
+		// Rank 1: the only seed above.
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "30,000,000", Confidence: 0.95},
+		// Ranks 2-4: parse cleanly (no repair, no retry -- confidence alone
+		// keeps them from seeding), but are wrong and mutually out of order.
+		// Only closure -- not adjacency -- would let any of these through.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "1,111,111", Confidence: 0.0000},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "25,000,000", Confidence: 0.0000},
+		{Text: "Delta04", Confidence: 0.95}, {Text: "Delta04", Confidence: 0.95}, {Text: "9,999,999", Confidence: 0.0000},
+		// Rank 5: the only seed below.
+		{Text: "Echo05", Confidence: 0.95}, {Text: "Echo05", Confidence: 0.95}, {Text: "500,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["low_confidence_points"] != 3 {
+		t.Errorf("low_confidence_points = %d, want 3: Bravo02, Charlie03 and Delta04 are all closed-but-not-adjacent; all reasons: %v", reasons["low_confidence_points"], reasons)
+	}
+	for _, id := range []int64{h.store.members[1].ID, h.store.members[2].ID, h.store.members[3].ID} {
+		if f, ok := h.factFor(id); ok {
+			t.Errorf("member %d has a fact (%v): a closed-but-not-adjacent window must not promote a 0.0000-confidence read", id, f.Value)
+		}
+	}
+	for id, wantValue := range map[int64]float64{
+		h.store.members[0].ID: 30000000,
+		h.store.members[4].ID: 500000,
+	} {
+		f, ok := h.factFor(id)
+		if !ok {
+			t.Errorf("member %d: no fact written, want %v", id, wantValue)
+			continue
+		}
+		if f.Value != wantValue {
+			t.Errorf("member %d: fact = %v, want %v", id, f.Value, wantValue)
+		}
+	}
+}
+
+// The empty points read is the same PSM 7 layout blindness the name field
+// retries for. It is allowed here only because the value has to land inside
+// the window its neighbours define -- a manufactured number has no reason to.
+func TestIngestVSRetriesAnEmptyPointsReadAndAcceptsAnInOrderValue(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Empty at the primary PSM, read at the retry.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "", Confidence: 0},
+		{Text: "8,000,000", Confidence: 0.90},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	// Asserted per member, not as a bare count: a count comparison alone
+	// cannot distinguish "all three rows wrote, one at a wrong value" from
+	// "only two rows wrote" if a third, unrelated fact happened to appear --
+	// and it is exactly as blind to a swap between two members. Each of the
+	// three must exist AND carry its own value.
+	want := map[int64]float64{
+		h.store.members[0].ID: 9000000, // Alpha01: read cleanly by the primary
+		h.store.members[1].ID: 8000000, // Bravo02: empty at the primary, read by the retry
+		h.store.members[2].ID: 7000000, // Charlie03: read cleanly by the primary
+	}
+	for id, wantValue := range want {
+		f, ok := h.factFor(id)
+		if !ok {
+			t.Errorf("member %d: no fact written, want %v", id, wantValue)
+			continue
+		}
+		if f.Value != wantValue {
+			t.Errorf("member %d: fact = %v, want %v", id, f.Value, wantValue)
+		}
+	}
+	if len(h.store.Facts) != 3 {
+		t.Errorf("wrote %d facts, want exactly 3", len(h.store.Facts))
+	}
+}
+
+// The guard that makes the retry defensible at all. A raw-line retry on a crop
+// that caught neighbouring content can produce a well-formed number, and
+// nothing about the number itself says so -- only its position does.
+func TestIngestVSRejectsARetriedPointsValueThatBreaksTheOrder(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "", Confidence: 0},
+		{Text: "44,357,000", Confidence: 0.90}, // well-formed, and impossible at rank 2
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["points_out_of_order"] == 0 {
+		t.Errorf("a fabricated but well-formed retry value was written; all reasons: %v", reasons)
+	}
+	// The reason-count check above cannot tell "Bravo02 was rejected" from
+	// "some unrelated row was queued as points_out_of_order and Bravo02's
+	// fabrication was written anyway" -- checking that Bravo02 specifically
+	// has no fact, and that its two neighbours are untouched by its bad read,
+	// closes that gap.
+	if _, ok := h.factFor(h.store.members[1].ID); ok {
+		t.Errorf("Bravo02 has a fact: its fabricated 44,357,000 must have been rejected, not written")
+	}
+	for id, wantValue := range map[int64]float64{
+		h.store.members[0].ID: 9000000,
+		h.store.members[2].ID: 7000000,
+	} {
+		f, ok := h.factFor(id)
+		if !ok {
+			t.Errorf("member %d: no fact written, want %v", id, wantValue)
+			continue
+		}
+		if f.Value != wantValue {
+			t.Errorf("member %d: fact = %v, want %v", id, f.Value, wantValue)
+		}
+	}
+}
+
+// The controller ruling: a retried value must never seed a bound, even when
+// its own reported confidence clears factConfidenceGate. Bravo02's retried
+// read is a well-formed, high-confidence, individually-in-range number -- so
+// if it were allowed to seed, it would hand rank 3 a Hi ceiling of 1,000,000
+// and reject Charlie03's genuine 7,000,000 read as out of order. Charlie03
+// must be written untouched, and Bravo02's own fabricated value is still
+// judged (and rejected) against the window its REAL neighbours define.
+func TestIngestVSNeverSeedsABoundFromARetriedRead(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Empty at the primary PSM; the retry reads a well-formed, confident,
+		// but fabricated value that a crop catching neighbouring content could
+		// plausibly produce. Bracketed by Alpha01 (9,000,000) and Charlie03
+		// (7,000,000) it is itself out of order and must be rejected -- but the
+		// real question this test asks is whether it also corrupts Charlie03.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "", Confidence: 0},
+		{Text: "1,000,000", Confidence: 0.90},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["points_out_of_order"] != 1 {
+		t.Errorf("points_out_of_order = %d, want exactly 1 (Bravo02's own fabricated read); all reasons: %v", reasons["points_out_of_order"], reasons)
+	}
+	// Asserted per member, not as a bare count. Without the never-seed guard,
+	// Bravo02's 1,000,000 DOES seed a bound -- and the row it corrupts is
+	// Charlie03's, not Bravo02's own: monotonicKnown takes the longest
+	// non-increasing run over the seeds [9M, 1M, 7M], keeps {9M, 1M} on the
+	// first-found tie-break, and drops Charlie03's 7M instead, so Charlie03
+	// is the one queued as points_out_of_order and Bravo02 is the one
+	// written. `len(Facts) != 2` and a reason count of exactly 1 both still
+	// hold in that broken world, and a loop that only inspects facts it
+	// finds for Charlie03's ID never fires, because there is no such fact to
+	// find -- every assertion in this test used to survive that mutation
+	// silently. Checking existence directly is what catches it: with the
+	// guard removed, factFor(Charlie03) below returns ok=false and this test
+	// fails.
+	if f, ok := h.factFor(h.store.members[1].ID); ok {
+		t.Errorf("Bravo02 has a fact (%v): its fabricated 1,000,000 must have been rejected, not written", f.Value)
+	}
+	if f, ok := h.factFor(h.store.members[0].ID); !ok {
+		t.Errorf("Alpha01 has no fact: its genuine 9,000,000 read must not be affected by Bravo02's retry")
+	} else if f.Value != 9000000 {
+		t.Errorf("Alpha01's fact = %v, want 9,000,000", f.Value)
+	}
+	f, ok := h.factFor(h.store.members[2].ID)
+	if !ok {
+		t.Fatalf("Charlie03 has no fact at all: Bravo02's retried read seeded a bound and pushed Charlie03 out of order instead")
+	}
+	if f.Value != 7000000 {
+		t.Errorf("Charlie03's fact = %v, want 7,000,000: Bravo02's retried 1,000,000 must not have capped it", f.Value)
+	}
+	if len(h.store.Facts) != 2 {
+		t.Errorf("wrote %d facts, want exactly 2: Alpha01 and Charlie03", len(h.store.Facts))
+	}
+}
+
+// The second retry trigger, generalized beyond "the primary was empty": a
+// primary read that is non-empty but fails to parse (even after repair) is
+// now also retried, late, in attributeRow's pass-2 loop -- capture 6's rank
+// 79 ("e,2¢8,001", two damaged positions, which repairPoints refuses) is
+// exactly this shape (investigation-retry-confidence.md).
+func TestIngestVSLateRetriesANonEmptyUnparseablePointsReadAndAcceptsAnInOrderValue(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Non-empty at the primary, so pass 1's readFieldWithRetry never
+		// touches this row -- and TWO damaged positions ('€' twice), so
+		// repairPoints refuses by construction (it only solves for exactly
+		// one). Ends in a digit, so trimPointsArtifact's trailing-only trim
+		// does not touch it either: this read is genuinely unparseable at
+		// the primary, not merely dirty at one end.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "€,00€,000", Confidence: 0.30},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		// The late retry's own read, consumed only after every row above has
+		// been read (see readVSRows' doc comment on ordering). It parses
+		// cleanly and lands inside Bravo02's window (bracketed by Alpha01's
+		// 9,000,000 and Charlie03's 7,000,000) -- and at low confidence, to
+		// prove the write below comes from CLOSED-WINDOW promotion, not from
+		// this number happening to be high already.
+		{Text: "8,000,000", Confidence: 0.20},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["unparseable_points"] != 0 {
+		t.Errorf("unparseable_points = %d, want 0: the late retry should have recovered Bravo02's row; all reasons: %v", reasons["unparseable_points"], reasons)
+	}
+	bravoID := h.store.members[1].ID
+	f, ok := h.factFor(bravoID)
+	if !ok {
+		t.Fatalf("Bravo02 has no fact: the late retry's 8,000,000 must have been written")
+	}
+	if f.Value != 8000000 {
+		t.Errorf("Bravo02's fact = %v, want 8,000,000", f.Value)
+	}
+	// Closed on both sides, so promoted to exactly factConfidenceGate, not
+	// left at the retry's own weak 0.20 and not boosted past the gate either
+	// -- same promotion rule as any other row, earning the retry no special
+	// treatment.
+	if f.Confidence != factConfidenceGate {
+		t.Errorf("Bravo02's promoted fact confidence = %v, want exactly factConfidenceGate (%v)", f.Confidence, factConfidenceGate)
+	}
+}
+
+// Minor 7 (fix round 1 findings): when the late retry ALSO fails to produce
+// a usable value, the row that reaches unparseable_points must surface what
+// the retry read, not only the primary's original garbled text -- a human
+// triaging the queue otherwise cannot tell "a second read was taken and
+// also failed" from "no second read was ever attempted".
+func TestIngestVSSurfacesTheFailedLateRetryTextToReview(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Two damaged positions: unparseable at the primary, triggering the
+		// late retry.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "€,00€,000", Confidence: 0.10},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+		// The late retry's own read: parses fine, but out of window (bound
+		// is [7,000,000, 9,000,000]), so retryPointsLate reports ok=false --
+		// and the row is still queued, but its text must not be lost.
+		{Text: "1,000,000", Confidence: 0.40},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["unparseable_points"] != 1 {
+		t.Fatalf("unparseable_points = %d, want 1; all reasons: %v", reasons["unparseable_points"], reasons)
+	}
+	var found bool
+	for _, r := range h.store.Reviews {
+		if r.Reason != "unparseable_points" {
+			continue
+		}
+		found = true
+		if !strings.Contains(r.RawText, "€,00€,000") {
+			t.Errorf("queued RawText %q does not contain the primary's own read", r.RawText)
+		}
+		if !strings.Contains(r.RawText, "1,000,000") {
+			t.Errorf("queued RawText %q does not contain the late retry's read -- a reviewer cannot tell a retry was even attempted", r.RawText)
+		}
+	}
+	if !found {
+		t.Fatalf("no unparseable_points review row found")
+	}
+}
+
+// RULING D: the generalized trigger fires on a PARSE failure only, never on
+// "parsed but landed outside the window". That second half shipped briefly
+// and was removed -- nothing had measured it, and firing it means adjudicating
+// PSM 13 (documented to introduce a +3,000,000 leading-digit artifact) against
+// a window already in conflict with the primary, which may itself be a strong
+// read monotonicKnown's tie-break dropped rather than a bad one. This is the
+// regression test: a primary that PARSES cleanly but is out of order must be
+// queued directly, with no late retry attempted at all -- the fixture supplies
+// no extra OCR result for one, so if the trigger regressed to firing on this
+// shape too, the fake engine would exhaust and this test would see an error
+// instead of a clean queue.
+func TestIngestVSDoesNotLateRetryAnOutOfOrderPointsRead(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Parses cleanly -- no repair needed, no parse failure -- but
+		// 1,000,000 cannot rank above Charlie03's 7,000,000, so this is out
+		// of order rather than unparseable. No further Result follows for
+		// this row: a late retry firing anyway would exhaust the fake engine.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "1,000,000", Confidence: 0.50},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v (a late retry firing on an out-of-window primary would exhaust the fake engine and surface here)", err)
+	}
+	if reasons := h.reviewReasons(); reasons["points_out_of_order"] != 1 {
+		t.Errorf("points_out_of_order = %d, want 1: Bravo02's out-of-order read, queued directly with no retry attempted; all reasons: %v", reasons["points_out_of_order"], reasons)
+	}
+	if _, ok := h.factFor(h.store.members[1].ID); ok {
+		t.Errorf("Bravo02 has a fact: its out-of-order primary must have been queued, not written or retried into a write")
+	}
+	for id, wantValue := range map[int64]float64{
+		h.store.members[0].ID: 9000000,
+		h.store.members[2].ID: 7000000,
+	} {
+		f, ok := h.factFor(id)
+		if !ok {
+			t.Errorf("member %d: no fact written, want %v", id, wantValue)
+			continue
+		}
+		if f.Value != wantValue {
+			t.Errorf("member %d: fact = %v, want %v", id, f.Value, wantValue)
+		}
+	}
+}
+
+// A row pass 1 already retried (its primary PSM was empty) must not be
+// late-retried a second time, even when the pass-1 retry's own read is
+// itself unusable: PointsText already IS the PSM-13 read, so a further
+// attempt would re-read the identical crop with the identical plan for no
+// chance of a different answer, and would spend an OCR call the fixture
+// below deliberately does not provide -- if the guard were dropped, the fake
+// engine runs dry and IngestVS returns an error instead of a clean queue.
+func TestIngestVSDoesNotLateRetryARowThePrimaryPassAlreadyRetried(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "9,000,000", Confidence: 0.95},
+		// Empty at the primary, so pass 1's readFieldWithRetry fires --
+		// and the retry it runs is ITSELF unparseable (two damaged
+		// positions), so PointsFromRetry is true but the row is still
+		// unusable. No further Result follows for this row: a late retry
+		// firing anyway would exhaust the fake engine.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "", Confidence: 0},
+		{Text: "€,00€,000", Confidence: 0.10},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "7,000,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v (a late retry firing anyway would exhaust the fake engine and surface here)", err)
+	}
+	if reasons := h.reviewReasons(); reasons["unparseable_points"] != 1 {
+		t.Errorf("unparseable_points = %d, want 1: Bravo02's retried-but-still-garbled read", reasons["unparseable_points"])
+	}
+	if _, ok := h.factFor(h.store.members[1].ID); ok {
+		t.Errorf("Bravo02 has a fact: its unparseable retried read must have been queued, not written")
+	}
+}
+
+// The controller ruling this trigger must obey too: a late-retried value is
+// judged by the SAME confidence and corroboration rules as any other read,
+// not written on the strength of having been recovered at all. Bravo02
+// sits at rank 1, where Hi is always open (nothing ranks above it -- see
+// TestIngestVSDoesNotPromoteAnOpenEndedWindow for the same argument against
+// the primary-path retry), so even though the late retry parses and lands
+// inside the (one-sided) window, it must still queue on its own low
+// confidence rather than being written because a retry "found something".
+func TestIngestVSLateRetriedValueEarnsNoConfidenceBoost(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(2), 0)
+	h.engine.Results = []ocr.Result{
+		// Rank 1: unparseable at the primary, no neighbour above.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "€,00€,000", Confidence: 0.30},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "5,000,000", Confidence: 0.95},
+		// The late retry: parses, and satisfies the one real bound it has
+		// (>= Charlie03's 5,000,000), but at a confidence far below
+		// factConfidenceGate.
+		{Text: "9,000,000", Confidence: 0.30},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	reasons := h.reviewReasons()
+	if reasons["low_confidence_points"] != 1 {
+		t.Errorf("low_confidence_points = %d, want 1: the retry succeeded structurally but its confidence never clears the gate on an open window; all reasons: %v", reasons["low_confidence_points"], reasons)
+	}
+	// Specifically NOT unparseable_points or points_out_of_order: those would
+	// mean the retry never actually recovered a usable value, which is a
+	// different failure than the one this test is checking for.
+	if reasons["unparseable_points"] != 0 || reasons["points_out_of_order"] != 0 {
+		t.Errorf("expected only low_confidence_points, got: %v", reasons)
+	}
+	if _, ok := h.factFor(h.store.members[0].ID); ok {
+		t.Errorf("Bravo02 has a fact: a late-retried value must not be written on an open-ended window at low confidence")
+	}
+}
+
+// RULING E: a value repairPoints CONSTRUCTED must not be promoted by the
+// closed-window check, even when the window is both closed and adjacent.
+// repairPoints solves the damaged digit AGAINST bound, so withinBounds
+// cannot fail for its own output -- "the window corroborates it" would
+// really mean "the value was built to satisfy the window it is now being
+// credited with satisfying." Bravo02's primary has exactly one damaged
+// position and repairPoints resolves it uniquely to 8,500,000 -- but at the
+// primary's own near-zero confidence (0.02), which must decide this row on
+// its own merits since the window contributes nothing evidential.
+func TestIngestVSDoesNotPromoteARepairedValue(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	for _, name := range []string{"Alpha01", "Bravo02", "Charlie03"} {
+		h.store.nextMemberID++
+		h.store.members = append(h.store.members, db.Member{
+			ID: h.store.nextMemberID, AllianceID: 1, Name: name,
+			NameNormalized: roster.Normalize(name), Active: true,
+		})
+	}
+	h.addFrame(vsFrame(3), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "Alpha01", Confidence: 0.95}, {Text: "Alpha01", Confidence: 0.95}, {Text: "8,700,000", Confidence: 0.95},
+		// One damaged position ('€'). Within [8,300,000, 8,700,000] -- the
+		// window Alpha01 and Charlie03 (its immediate, adjacent neighbours)
+		// define -- only d=8 admits a candidate (8,500,000); d=7 gives
+		// 7,500,000 (below Lo) and d=9 gives 9,500,000 (above Hi), so
+		// repairPoints resolves it uniquely rather than refusing. Confidence
+		// is the primary read's own, near zero: no pixel evidence backs the
+		// damaged position itself.
+		{Text: "Bravo02", Confidence: 0.95}, {Text: "Bravo02", Confidence: 0.95}, {Text: "€,500,000", Confidence: 0.02},
+		{Text: "Charlie03", Confidence: 0.95}, {Text: "Charlie03", Confidence: 0.95}, {Text: "8,300,000", Confidence: 0.95},
+	}
+
+	if _, err := h.IngestVS(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if reasons := h.reviewReasons(); reasons["low_confidence_points"] != 1 {
+		t.Errorf("low_confidence_points = %d, want 1: Bravo02's repaired value must be judged on its own confidence, not the window; all reasons: %v", reasons["low_confidence_points"], reasons)
+	}
+	if f, ok := h.factFor(h.store.members[1].ID); ok {
+		t.Errorf("Bravo02 has a fact (%v): a repaired value must not be promoted by a closed, adjacent window alone", f.Value)
+	}
+	for id, wantValue := range map[int64]float64{
+		h.store.members[0].ID: 8700000,
+		h.store.members[2].ID: 8300000,
+	} {
+		f, ok := h.factFor(id)
+		if !ok {
+			t.Errorf("member %d: no fact written, want %v", id, wantValue)
+			continue
+		}
+		if f.Value != wantValue {
+			t.Errorf("member %d: fact = %v, want %v", id, f.Value, wantValue)
+		}
+	}
+}
+
+// Both segmentation modes run on every name crop and the better score wins.
+// Their miss sets are disjoint in four places on capture 6, so this is not a
+// tie-break, it is two independent readings of the same pixels.
+func TestIngestVSTakesTheBetterOfTwoNameReads(t *testing.T) {
+	h := newVSHarness(t, "complete")
+	h.store.nextMemberID++
+	h.store.members = append(h.store.members, db.Member{
+		ID: h.store.nextMemberID, AllianceID: 1, Name: "Alpha01",
+		NameNormalized: roster.Normalize("Alpha01"), Active: true,
+	})
+	h.addFrame(vsFrame(1), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: "XXXXXXX", Confidence: 0.95}, // primary mode: matches nobody
+		{Text: "Alpha01", Confidence: 0.95}, // second mode: exact
+		{Text: "9,000,000", Confidence: 0.95},
+	}
+
+	res, err := h.IngestVS(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if res.Matched != 1 {
+		t.Errorf("matched %d, want 1: the second mode read the name exactly", res.Matched)
 	}
 }

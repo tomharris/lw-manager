@@ -116,6 +116,22 @@ instead of creating a duplicate account.
   `m4probe`, needs the blob store and tesseract, no database.
   `-probe.detail` is the per-member view, `-probe.sweep` and `-probe.fbsweep`
   the option grids for the primary read and the retry.
+- `make probe-points` — **not a gate**: the same instrument for the points
+  field. It reads every band and reports rows exact, bands exact, within 1%,
+  unparseable, empty, low-confidence and retried, so a change can be read
+  against the column it was supposed to move. Note what it cannot tell you:
+  it attributes a band to a rank **by value**, so a misread band matches no
+  rank and simply drops out of the exact count — it can never show you what
+  a wrong number actually said. `-points.detail`, `-points.sweep`,
+  `-points.psm` and `-points.fbsweep` mirror the name probe's flags.
+- `make probe-assign` — **not a gate**: the measuring instrument for closed-set
+  matching. Reach for it before changing `roster.ResidualFloor`,
+  `ResidualMargin` or `residualMatchConfidence`, and after. Two of its modes
+  keep its own numbers honest and both should be run before believing a
+  headline: `-probe.assignshuffle` rotates the truth labels so every
+  assignment is wrong by construction (it must report ~0 correct), and
+  `-probe.assigndecoys=N` pads the member set, because the gate's capture is
+  square and production is not.
 - `make gate` — the M1 phase gate: recognizer accuracy against the real
   corpus. Tagged `//go:build corpus`, device-free but slow, so it stays out
   of `make test`. Skips when the corpus has not been pulled. Carries an
@@ -404,6 +420,73 @@ The tell was *implausible* uniformity — `full x2` and `gray x4` cannot produce
 identical results on the same crops. Treat suspicious agreement with the same
 scrutiny as suspicious disagreement, especially when it confirms that a thing
 you did not want to do is unnecessary.
+
+### A clean measurement is not a validated one
+
+The assignment probe reported zero misattributions at every setting, including
+a forced assignment at floor 0 / margin 0 — which produced a *perfect* result.
+That reads as an overwhelming finding and was, at that point, an untested
+instrument: nothing had shown the probe could report a wrong assignment at all.
+Rotating the truth labels by one rank did, at 0 correct against 71 wrong.
+
+This is the "broken instrument reports agreement" lesson with the sign
+flipped. There, implausible *uniformity* was the tell. Here the result was
+plausible and simply unvalidated, and the discipline is the same either way:
+before believing a measurement, establish that it can produce the answer you
+are hoping not to see.
+
+### The gate's capture is square and production is not
+
+`fixtures/m4gate/expected.yaml` transcribes only the ranked rows, so a member
+list built from it gives every member a row. The weekly ranking lists scorers
+only — recon measured 94 ranked rows against 96 alliance members — so the
+residual pool in production always holds members no row can claim. Any
+measurement that keys on the closed-set structure must be re-run with
+`-probe.assigndecoys` before it means anything about a real capture.
+
+### A probe's default is not necessarily production's configuration
+
+`make probe-assign` unions one page-segmentation mode by default; `IngestVS`
+reads every name crop at PSM 7 **and** PSM 13 and takes the better per member.
+So the bare invocation models a **weaker** pipeline than the one that ships,
+and the gap is not cosmetic. Measuring decoration stripping, the default
+reported `84/86 correct, wrong 1` — a misattribution, which is the one failure
+this project treats as unrecoverable — while `-probe.assignpsm=13` reported
+`86/86, wrong 0` on the same change, and `make gate-m4` agreed with the
+second. Acting on the default would have rejected a change that is strictly
+better.
+
+The general form: an instrument that models the pipeline has a configuration,
+and "the default" is a choice someone made for speed, not a claim that it
+matches production. Before believing a probe's headline — especially a
+`wrong` count, which is the number most likely to stop a change — check that
+what it is reading matches what ships. This is the same defect shape as a
+documented invocation that silently runs the wrong test; the output is honest
+about what it measured and says nothing about what you assumed it measured.
+
+### A passing aggregate hides everything its tolerance is wider than
+
+`make gate-m4` counts a row correct when its parsed points land within 1% of
+the hand-checked value. On rank 7 of the M4 capture that tolerance is a window
+183,000 wide. `Mar 89` was written as 18,356,304 against a hand-checked
+18,356,804 — one digit, an 8 read as a 3 — and the gate counts it among the 83
+rows it passes, because 500 on 18.3M is 0.0027%. Every low-order digit misread
+in that capture passes the same way. So 83/86 says each row reached the right
+member carrying roughly the right magnitude; it does not say the number is
+correct, and it must not be quoted as if it did.
+
+It was found by dumping the written facts and diffing them against
+`expected.yaml` member by member — a different act from running the gate. The
+gate's own report cannot surface it by construction, because the row sits on
+the passing side of the gate's own arithmetic.
+
+That is the "two aggregates" lesson one step further along. There the
+aggregates were accurate and supported the wrong *cause*, and a per-item view
+said which cause was real. Here the aggregate is a **pass**: there is no
+anomaly to explain and nothing prompts anyone to look, so the per-item view is
+what establishes that a failure exists at all. A green number is the hardest
+aggregate to interrogate, and interrogating it means a full readout against
+ground truth, not a re-run.
 
 ### Tesseract's layout analysis is blind to some perfectly legible crops
 
