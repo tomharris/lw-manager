@@ -58,6 +58,8 @@ var (
 		"measure closed-set assignment against today's per-row threshold matching")
 	probeAssignPSMs = flag.String("probe.assignpsm", "",
 		"extra page-segmentation modes to union into each row's score vector, e.g. '13'; the shipped PSM always runs")
+	probeAssignLangs = flag.String("probe.assignlangs", "",
+		"override vsNameLanguages on both the primary read and the retry, e.g. 'eng+kor+chi_sim+jpn+grc'; empty uses whatever vsNameSpec ships with")
 	probeAssignDetail = flag.Bool("probe.assigndetail", false,
 		"per-row view: the rows the assignment resolved that the threshold did not, every row it got wrong (including ones the threshold resolved too), and the rows still unassigned")
 	probeAssignShuffle = flag.Bool("probe.assignshuffle", false,
@@ -269,7 +271,16 @@ func readAssignRows(ctx context.Context, t *testing.T, engine *ocr.TesseractEngi
 			for _, psm := range psms {
 				primary := readPlan{spec: vsNameSpec, opts: vsNameOptions}
 				primary.spec.PSM = psm
-				read, _, err := ing.readFieldWithRetry(ctx, f.Img, rect, primary, vsNameRetry)
+				retry := vsNameRetry
+				// Overridden on BOTH plans, never one, for the reason
+				// vsNameLanguages' own doc gives: a list changed on the
+				// primary and not the retry is not the configuration any
+				// number here would describe.
+				if *probeAssignLangs != "" {
+					primary.spec.Languages = *probeAssignLangs
+					retry.spec.Languages = *probeAssignLangs
+				}
+				read, _, err := ing.readFieldWithRetry(ctx, f.Img, rect, primary, retry)
 				if err != nil {
 					t.Fatalf("reading frame %d band %d: %v", f.Seq, band.Y0, err)
 				}

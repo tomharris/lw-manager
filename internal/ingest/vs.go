@@ -135,6 +135,47 @@ const (
 //	eng+kor+chi_sim+jpn    73/86            (120/142)  <- chosen
 //	all seven installed    70/86            (116/142)
 //
+// Re-measured against the SHIPPED pipeline after closed-set assignment,
+// the residual phase and the PSM 7+13 union landed, because the table above
+// was taken under per-row AutoAccept matching and that is not the population
+// this constant now feeds. The two rows the packs are always proposed for are
+// ranks 31 ("ϟϟ Leo ϟϟ") and 39 ("٣١٢ A l i ٣١٢"), the gate's only two
+// name-stage misses:
+//
+//	eng+kor+chi_sim+jpn        73/86 distinct  (120/142)  <- shipped
+//	eng+kor+chi_sim+jpn+grc    73/86           (120/142)
+//	eng+kor+chi_sim+jpn+ara    73/86           (120/142)
+//	eng+kor+chi_sim+jpn+ell    72/86           (119/142)
+//
+// and on the closed-set metric `make probe-assign` reports correct 71/86,
+// wrong 0, unassigned 15 both with the shipped list and with +grc+ara -- not
+// one row moves.
+//
+// Ranks 31 and 39 are byte-identical under every one of those: rank 31 still
+// reads ">> Lea >>" at score 28, rank 39 still loses its own band to
+// "HAL 9000". So the packs are INERT ON THE ROWS THEY ARE FOR, which is a
+// stronger statement than the cost accounting above and is the one to quote.
+//
+// grc (Ancient Greek) is the interesting negative and the reason this was
+// re-run at all. Rank 31's decoration is U+03DF GREEK SMALL LETTER KOPPA, an
+// archaic letter dropped from the classical alphabet and surviving mainly as
+// the numeral 90 -- so ell, trained on modern Greek, cannot contain it, and
+// the original table's rejection of ell was not evidence about Greek at all.
+// grc can contain it and still changes nothing: at this resolution the glyph
+// genuinely looks like ">>", and a decoration carries no word context for a
+// language model to bring to bear. That is the same reason ara is inert on
+// rank 39 -- Arabic-Indic *digits* used as ornament are not words.
+//
+// Guard against believing that uniformity: `-probe.langs=grc` alone scores
+// 0/86 on 0/142 bands, as does ara alone. The packs load and dominate when
+// they are the only list; they simply have nothing to say about these rows.
+//
+// The conclusion is that no language pack fixes these two names, and the
+// place to look instead is the MATCHER: strip the decoration run from both
+// the stored name and the read before scoring, so "ϟϟ Leo ϟϟ" vs ">> Lea >>"
+// becomes "Leo" vs "Lea". That is a roster.Normalize question, not an OCR
+// one, and it is not attempted here.
+//
 // The whole gain is CJK. Three of the packs this roster's scripts appear to
 // call for actively cost members, and rus is the clearest: Cyrillic's capitals
 // are drawn like Latin's, so the pack adds hypotheses nothing in the image can
