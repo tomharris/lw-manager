@@ -134,6 +134,35 @@ probe-assign: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
 probe-assign:
 	LW_BLOB_FS_ROOT="$(LW_BLOB_FS_ROOT)" $(GO) test -tags m4probe -count=1 -v -timeout 60m ./internal/ingest/ -run TestM4AssignProbe -probe.assign $(PROBE_ARGS)
 
+# make probe-roster -- NOT a gate: the measuring instrument for the roster
+# route's name column, and the roster's counterpart to probe-m4 / probe-points
+# / probe-assign. It asserts nothing and always passes; reading its output is
+# the point. Needs the blob store and tesseract, no database.
+#
+# It has no hand-checked transcription behind it -- there is no roster
+# equivalent of fixtures/m4gate/expected.yaml -- so it scores against the VS
+# fixture's 86 names, which are hand-transcribed but neither complete (96
+# members, 86 scorers) nor contemporaneous (three days apart). Read `exact` as
+# a LOWER bound and never as an accuracy.
+#
+# The column that carries the signal is `junk-prefixed`: reads that are a known
+# name plus one leading token. Those are provably-correct reads with something
+# the crop let in, and the count does not depend on the truth set being
+# complete. A crop change is read against that column first.
+#
+#   -roster.detail      per-band reads and verdicts, to localize
+#   -roster.x0sweep     sweep nameXFrac0 across the gutter
+#   -roster.inkprofile  the column histogram the crop edges are placed from
+#
+#	make probe-roster
+#	make probe-roster PROBE_ARGS='-roster.detail'
+#	make probe-roster PROBE_ARGS='-roster.x0sweep'
+#	make probe-roster PROBE_ARGS='-roster.inkprofile -roster.maxframes=12'
+.PHONY: probe-roster
+probe-roster: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
+probe-roster:
+	LW_BLOB_FS_ROOT="$(LW_BLOB_FS_ROOT)" $(GO) test -tags m4probe -count=1 -v -timeout 60m ./internal/ingest/ -run TestRosterNameProbe $(PROBE_ARGS)
+
 .PHONY: lint
 lint:
 	$(GO) vet ./...
