@@ -44,6 +44,9 @@ make build                    # bin/agent, bin/control
 ./bin/control resume
 ./bin/agent accounts                                 # what is registered
 
+./bin/control alliance set --tag <tag> --name <name>  # the one tracked alliance, once
+./bin/control ingest --capture <id>                   # capture -> facts (M4); --period overrides
+
 ./bin/agent record --interval 2s --duration 10m   # burst-capture the corpus
 ./bin/agent studio --addr 0.0.0.0:8088            # label and crop, from a browser
 ./bin/agent corpus index && ./bin/agent corpus push
@@ -54,6 +57,8 @@ make gate                                         # the same gate, as a test
 make gate-m4                                      # the M4 gate: ingest vs a hand-checked capture
 make probe-m4                                     # measure the name field; not a gate, read the output
 make probe-m4 PROBE_ARGS='-probe.detail'          # per-member, to localize
+make probe-points                                 # measure the points field; also not a gate
+make probe-assign                                 # measure closed-set matching; also not a gate
 ```
 
 `register` probes the device over adb rather than taking a resolution flag:
@@ -188,7 +193,7 @@ hang the suite. Override per-test with `rt.MaxServes`.
 
 ### The fixture corpus lives in the blob store, not in git
 
-200+ full-resolution screenshots is 300–600 MB, which git would keep in
+600+ full-resolution screenshots is 437 MB today, which git would keep in
 history forever. So `fixtures/corpus/<label>/<sha256>.png` is gitignored and
 the bytes live in the content-addressed blob store; only
 `fixtures/corpus/index.yaml` is committed. `agent corpus pull` materializes
@@ -345,8 +350,8 @@ right one.
 
 The M1 gate and the separation report above cover **identifying anchors
 only** — `recognizer.go` skips every anchor whose `IdentifiesScreen` is
-false, so no observation was ever produced for a tap target: 20 anchors
-measured against the gate, 38 invisible to it. The gate proved the bot knew
+false, so no observation was ever produced for a tap target: of 59 anchors in
+the manifest, 20 are measured against the gate and 39 are invisible to it. The gate proved the bot knew
 where it was standing and nothing proved it could hit what it aimed at.
 
 `agent score --actions [--screen X]` now measures them, reusing
@@ -469,11 +474,11 @@ about what it measured and says nothing about what you assumed it measured.
 `make gate-m4` counts a row correct when its parsed points land within 1% of
 the hand-checked value. On rank 7 of the M4 capture that tolerance is a window
 183,000 wide. `Mar 89` was written as 18,356,304 against a hand-checked
-18,356,804 — one digit, an 8 read as a 3 — and the gate counts it among the 83
-rows it passes, because 500 on 18.3M is 0.0027%. Every low-order digit misread
-in that capture passes the same way. So 83/86 says each row reached the right
-member carrying roughly the right magnitude; it does not say the number is
-correct, and it must not be quoted as if it did.
+18,356,804 — one digit, an 8 read as a 3 — and the gate counted it among the
+rows it passed, because 500 on 18.3M is 0.0027%. Every low-order digit misread
+in that capture passes the same way. So the headline (85/86 as of 2026-08-19)
+says each row reached the right member carrying roughly the right magnitude; it
+does not say the number is correct, and it must not be quoted as if it did.
 
 It was found by dumping the written facts and diffing them against
 `expected.yaml` member by member — a different act from running the gate. The
@@ -529,8 +534,18 @@ folds these, and that is the only reason a name like `ΔKΔŽΔ` is matchable.
 A **decoration in another script** — `한씨아저씨`, `Danny 狂`, `٣١٢ A l i ٣١٢` —
 is not a homoglyph and must never be folded, because there is nothing to fold
 it *to*. An English-only tesseract returns empty for these at every
-preprocessing setting (15 of 142 bands, measured), which is a missing language
-pack, not a tuning problem.
+preprocessing setting (15 of 142 bands, measured).
+
+**Language packs are the obvious fix and were measured inert** on the two rows
+the gate actually lost to decoration: `ϟϟ Leo ϟϟ` and `٣١٢ A l i ٣١٢` come back
+byte-identical under `+grc`, `+ara` and `+ell` alike. The fix is in the matcher.
+`roster.stripDecoration` scores `ϟϟ Leo ϟϟ` against `">> Lea >>"` as `Leo`
+against `Lea`, which took the gate 83/86 to 85/86 with every row matched. It
+runs **after** homoglyph folding, on `Normalize`'s output, and the reverse order
+fails *silently*: the decoration score is taken as a maximum, so stripping raw
+text scores near zero, loses the maximum and contributes nothing while every
+other test still passes. The pack table and the rest of the reasoning sit above
+`vsNameLanguages` in `internal/ingest/vs.go`.
 
 A **confusable** is the third case and needs its own mechanism: the player
 typed what the roster records and the *engine* returned a different character,
