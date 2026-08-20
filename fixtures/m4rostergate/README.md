@@ -210,8 +210,11 @@ The four conditions from the design doc's §4
    right rank group;
 2. zero splits — no two `members` rows correspond to the same transcribed
    member, and no `members` row corresponds to nobody;
-3. every transcribed member not created produced a `review_queue` row naming
-   them — nothing dropped silently;
+3. the count of transcribed members never created is no greater than the
+   count of name-class `review_queue` rows — nothing dropped silently, as
+   far as a count comparison can show it, since a review row records a
+   screen position and its raw text, not a member, so it cannot name which
+   missing member it stands for;
 4. `RosterResult.PerGroup` and `Status` describe what was parsed, truthfully:
    a `partial` capture that correctly reports a short group **passes**, and a
    `complete` capture with a group missing, or a group whose `Expected`
@@ -228,10 +231,10 @@ would make the gate unable to go green until the route is perfect, and a gate
 that cannot go green is not a ratchet.
 
 The denominator for condition 1 is **transcribed members, not the alliance
-count**. Those differ by R1's collapsed group and the leader's banner row, and
-neither is anything the pipeline could read from these pixels — scoring
-against the alliance count would be scoring against frames the capture does
-not contain.
+count**. Those differ by R1's collapsed group, R4's collapsed group and the
+leader's banner row (97 − 75 = 22 = 12 + 9 + 1), and none of it is anything
+the pipeline could read from these pixels — scoring against the alliance
+count would be scoring against frames the capture does not contain.
 
 ## Frames are not in git
 
