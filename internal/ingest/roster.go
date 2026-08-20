@@ -124,10 +124,14 @@ const memberRowPitch = 112
 // The whitelist deserves its own line because it is the obvious thing to reach
 // for on a field of digits, and because it does not merely fail: through the
 // count-only rectangle it returns the empty string on every R2 frame, and
-// through this rectangle at gray+thr x2 it manufactures "2 1/1" on four of
-// them -- a parsed total of 1 against a real 11-member group, which is exactly
-// the under-count that stops a group's members being created. It is measured
-// so that it stays rejected on evidence.
+// through this rectangle at gray+thr x2 it manufactures a count on four of
+// them -- "2 1/1" on seq 29, 44 and 45, "82 1/1" on seq 60, every one of which
+// parses to a total of 1 against a real 11-member group. That is exactly the
+// under-count that stops a group's members being created, and the leading
+// digits differing while the fabricated total does not is the point: the
+// whitelist is not reading one stable wrong thing, it is forcing whatever the
+// crop holds into digits. It is measured so that it stays rejected on
+// evidence.
 //
 // The same reads reproduce outside internal/ingest's read path entirely, on
 // vision.Preprocess plus the tesseract binary, with none of this package

@@ -230,8 +230,9 @@ func TestParseLastActiveRejectsRealMisreadsFromBothConditions(t *testing.T) {
 //
 // It does not read R2's count either. What it does instead is FABRICATE:
 // through groupHeaderRegion at gray+thr x2, "0123456789/" turns four of those
-// 21 unreadable frames into "2 1/1", which parseGroupHeader accepts as a total
-// of 1 for a group of 11. That is the direction of error this package has no
+// 21 unreadable frames into a count-shaped token -- "2 1/1" on seq 29, 44 and
+// 45, "82 1/1" on seq 60 -- and parseGroupHeader accepts every one of them as
+// a total of 1 for a group of 11. That is the direction of error this package has no
 // defence against downstream -- total feeds groupTracker.expected, and
 // gt.matchedOrCreated < gt.expected gates member creation, so an
 // under-count silently stops the rest of the group being created (task 24's
@@ -247,7 +248,8 @@ func TestGroupHeaderSpecHasNoCharset(t *testing.T) {
 	if groupHeaderSpec.Charset != "" {
 		t.Errorf("groupHeaderSpec.Charset = %q, want empty -- a whitelist here was measured "+
 			"FABRICATING a count, not fixing one: \"0123456789/\" turned four unreadable R2 headers "+
-			"into \"2 1/1\", i.e. a total of 1 for a group of 11, which parseGroupHeader accepts "+
+			"into a count-shaped token (\"2 1/1\" on three frames, \"82 1/1\" on the fourth), each "+
+			"parsing to a total of 1 for a group of 11, which parseGroupHeader accepts "+
 			"because 1/1 is coherent. total feeds groupTracker.expected and gates member creation, "+
 			"so that under-count silently stops the other 10 members being created. Re-run "+
 			"`make probe-roster PROBE_ARGS=-roster.headeropts` before restoring one, and read "+
