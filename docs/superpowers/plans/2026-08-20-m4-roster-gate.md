@@ -231,9 +231,15 @@ type expectedRoster struct {
 type expectedRosterAlliance struct {
 	Tag  string `yaml:"tag"`
 	Name string `yaml:"name"`
-	// MemberCount is the "96" of "Members: 96/100" read off the alliance
+	// MemberCount is the "97" of "Members: 97/100" read off the alliance
 	// frame. It is the alliance-total reconciliation's ground truth.
 	MemberCount int `yaml:"member_count"`
+	// Leader occupies the MEMBER LIST screen's banner and has no rank-group
+	// row, while every other member has one. That is why the group totals sum
+	// to one less than MemberCount, and recording the name is what makes the
+	// loader's off-by-one check a statement about this screen's structure
+	// rather than a fudge factor.
+	Leader string `yaml:"leader"`
 }
 
 // expectedRosterFrame names one captured screenshot by content hash. OffsetPx
@@ -254,10 +260,17 @@ type expectedRosterFrame struct {
 // ground truth here rather than something the gate infers, because the header
 // count is the structural gate on member creation and is currently the
 // route's dominant defect.
+// Expanded records whether roster_capture opened this group during the run.
+// R1 Danger Zone reads "0/12" and is still COLLAPSED in capture 1's final
+// frame, so its twelve members have no rows anywhere in the capture: they are
+// a group the capture saw and never opened, not twelve members the pipeline
+// lost. The distinction is the whole reason this field exists -- without it a
+// collapsed group is indistinguishable from a catastrophic read failure.
 type expectedGroup struct {
-	Rank  string `yaml:"rank"`
-	Name  string `yaml:"name"`
-	Total int    `yaml:"total"`
+	Rank     string `yaml:"rank"`
+	Name     string `yaml:"name"`
+	Total    int    `yaml:"total"`
+	Expanded bool   `yaml:"expanded"`
 }
 
 // expectedMember is one member row as a human read it, at full resolution,
@@ -336,12 +349,18 @@ func loadExpectedRoster(t *testing.T, path string) expectedRoster {
 		t.Fatalf("%s: no groups listed; group headers are ground truth here, not inferred", path)
 	}
 
-	// The group totals must add up to the alliance count. This is the
-	// transcription's own internal check and it is worth more than it looks:
-	// it is the one arithmetic relation the screen states twice, so a
-	// disagreement means a header was misread or a group was missed
-	// entirely, and either would silently weaken every condition the gate
-	// then asserts.
+	// The group totals plus the leader must equal the alliance count. This is
+	// the transcription's own internal check and it is worth more than it
+	// looks: it is the one arithmetic relation the screen states twice, so a
+	// disagreement means a header was misread or a group was missed entirely,
+	// and either would silently weaken every condition the gate then asserts.
+	//
+	// Plus the leader, not equal outright: the leader occupies the MEMBER LIST
+	// banner and has no rank-group row, while every other member has one. On
+	// capture 1 that is 9 + 64 + 11 + 12 = 96 against a "Members: 97/100"
+	// line. An alliance where that relation does not hold fails here loudly,
+	// which is the right failure -- it means the screen's structure changed
+	// and every group-keyed assumption in this package needs re-reading.
 	sum := 0
 	seenRank := map[string]bool{}
 	for _, g := range exp.Groups {
@@ -357,9 +376,21 @@ func loadExpectedRoster(t *testing.T, path string) expectedRoster {
 		}
 		sum += g.Total
 	}
-	if sum != exp.Alliance.MemberCount {
-		t.Fatalf("%s: group totals sum to %d but the alliance frame reads %d; one header was misread or a group is missing",
-			path, sum, exp.Alliance.MemberCount)
+	if exp.Alliance.Leader == "" {
+		t.Fatalf("%s: alliance leader is required; the sum check below is a statement about the leader having no group row", path)
+	}
+	if sum+1 != exp.Alliance.MemberCount {
+		t.Fatalf("%s: group totals sum to %d, +1 for leader %q = %d, but the alliance frame reads %d; a header was misread, a group is missing, or this screen no longer puts exactly one member in the banner",
+			path, sum, exp.Alliance.Leader, sum+1, exp.Alliance.MemberCount)
+	}
+
+	// Every transcribed member must belong to a group the capture EXPANDED.
+	// A member listed under a collapsed group is a transcription error by
+	// construction: the capture contains no row for them to have been read
+	// from, so asserting them would fail the gate on frames that do not exist.
+	expanded := map[string]bool{}
+	for _, g := range exp.Groups {
+		expanded[g.Rank] = g.Expanded
 	}
 
 	seenName := map[string]bool{}
@@ -369,6 +400,9 @@ func loadExpectedRoster(t *testing.T, path string) expectedRoster {
 		}
 		if !seenRank[m.Rank] {
 			t.Fatalf("%s: member %q is in group %q, which is not in the groups list", path, m.Name, m.Rank)
+		}
+		if !expanded[m.Rank] {
+			t.Fatalf("%s: member %q is in group %q, which this capture never expanded; there is no row to have read them from", path, m.Name, m.Rank)
 		}
 		if seenName[m.Name] {
 			t.Fatalf("%s: %q is transcribed twice; the gate keys members by name, so a duplicate cannot be scored", path, m.Name)
@@ -406,7 +440,9 @@ game_version: "0.0.0"
 alliance:
   tag: "TEST"
   name: "Shape Fixture"
-  member_count: 3
+  # 3 grouped members + 1 leader in the banner = 4.
+  member_count: 4
+  leader: "TheLeader"
 
 frames:
   - seq: 0
@@ -418,9 +454,17 @@ groups:
   - rank: "R4"
     name: "Alpha"
     total: 2
+    expanded: true
   - rank: "R3"
     name: "Beta"
     total: 1
+    expanded: true
+  # A collapsed group: its header is transcribed, its members are not, because
+  # the capture holds no rows for them. This is R1 Danger Zone's shape.
+  - rank: "R2"
+    name: "Gamma"
+    total: 0
+    expanded: false
 
 members:
   - rank: "R4"
@@ -451,7 +495,11 @@ Expected: PASS.
 
 - [ ] **Step 5: Mutation-check the sum guard**
 
-Change `total: 1` to `total: 2` in the fixture and re-run. Expected: FAIL with `group totals sum to 4 but the alliance frame reads 3`. Restore it. The sum check is the transcription's only self-check and a guard that cannot fail is worse than no guard.
+Change Beta's `total: 1` to `total: 2` and re-run. Expected: FAIL naming the sum, the leader and the alliance count. Restore it.
+
+Then set Gamma's `expanded: false` to `true` and add a member under `R2`; re-run and confirm it PASSES, then set it back to `false` and confirm the same fixture now FAILS with `which this capture never expanded`. Both guards are the transcription's only self-checks, and a guard that cannot fail is worse than no guard.
+
+Note the collapsed group carries `total: 0` here only to keep the shape fixture's arithmetic simple. **In the real fixture R1 carries its true total of 12** — a collapsed group's header is legible and its count is ground truth; what it lacks is rows.
 
 - [ ] **Step 6: Write the fixture README**
 
@@ -487,7 +535,22 @@ defect, so the gate cannot be allowed to take the pipeline's word for it."
 
 ### Task 3: Transcribe capture 1
 
-The long pole. ~96 members across 61 member-list frames, read at full resolution, with cross-frame agreement required.
+The long pole. **84 members** across 61 member-list frames, read at full resolution, with cross-frame agreement required.
+
+**What capture 1 contains, established during pre-flight — do not re-derive it, but do verify it as you go.** The alliance frame (`seq 0`) reads `[OrCa] Organized Chaos`, leader `RobElr`, `Members: 97/100`. There are four rank groups:
+
+| rank | name | total | expanded in this capture? |
+|---|---|---|---|
+| R4 | This Is It | 9 | yes |
+| R3 | Footloose | 64 | yes |
+| R2 | I'm Alright | 11 | yes |
+| R1 | Danger Zone | 12 | **no — still collapsed in the final frame** |
+
+`9 + 64 + 11 + 12 = 96`, plus leader `RobElr` in the banner = 97. R5 is not a rank group; it is the leader's badge in the banner, which is why `rankBadgeOrder` covers only `R1`–`R4`.
+
+**So transcribe 84 members — R4's 9, R3's 64, R2's 11 — and no R1 members**, because the capture holds no rows for them. Transcribe **all four group headers**, R1's included at its true total of 12 and `expanded: false`. The loader rejects a member listed under a group it was told was collapsed.
+
+If any of the above disagrees with the pixels, **the pixels win**: correct it, say so in the report, and note it in the file's header comment.
 
 **Files:**
 - Create: `fixtures/m4rostergate/expected.yaml`
@@ -524,15 +587,15 @@ ls /tmp/rostergate | head
 
 `seq 0` carries `group_key: "_alliance_summary"` and the `Members: 96/100` line. Record `alliance.member_count` from it, and the alliance tag and name.
 
-- [ ] **Step 4: Transcribe group headers**
+- [ ] **Step 4: Confirm the group headers off the pixels**
 
-Walk every member-list frame and record each rank group's sticky header: rank badge (`R5`…`R1`), group name, and the `M` of its `N/M` count. The design doc records this alliance as `R5 1 + R4 9 + R3 64 + R2 11 + R1 11 = 96`, and capture 1's own headers confirm two of them (`R4 This Is It 2/9`, `R3 Footloose 10/64`) — but transcribe them off the pixels rather than copying those numbers, and if they disagree, the pixels win and the disagreement goes in the file's header comment.
+Walk every member-list frame and record each rank group's sticky header: rank badge, group name, the `M` of its `N/M` count, and whether the group is expanded. The table above is what pre-flight read; confirm each row rather than copying it.
 
-The loader's sum check will reject the file if the totals do not equal `alliance.member_count`.
+The loader's sum check rejects the file unless the group totals plus the leader equal `alliance.member_count`, which is the arithmetic this screen states twice.
 
 - [ ] **Step 5: Transcribe members, requiring cross-frame agreement**
 
-For each member: rank group, name, power (as a number — `Power: 211.5M` becomes `211500000`), level, and the `last_active` string (`Online`, or `3h ago`).
+For each member: rank group, name, power (as a number — `Power: 211.5M` becomes `211500000`), level, and the `last_active` string. That last field is the text at the row's top right: `Online` when the member is online, otherwise an elapsed time — `2h ago`, `13h ago`, `1d ago`.
 
 **The rule: a value goes in only if it reads identically in every frame the member appears in.** At ~3.8x overlap most members appear in three or four frames. Where frames disagree, or a glyph is genuinely ambiguous, record your best reading **and** a `note:` saying so — the way the VS fixture marks its thirteen decorated names as "a best reading rather than a certain one." Do not drop the member; dropping is editing the ground truth to suit the parser.
 
@@ -568,6 +631,8 @@ func TestRosterGateGroundTruthShape(t *testing.T) {
 
 The 57 members currently in the dev database were produced by the pipeline and **must not** be copied into the fixture. But a diff between them and the transcription is a cheap way to catch a transcription slip: a name the pipeline read exactly and you read differently is worth re-opening the frame for.
 
+All 57 are R3, so this checks about two-thirds of R3 and nothing in R4 or R2. Expect it to say nothing about the other 20 members — that is the check working, not failing.
+
 ```bash
 docker compose exec -T postgres psql -U lw -d lw_manager -t -A -c "SELECT name FROM members ORDER BY name;"
 ```
@@ -580,8 +645,12 @@ Re-read the frame for any disagreement. Resolve it from the pixels, in both dire
 git add fixtures/m4rostergate/expected.yaml internal/ingest/roster_gate_test.go
 git commit -m "Transcribe capture 1: the roster route's first ground truth
 
-96 members across 61 member-list frames, read at full resolution out of the
-blob store, one frame at a time. Not from control ingest's summary, not from a
+84 members across 61 member-list frames, read at full resolution out of the
+blob store, one frame at a time. 84 rather than the alliance's 97 because R1
+Danger Zone is still collapsed in the final frame -- its twelve members have no
+rows anywhere in this capture -- and the leader occupies the banner rather than
+any group's list. Both are recorded in the fixture as what they are, so the
+gate measures the pipeline against frames that exist. Not from control ingest's summary, not from a
 members query, not from a previous gate run -- checking a pipeline against its
 own output proves nothing, and this project has already paid for that lesson
 when a screen labelled `vs` stayed self-consistently wrong for three weeks
@@ -788,6 +857,13 @@ func TestM4RosterGate(t *testing.T) {
 	// route is still climbing, and a gate that cannot go green is not a
 	// ratchet. Reconciliation is a reporting mechanism; what is worth
 	// asserting is that its report is honest.
+	// R1 Danger Zone is transcribed with expanded: false and no members. Its
+	// header is legible, so a healthy pipeline gives it a tally reading
+	// Expected 12 / Parsed 0 / MatchedOrCreated 0, which makes wholeEverywhere
+	// false and the capture correctly `partial`. That is not a failure to
+	// excuse -- it is precisely what condition 4 exists to assert, and a
+	// capture that reported `complete` with a group it never opened would be
+	// the defect.
 	var lies []string
 	wholeEverywhere := true
 	for _, g := range exp.Groups {
@@ -843,6 +919,17 @@ Add the coverage constant beside `gateRosterMinMembers`:
 // came from the design doc and the pipeline had to climb 63/86 to 85/86 to
 // reach it. A bar set after seeing the number is a bar fitted to the pipeline
 // it was supposed to judge.
+//
+// It applies to TRANSCRIBED members (84 on capture 1), not to the alliance's
+// own count (97). The two differ by R1 Danger Zone's collapsed 12 and the
+// leader's banner row, and neither is anything the pipeline could read from
+// these pixels -- scoring against 97 would be scoring against frames the
+// capture does not contain, and would make the bar unreachable by
+// construction at anything above 86.6%.
+//
+// The cost is worth stating rather than burying: R1 and the leader are never
+// exercised here, so a defect specific to a collapsed group or to the banner
+// goes uncaught until a capture that expands R1 exists.
 const gateRosterCoverage = 0.95
 ```
 

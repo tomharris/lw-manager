@@ -28,14 +28,35 @@ database rather than from any summary line:
 
 Three things that table does not say, and that only a per-item view found.
 
-**Every one of the 57 members is `R3`.** The alliance has five rank groups —
-M4's design §6 records them as `R5 1 + R4 9 + R3 64 + R2 11 + R1 11 = 96`, and
-capture 1's own headers confirm two of those totals (`R4 This Is It 2/9`,
-`R3 Footloose 10/64`). `R3 Footloose` is the only group that produced anything.
-`roster.go` `continue`s on a header-parse error before `SegmentRows` is ever
-called, so a group whose header will not parse is dropped whole. The route is
-therefore at 57 of 64 inside the one group that works and **0 of the 32 members
-outside it**. The name field was never the dominant defect.
+**Every one of the 57 members is `R3`.** `roster.go` `continue`s on a
+header-parse error before `SegmentRows` is ever called, so a group whose header
+will not parse is dropped whole, and `R3 Footloose` is the only group that
+produced anything. The name field was never the dominant defect.
+
+### What capture 1 actually contains, read off the frames
+
+M4's design §6 records this alliance as `R5 1 + R4 9 + R3 64 + R2 11 + R1 11 =
+96`. **Both of those numbers are wrong**, and the correction changes what this
+gate can measure, so it is recorded here rather than left to be rediscovered.
+
+The alliance frame reads `Members: 97/100`, `[OrCa] Organized Chaos`, leader
+`RobElr`. The four rank-group headers read `R4 This Is It 9`, `R3 Footloose
+64`, `R2 I'm Alright 11`, `R1 Danger Zone 12` — 96 — and the leader occupies
+the screen's banner rather than any group's list, which is the 97th. R5 is not
+a rank group at all; `rankBadgeOrder` covering `R1`–`R4` is correct, not a gap.
+
+Two of those members can never be created from this capture:
+
+- **`R1 Danger Zone` is collapsed in the final frame** (`0/12`, chevron up), so
+  its 12 members have no rows anywhere in the capture. `roster_capture` opens
+  whichever `chevron_collapsed` anchor it finds next and stops when none
+  remain; this run ended with one still closed.
+- **The leader has no rank-group row**, only the banner.
+
+So **84 members are reachable** — R4's 9, R3's 64, R2's 11 — and the route's
+honest standing is **57 of 84 (67.9%)**, not 57 of 97. A gate whose denominator
+were the alliance count would be unreachable by construction at any bar above
+86.6%, which is a property of the capture and not of the pipeline.
 
 **The header failures are a crop defect, and the raw text names it:**
 
@@ -105,9 +126,18 @@ four fields, though only two are in the bar** — transcription is the expensive
 part of this design and doing it twice would be indefensible. The gate reads
 the two in scope; the other two feed the probes.
 
-Per group: the rank badge, the group name, and the header count `N/M`. Group
-counts are the reconciliation ground truth and are currently the dominant
-defect, so they are ground truth here rather than something the gate infers.
+Per group: the rank badge, the group name, the header count's `M`, and whether
+the group was **expanded** in this capture. Group counts are the reconciliation
+ground truth and are currently the dominant defect, so they are ground truth
+here rather than something the gate infers. The `expanded` flag is what lets
+`R1 Danger Zone 0/12` be recorded as a group the capture saw and never opened,
+rather than as 12 members the pipeline lost.
+
+Group totals sum to 96 against an alliance count of 97, and the difference is
+the leader, who occupies the banner and has no rank-group row while every other
+member has one. The loader asserts exactly that relation rather than an
+equality, and a future alliance where it does not hold fails loudly — which is
+the right failure, because it means the screen's structure changed.
 
 Plus the provenance block the VS fixture carries — capture id, period key,
 game version, alliance tag and name, and the frame list as `(seq, sha256,
@@ -166,6 +196,17 @@ derived from what the pipeline currently does. That ordering is deliberate: the
 VS gate's 95% came from the design doc and the pipeline had to climb 63/86 →
 85/86 to reach it. A bar set after seeing the number is a bar fitted to the
 pipeline.
+
+**The denominator is transcribed members (84), not the alliance count (97).**
+Those differ by R1's collapsed 12 and the leader's banner row, and neither is
+anything the pipeline could read from these pixels — scoring against 97 would
+be scoring against frames the capture does not contain. The cost of the
+narrower denominator is stated plainly: **R1 and the leader are never
+exercised by this gate**, so a defect specific to a collapsed group or to the
+banner would go uncaught, and only a capture that expands R1 can close that.
+The fixture therefore transcribes **every group's header** — R1's included, at
+its true total of 12 — even though it transcribes no R1 members, so condition 4
+still measures the reconciliation of a group the route saw and could not read.
 
 **2. Zero splits.** Correspondence between a `members` row and a transcribed
 member is judged by `roster.Match` against the transcribed set at `AutoAccept`.
