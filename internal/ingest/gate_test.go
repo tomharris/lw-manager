@@ -306,20 +306,6 @@ func gateBlobs(t *testing.T, ctx context.Context, exp expectedCapture) blob.Stor
 	return blobs
 }
 
-func gatePool(t *testing.T, ctx context.Context) *db.Pool {
-	t.Helper()
-	url, err := dbtest.Prepare(ctx, db.Migrate)
-	if err != nil {
-		t.Fatalf("dbtest.Prepare(): %v", err)
-	}
-	pool, err := db.Connect(ctx, url)
-	if err != nil {
-		t.Fatalf("Connect(): %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
 // seedCapture builds the database state one real VS capture would have left
 // behind: an alliance, its members, a screenshot row per frame pointing at
 // the content-addressed blob, and a complete capture referencing them in
@@ -397,19 +383,4 @@ func seedCapture(t *testing.T, ctx context.Context, pool *db.Pool, exp expectedC
 		t.Fatalf("reading back the seeded capture: %v", err)
 	}
 	return captureID, memberIDs
-}
-
-func join(lines []string) string {
-	out := ""
-	for _, l := range lines {
-		out += "  " + l + "\n"
-	}
-	return out
-}
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }
