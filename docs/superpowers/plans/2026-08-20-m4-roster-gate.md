@@ -1131,6 +1131,8 @@ Three fields have never been measured. Before any of them is changed, each gets 
 Beside the existing block at `zz_roster_probe_test.go:81`:
 
 ```go
+	rosterBadge = flag.Bool("roster.badge", false,
+		"report matchRankBadge's per-frame verdict: winning rank, runner-up, gap, against the fixture's own group")
 	rosterHeader = flag.Bool("roster.header", false,
 		"report what each frame's group header reads, its parsed N/M, and the transcribed truth beside it")
 	rosterHeaderInk = flag.Bool("roster.headerink", false,
@@ -1141,7 +1143,69 @@ Beside the existing block at `zz_roster_probe_test.go:81`:
 		"report what the level field reads per band, and whether ParseLevel accepts it")
 ```
 
-- [ ] **Step 2: Write the header mode**
+- [ ] **Step 2: Write the rank-badge mode — the highest-value instrument here**
+
+This mode was added after the gate's first run, which found a defect no planned
+probe would have measured. `res.PerGroup` came back with exactly **one** key:
+every row in the capture was attributed to R3, including all of R2's. Five R2
+members were created under R3 and the remaining six were never created at all,
+because R3's creation budget (`expected: 64`) had been spent by 83 rows.
+
+Rank does **not** come from header OCR. `roster.go:640` is
+`groupKey := rankRes.Rank`, and that comes from `matchRankBadge` — hand-rolled
+NCC against the embedded badge crops in `rankBadgeOrder` (`R1`–`R4`). So the
+header count and the rank badge are two independent defects, and the badge is
+the dominant one. Shipping this task's probes without an instrument for it
+would repeat the exact mistake this milestone was founded on, on the very
+defect the gate just exposed.
+
+```go
+// reportRosterBadge reports what matchRankBadge decides on every frame, beside
+// what the fixture says that frame's group actually is.
+//
+// The gate found the whole of capture 1 attributed to R3 -- R2's rows
+// included -- and no probe in this file could have seen that, because every
+// other mode measures OCR and this decision is NCC. rankBadgeMinGap (0.20) is
+// the constant in question and it has a documented history: it was raised from
+// 0.15 after a reviewer produced a MEASURED near-miss at gap 0.162 that was
+// accepted at the wrong rank. Half a distribution is what set it the first
+// time; this is the other half.
+func reportRosterBadge(t *testing.T, frames []rosterLoadedFrame, truth map[int]string) {
+	t.Helper()
+	agree, disagree, refused := 0, 0, 0
+	for _, f := range frames {
+		best, runnerUp, err := bestTwoRankScores(f.Img)
+		want := truth[f.Seq]
+		switch {
+		case err != nil:
+			refused++
+			t.Logf("  seq %2d  want %-3s  REFUSED: %v", f.Seq, want, err)
+		case best.rank != want:
+			disagree++
+			t.Logf("  seq %2d  want %-3s  GOT %-3s  best %.3f runner-up %s %.3f gap %.3f  <-- WRONG",
+				f.Seq, want, best.rank, best.score, runnerUp.rank, runnerUp.score, best.score-runnerUp.score)
+		default:
+			agree++
+			t.Logf("  seq %2d  want %-3s  ok       best %.3f runner-up %s %.3f gap %.3f",
+				f.Seq, want, best.score, runnerUp.rank, runnerUp.score, best.score-runnerUp.score)
+		}
+	}
+	t.Logf("  badge: %d agree, %d WRONG, %d refused, of %d frames", agree, disagree, refused, len(frames))
+}
+```
+
+`truth` maps frame seq to the rank that frame's rows actually belong to. Derive
+it from `fixtures/m4rostergate/expected.yaml` plus the frame list — or, if that
+mapping is not recoverable from the fixture alone, read it off the frames and
+say so in your report rather than guessing.
+
+**Report the score distributions, not just the counts.** A wrong verdict at a
+wide gap and a wrong verdict at a narrow one need opposite fixes: the first
+says the templates match the wrong thing, the second says the threshold cannot
+separate them. That distinction is what the next task acts on, and a bare
+"N wrong" cannot express it.
+
+- [ ] **Step 3: Write the header mode**
 
 ```go
 // reportRosterHeader reads groupHeaderRegion on every frame and reports the
@@ -1201,6 +1265,9 @@ Power's summary must also count how many refusals are **structurally one damaged
 - [ ] **Step 5: Wire them into `TestRosterNameProbe`**
 
 ```go
+	if *rosterBadge {
+		reportRosterBadge(t, frames, rosterFrameRanks(t))
+	}
 	if *rosterHeader {
 		reportRosterHeader(ctx, t, engine, frames)
 	}
