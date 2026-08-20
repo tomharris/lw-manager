@@ -640,10 +640,8 @@ func (gt *groupTracker) canCreate() bool {
 	return gt.countKnown && gt.matchedOrCreated < gt.expected
 }
 
-// advance decides this frame's contentY and whether its topmost detected
-// band must be discarded as the sticky header's occlusion of an already-
-// collected row (see the call site's own comment on that band-drop, and
-// TestIngestRosterDiscardsTheOccludedTopRow). sameGroupAsPrevFrame is true
+// advance decides this frame's contentY: where in this group's own scroll
+// the top of the list region now sits. sameGroupAsPrevFrame is true
 // only when the frame immediately before this one — in capture order, not
 // in "frames of this group" order — carried this same group's header: i.e.
 // this frame is an unbroken continuation of a scroll that was already moving
@@ -671,12 +669,15 @@ func (gt *groupTracker) canCreate() bool {
 // for the geometric dedupe below to recognize rows already collected,
 // instead of a reset making them look brand new (task 27's brief; the
 // resulting duplicate INSERT is what actually crashed the first real run).
-func (gt *groupTracker) advance(offsetPx int, sameGroupAsPrevFrame bool) (contentY int, skipTopBand bool) {
+//
+// It used to return a second value, skipTopBand, telling the caller to throw
+// away each continuing frame's topmost band. It does not any more; see the
+// call site for the segmentation invariant that makes that drop a pure loss.
+func (gt *groupTracker) advance(offsetPx int, sameGroupAsPrevFrame bool) (contentY int) {
 	if sameGroupAsPrevFrame {
 		gt.contentY += offsetPx
-		return gt.contentY, true
 	}
-	return gt.contentY, false
+	return gt.contentY
 }
 
 // IngestRoster turns one roster capture's frames into members and facts.
@@ -912,31 +913,34 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		}
 
 		sameGroupAsPrevFrame := havePrev && groupKey == prevGroupKey
-		_, skipTopBand := gt.advance(frame.OffsetPx, sameGroupAsPrevFrame)
+		gt.advance(frame.OffsetPx, sameGroupAsPrevFrame)
 		prevGroupKey, havePrev = groupKey, true
 
+		// Every band SegmentRows returns is a whole row. There used to be a
+		// drop here of each continuing frame's topmost band, on the theory
+		// that the fixed region-top line bisects whichever row is sitting
+		// across it — first justified as the sticky header occluding that
+		// row, and re-justified as the swipe's travel never being an exact
+		// multiple of the pitch once memberListRegion.Y1 moved below the
+		// header and the first reason stopped being true. Both readings are
+		// wrong, and collectBands says why: a band spans boundary k to
+		// boundary k+1, every boundary is a confirmed inter-card GAP, and
+		// bands are therefore exactly one pitch tall with a gap above them.
+		// A row bisected by the region top is not emitted as a short band —
+		// it is not emitted at all. So the drop discarded a whole,
+		// correctly-segmented row on every continuing frame.
+		//
+		// What made it look harmless is that the dropped band is usually a
+		// duplicate the geometric dedupe below would have refused anyway, so
+		// removing it changes nothing on most frames — measured on capture 1,
+		// it changes nothing at all by itself. It is not harmless when the
+		// swipe happens to travel a whole number of rows (the dropped band is
+		// then a row seen on no other frame), and it is not harmless when the
+		// dedupe wants to re-read that row because its earlier sighting
+		// produced nothing.
 		bands, err := SegmentRows(img, memberListRegion, memberRowPitch)
 		if err != nil {
 			return RosterResult{}, fmt.Errorf("ingest: segmenting screenshot %d: %w", frame.ScreenshotID, err)
-		}
-		if skipTopBand && len(bands) > 0 {
-			// memberListRegion.Y1 is a fixed pixel line (704, 7px below the
-			// sticky header's own bottom edge — see memberListRegion's doc
-			// comment) and the list keeps scrolling underneath it, so this is
-			// no longer "the header covers the first band" as it was
-			// described here before the region moved to clear the header:
-			// with Y1 below the header, the header cannot be why a band gets
-			// cut. It is still true, for an unrelated reason — a swipe's
-			// travel is essentially never an exact multiple of a row's
-			// pitch, so the fixed region-top line almost always bisects
-			// whichever row happens to be sitting across it once the list
-			// has moved at all within the same group (skipTopBand is true).
-			// The result looks identical either way (a partial top band
-			// that must not be parsed as a whole row), which is exactly why
-			// the wrong reason survived a region move undetected — see
-			// CLAUDE.md on the `vs` mislabel for the general shape of that
-			// failure. Discard it rather than parse a partial row.
-			bands = bands[1:]
 		}
 
 		regionTop := int(memberListRegion.Y1 * float64(img.Bounds().Dy()))

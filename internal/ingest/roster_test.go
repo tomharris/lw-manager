@@ -528,7 +528,7 @@ func newRosterIngestHarness(t *testing.T, fx rosterFixture) *rosterIngestHarness
 	return h
 }
 
-// distinctRowNames are eleven names with no shared root or numeric suffix,
+// distinctRowNames are twelve names with no shared root or numeric suffix,
 // so no pair of them can accidentally land in roster.TokenSetRatio's
 // ambiguous band the way "Row00" vs "Row01" (one digit apart) would —
 // used wherever a test needs several rows that must each create a distinct
@@ -536,6 +536,7 @@ func newRosterIngestHarness(t *testing.T, fx rosterFixture) *rosterIngestHarness
 var distinctRowNames = []string{
 	"Zephyr", "Quokka", "Umbrella", "Xylophone", "Yonderland", "Cascade",
 	"Thunderbolt", "Falconry", "Meadowlark", "Granitepeak", "Ripplewave",
+	"Saltmarsh",
 }
 
 // rowResults scripts one row's four field reads, in IngestRoster's call
@@ -904,18 +905,28 @@ func TestIngestRosterNeverWritesAFactBelowTheConfidenceGate(t *testing.T) {
 	}
 }
 
-// The sticky group header pins over whatever content is at the top of the
-// scroll region once a group's second and later frames are captured, so
-// that band is a row cut in half. It must be discarded rather than parsed,
-// and discarding it must not perturb the geometric dedupe count: two frames
-// scrolled by exactly one screenful apart must total the true number of
-// distinct rows, not one fewer (double-dropped) or one more (double-counted).
-func TestIngestRosterDiscardsTheOccludedTopRow(t *testing.T) {
+// A frame that scrolled a whole number of rows since the last one shows a
+// whole new screenful, and every band on it is a row nothing has read.
+//
+// This test used to assert the opposite. It was called
+// TestIngestRosterDiscardsTheOccludedTopRow and it pinned the drop of each
+// continuing frame's topmost band, on the theory that the sticky header cut
+// that row in half -- so two frames scrolled exactly six rows apart were
+// expected to yield 11 members out of 12 rows, and the twelfth was scripted
+// nowhere. The theory is false twice over: memberListRegion.Y1 sits below the
+// sticky header's bottom edge, and SegmentRows never emits a bisected band in
+// the first place, because collectBands only ever cuts at a confirmed
+// inter-card gap (see the drop's own former site in roster.go). The row that
+// assertion was throwing away is a real member.
+//
+// Six rows plus six rows is twelve, and the dedupe must not turn it into
+// eleven (a dropped band) or thirteen (a band counted twice).
+func TestIngestRosterCollectsEveryRowOfAFrameScrolledAWholeNumberOfRows(t *testing.T) {
 	h := newHarness(t)
 
 	frame1 := rosterFrame(6)
 	frame2 := rosterFrame(6)
-	h.addFrame(frame1, 0)   // first frame of the group: header has not pinned over anything yet
+	h.addFrame(frame1, 0)   // first frame of the group
 	h.addFrame(frame2, 672) // scrolled by exactly 6 rows * 112px pitch
 
 	var results []ocr.Result
@@ -924,22 +935,20 @@ func TestIngestRosterDiscardsTheOccludedTopRow(t *testing.T) {
 		results = append(results, rowResults(distinctRowNames[k])...)
 	}
 	results = append(results, ocr.Result{Text: "R1 Group 20/20", Confidence: 0.9})
-	// Frame 2 detects 6 bands but its first (index 0) is occluded and must
-	// never be OCR'd -- only 5 more rows are scripted here.
-	for k := 6; k < 11; k++ {
+	for k := 6; k < 12; k++ {
 		results = append(results, rowResults(distinctRowNames[k])...)
 	}
 	h.engine.Results = results
 
 	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
 	if err != nil {
-		t.Fatalf("IngestRoster: %v (an unexpected OCR call means the occluded row was not dropped)", err)
+		t.Fatalf("IngestRoster: %v", err)
 	}
-	if got := res.PerGroup["R1"].Parsed; got != 11 {
-		t.Errorf("parsed %d rows across two frames, want 11 (6 + 5, the occluded top row of frame 2 dropped)", got)
+	if got := res.PerGroup["R1"].Parsed; got != 12 {
+		t.Errorf("parsed %d rows across two frames, want 12 (6 + 6, none dropped and none counted twice)", got)
 	}
-	if res.Created != 11 {
-		t.Errorf("created %d members, want 11", res.Created)
+	if res.Created != 12 {
+		t.Errorf("created %d members, want 12", res.Created)
 	}
 }
 
@@ -1187,9 +1196,12 @@ func TestIngestRosterKeepsTheBudgetAFrameOfItsGroupAlreadyRead(t *testing.T) {
 	h := newHarness(t)
 	h.stubRankFor("R2")
 	h.addFrame(rosterFrame(1), 0)
-	// Two cards, one row scripted: the list moved within the group, so the
-	// bisected top band is discarded before OCR (skipTopBand).
-	h.addFrame(rosterFrame(2), memberRowPitch*3)
+	// One card on the second frame too, three rows further down the list, so
+	// exactly one new row is collected from it. (It used to draw two cards
+	// and script one row, because IngestRoster discarded every continuing
+	// frame's topmost band; it no longer does -- see the removed drop's site
+	// in roster.go.)
+	h.addFrame(rosterFrame(1), memberRowPitch*3)
 
 	results := []ocr.Result{{Text: "{R2) I'm Alright 2/11", Confidence: 0.9}}
 	results = append(results, rowResults("Zephyr")...)
@@ -1299,10 +1311,9 @@ func TestIngestRosterAdoptsACountThatOnlyLaterFramesCouldRead(t *testing.T) {
 	h := newHarness(t)
 	h.stubRankFor("R2")
 	h.addFrame(rosterFrame(1), 0)
-	// Two cards on the second frame, one row scripted: the list has moved
-	// within the same group, so IngestRoster discards the top band as a
-	// partial row (skipTopBand) before any OCR runs on it.
-	h.addFrame(rosterFrame(2), memberRowPitch*3)
+	// One card on the second frame too, three rows further down the list, so
+	// exactly one new row is collected from it.
+	h.addFrame(rosterFrame(1), memberRowPitch*3)
 
 	results := []ocr.Result{{Text: "{R2) I'm Alright", Confidence: 0.9}}
 	results = append(results, rowResults("Zephyr")...)
@@ -1581,10 +1592,9 @@ func TestParseAllianceMemberCount(t *testing.T) {
 // resume, not restart.
 func TestGroupTrackerAdvanceResumesAnInterruptedGroupRatherThanRestarting(t *testing.T) {
 	type step struct {
-		group           string
-		offsetPx        int
-		wantContentY    int
-		wantSkipTopBand bool
+		group        string
+		offsetPx     int
+		wantContentY int
 	}
 	// R3, R3, R2, R3, R2, R2 -- finding 10's own oscillation, at its
 	// shortest. offsetPx is only ever added when the immediately preceding
@@ -1593,12 +1603,12 @@ func TestGroupTrackerAdvanceResumesAnInterruptedGroupRatherThanRestarting(t *tes
 	// (999) to prove it is ignored on a group switch, not just unused by
 	// coincidence of a convenient number.
 	steps := []step{
-		{group: "R3", offsetPx: 0, wantContentY: 0, wantSkipTopBand: false},     // R3's first-ever frame
-		{group: "R3", offsetPx: 112, wantContentY: 112, wantSkipTopBand: true},  // continuing: accumulate
-		{group: "R2", offsetPx: 999, wantContentY: 0, wantSkipTopBand: false},   // R2's first-ever frame
-		{group: "R3", offsetPx: 999, wantContentY: 112, wantSkipTopBand: false}, // returning: RESUME 112, not reset to 0
-		{group: "R2", offsetPx: 999, wantContentY: 0, wantSkipTopBand: false},   // returning: resume R2's own leftover (0)
-		{group: "R2", offsetPx: 112, wantContentY: 112, wantSkipTopBand: true},  // continuing: accumulate again
+		{group: "R3", offsetPx: 0, wantContentY: 0},     // R3's first-ever frame
+		{group: "R3", offsetPx: 112, wantContentY: 112}, // continuing: accumulate
+		{group: "R2", offsetPx: 999, wantContentY: 0},   // R2's first-ever frame
+		{group: "R3", offsetPx: 999, wantContentY: 112}, // returning: RESUME 112, not reset to 0
+		{group: "R2", offsetPx: 999, wantContentY: 0},   // returning: resume R2's own leftover (0)
+		{group: "R2", offsetPx: 112, wantContentY: 112}, // continuing: accumulate again
 	}
 
 	groups := map[string]*groupTracker{}
@@ -1611,12 +1621,8 @@ func TestGroupTrackerAdvanceResumesAnInterruptedGroupRatherThanRestarting(t *tes
 			groups[s.group] = gt
 		}
 		sameAsPrev := havePrev && s.group == prevGroup
-		gotContentY, gotSkip := gt.advance(s.offsetPx, sameAsPrev)
-		if gotContentY != s.wantContentY {
+		if gotContentY := gt.advance(s.offsetPx, sameAsPrev); gotContentY != s.wantContentY {
 			t.Errorf("step %d (%s): contentY = %d, want %d", idx, s.group, gotContentY, s.wantContentY)
-		}
-		if gotSkip != s.wantSkipTopBand {
-			t.Errorf("step %d (%s): skipTopBand = %v, want %v", idx, s.group, gotSkip, s.wantSkipTopBand)
 		}
 		prevGroup, havePrev = s.group, true
 	}
@@ -1665,10 +1671,8 @@ func TestIngestRosterSurvivesInterleavedGroupsAcrossARerun(t *testing.T) {
 
 	// Frame 1: R3's first-ever frame. One row, Zephyr.
 	h.addFrame(rosterFrame(1), 0)
-	// Frame 2: R3 continuing. Two bands; the sticky-header occlusion skip
-	// (TestIngestRosterDiscardsTheOccludedTopRow) drops the first, leaving
-	// one real row, Quokka.
-	h.addFrame(rosterFrame(2), memberRowPitch)
+	// Frame 2: R3 continuing, one row further down the list. One row, Quokka.
+	h.addFrame(rosterFrame(1), memberRowPitch)
 	// Frame 3: R2's own first-ever frame, independent of R3's accounting.
 	h.addFrame(rosterFrame(1), 0)
 	// Frame 4: R3 returning after R2 interleaves. See the test's own doc
@@ -1677,9 +1681,8 @@ func TestIngestRosterSurvivesInterleavedGroupsAcrossARerun(t *testing.T) {
 	h.addFrame(rosterFrame(1), 999)
 	// Frame 5: R2 returning after R3. Same shape as frame 4, for R2.
 	h.addFrame(rosterFrame(1), 999)
-	// Frame 6: R2 continuing. Two bands, one real row after the occlusion
-	// skip: Foxtrot.
-	h.addFrame(rosterFrame(2), memberRowPitch)
+	// Frame 6: R2 continuing, one row further down. One row, Foxtrot.
+	h.addFrame(rosterFrame(1), memberRowPitch)
 
 	scriptOneIngest := func() []ocr.Result {
 		var results []ocr.Result
@@ -1763,7 +1766,7 @@ func TestIngestRosterUpsertsARepeatObservationRatherThanDuplicatingTheFact(t *te
 	// this frame's one real row far past gt.lastRowY's dedupe window, so it
 	// reaches processRow as a "new" row on identity grounds even though it
 	// names the same member as frame 1's row.
-	h.addFrame(rosterFrame(2), 5000)
+	h.addFrame(rosterFrame(1), 5000)
 
 	results := []ocr.Result{
 		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
