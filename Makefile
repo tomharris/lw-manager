@@ -191,7 +191,24 @@ probe-assign:
 #                       frame before any row is read.
 #   -roster.headerink   the header's column histogram, printed at full frame
 #                       width rather than the name field's 0.10-0.45 window,
-#                       because the edge under suspicion is X2=0.97.
+#                       because the edge under suspicion was X2=0.97. Read the
+#                       numeric column, not the bars: the bar renders any count
+#                       under 65 as empty, so it cannot tell 0 from 16.
+#   -roster.headersweep the header crop's edges walked across that gutter, and
+#                       the count-only rectangle beside it, each scored against
+#                       the transcribed GROUP TOTALS rather than only on
+#                       whether it parsed -- an under-count is the failure that
+#                       does silent damage, so a fabrication must not outrank a
+#                       refusal.
+#   -roster.headeropts  the eight-shape x three-upscale preprocessing grid, and
+#                       PSM 8/11/13, through both candidate rectangles. Options
+#                       measured through the wrong rectangle are not evidence
+#                       about the right one, so moving the crop obliges this.
+#   -roster.headerthresh  AdaptiveThreshold's block size and C, the two knobs
+#                       the shape grid never varies. R2's "1/11" resists all of
+#                       them: tesseract classifies that run of vertical bars as
+#                       "VN", "VL", "Wu" or "U/L", which is the engine, not the
+#                       crop and not the contrast.
 #   -roster.power       the power column's reads and ParsePower's verdict,
 #                       counting refusals that are structurally one damaged
 #                       separator -- the shape the review queue is full of and
@@ -206,6 +223,9 @@ probe-assign:
 #	make probe-roster PROBE_ARGS='-roster.badge -roster.badgeshuffle'
 #	make probe-roster PROBE_ARGS='-roster.header'
 #	make probe-roster PROBE_ARGS='-roster.headerink'
+#	make probe-roster PROBE_ARGS='-roster.headersweep'
+#	make probe-roster PROBE_ARGS='-roster.headeropts'
+#	make probe-roster PROBE_ARGS='-roster.headerthresh'
 #	make probe-roster PROBE_ARGS='-roster.power'
 #	make probe-roster PROBE_ARGS='-roster.level'
 .PHONY: probe-roster

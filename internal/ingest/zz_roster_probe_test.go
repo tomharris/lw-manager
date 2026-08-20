@@ -20,8 +20,16 @@
 //	make probe-roster PROBE_ARGS='-roster.badge'          # the rank NCC read
 //	make probe-roster PROBE_ARGS='-roster.header'         # the group header OCR
 //	make probe-roster PROBE_ARGS='-roster.headerink'      # the header histogram
+//	make probe-roster PROBE_ARGS='-roster.headersweep'    # the header crop's edges
+//	make probe-roster PROBE_ARGS='-roster.headeropts'     # preprocessing + PSM, through both candidate rects
+//	make probe-roster PROBE_ARGS='-roster.headerthresh'   # AdaptiveThreshold's block size and C
 //	make probe-roster PROBE_ARGS='-roster.power'          # the power column
 //	make probe-roster PROBE_ARGS='-roster.level'          # the level column
+//
+// The last three score against the transcribed group TOTALS, not merely
+// against whether a header parsed: parseGroupHeader's doc comment records that
+// an under-count is the failure that does silent damage, so an instrument that
+// counted parses alone would rank a fabrication above a refusal.
 //
 // -roster.badgeshuffle is not a sixth instrument: it rotates -roster.badge's
 // own truth table so every verdict is wrong by construction, which validates
@@ -82,6 +90,7 @@ import (
 	"github.com/tomharris/lw-manager/internal/blob"
 	"github.com/tomharris/lw-manager/internal/config"
 	"github.com/tomharris/lw-manager/internal/ocr"
+	"github.com/tomharris/lw-manager/internal/transport"
 	"github.com/tomharris/lw-manager/internal/vision"
 )
 
@@ -120,6 +129,12 @@ var (
 		"report what the power field reads per band, and whether ParsePower accepts it")
 	rosterLevel = flag.Bool("roster.level", false,
 		"report what the level field reads per band, and whether ParseLevel accepts it")
+	rosterHeaderSweep = flag.Bool("roster.headersweep", false,
+		"sweep the header crop's edges across the measured chevron gutter, and the count-only crop beside it, scoring the parsed total against the transcribed group size")
+	rosterHeaderOptions = flag.Bool("roster.headeropts", false,
+		"the eight-shape x three-upscale preprocessing grid through BOTH candidate header rectangles; slow, and the re-measurement moving the crop makes necessary")
+	rosterHeaderThresh = flag.Bool("roster.headerthresh", false,
+		"sweep AdaptiveThreshold's block size and C through both candidate header rectangles; the count that resists every skip-flag shape is a contrast failure, not a layout one, and these are the only two knobs the shape grid never varies")
 	rosterBadgeShuffle = flag.Bool("roster.badgeshuffle", false,
 		"rotate every truth label one rank forward, so the badge mode's verdicts are wrong by construction; it must report ~0 agree. Implies -roster.badge")
 )
@@ -214,6 +229,19 @@ func TestRosterNameProbe(t *testing.T) {
 	}
 
 	engine := ocr.NewTesseractEngine()
+
+	if *rosterHeaderSweep || *rosterHeaderOptions || *rosterHeaderThresh {
+		if *rosterHeaderSweep {
+			reportRosterHeaderSweep(ctx, t, engine, frames)
+		}
+		if *rosterHeaderOptions {
+			reportRosterHeaderOptions(ctx, t, engine, frames)
+		}
+		if *rosterHeaderThresh {
+			reportRosterHeaderThreshold(ctx, t, engine, frames)
+		}
+		return
+	}
 
 	if *rosterHeader || *rosterPower || *rosterLevel {
 		if *rosterHeader {
@@ -856,10 +884,14 @@ var headerRankToken = regexp.MustCompile(`R\d`)
 // raw text, what parseGroupHeader made of it, and why it refused.
 //
 // A header that will not parse makes IngestRoster `continue` before
-// SegmentRows is ever called, so the whole frame is dropped -- and the review
-// queue's raw text names the cause: "R2) I'm Alright VN iy]" keeps the group
-// name and loses the N/M count, and the chevron sits inside
-// groupHeaderRegion's right edge at X2=0.97.
+// SegmentRows is ever called, so the whole frame is dropped. That is how the
+// chevron-in-the-crop defect was found: the review queue's raw text named it,
+// "R2) I'm Alright VN iy]" keeping the group name and losing the N/M count
+// while X2 sat at 0.97, past the collapse chevron. Moving the edge into the
+// measured gutter took this mode from 39 parsed to 40 and from 42 of 61 reads
+// below groupHeaderSpec.MinConf to none -- and left the other 21 exactly where
+// they were, because R2's "1/11" is a classifier failure this crop cannot
+// reach (see groupHeaderRegion's own comment, and -roster.headerthresh).
 //
 // It counts identical reads and prints the most common ones at the end,
 // because this file's own warning applies here more than anywhere: a header
@@ -1153,4 +1185,301 @@ func reportRosterField(ctx context.Context, t *testing.T, engine ocr.OCREngine, 
 	t.Logf("  %s: %d distinct reads over %d bands -- near-uniformity here would mean this mode is measuring a constant",
 		fp.Name, len(distinct), bands)
 	reportDistinctReads(t, fp.Name, distinct, 25)
+}
+
+// ---------------------------------------------------------------------------
+// The header crop sweep: which rectangle, and which preprocessing through it.
+// ---------------------------------------------------------------------------
+
+// rosterGroupTotals is the rank -> group size table, read out of the roster
+// gate's hand-transcribed fixture rather than restated here. It is what turns
+// the header sweep from "did it parse" into "did it parse the right number",
+// which is the only version of the question worth asking: parseGroupHeader's
+// own doc comment records that an UNDER-count is the failure that does silent
+// damage (a fabricated 6 against a real 64-member group stops the other 58
+// members being created), so a sweep that counted parses alone would rank a
+// fabrication above a refusal.
+//
+// It is deliberately not hand-built the way rosterFrameRanks above is: the
+// numbers exist in a committed fixture, and copying them into a test file
+// would be one more table to drift.
+func rosterGroupTotals(t *testing.T) map[string]int {
+	t.Helper()
+	path := filepath.Join("..", "..", "fixtures", "m4rostergate", "expected.yaml")
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		t.Skipf("no roster transcription at %s", path)
+	}
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	var doc struct {
+		Groups []struct {
+			Rank  string `yaml:"rank"`
+			Total int    `yaml:"total"`
+		} `yaml:"groups"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+	out := make(map[string]int, len(doc.Groups))
+	for _, g := range doc.Groups {
+		out[g.Rank] = g.Total
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s carries no groups block; the sweep has nothing to score against", path)
+	}
+	return out
+}
+
+// headerShape is one candidate way of reading the sticky group header: a
+// rectangle, an ocr.Spec and a vision.Options. The three travel together for
+// the reason readPlan's doc comment gives and CLAUDE.md states outright --
+// options measured through the wrong rectangle are not evidence about the
+// right one -- so the sweep never varies preprocessing without naming the crop
+// it was measured through.
+type headerShape struct {
+	label string
+	rect  transport.Rect
+	spec  ocr.Spec
+	opts  vision.Options
+}
+
+// headerSweepCounts is one shape's result. Parsed and Refused answer "did
+// parseGroupHeader accept it"; Correct and Wrong answer "was the number right",
+// scored against the fixture's own group totals. The second pair is the one
+// that decides anything -- see rosterGroupTotals above.
+type headerSweepCounts struct {
+	Label    string
+	Frames   int
+	Parsed   int
+	Refused  int
+	Correct  int
+	Wrong    int
+	Distinct int
+}
+
+func (c headerSweepCounts) String() string {
+	return fmt.Sprintf("%-34s frames %3d  parsed %3d  refused %3d  total correct %3d  WRONG %3d  distinct reads %3d",
+		c.Label, c.Frames, c.Parsed, c.Refused, c.Correct, c.Wrong, c.Distinct)
+}
+
+// scoreHeaderShape reads every frame's header through one shape and scores the
+// parsed count against the transcribed group size for that frame's rank.
+//
+// Wrong totals are logged per frame rather than only counted: a shape that
+// parses 61 of 61 and gets one number wrong is worse than one that parses 39
+// and gets them all right, and only the per-frame line says which frame to go
+// and look at (CLAUDE.md, "Two aggregates side by side are not a causal
+// claim").
+func scoreHeaderShape(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame, ranks map[int]string, totals map[string]int, sh headerShape) headerSweepCounts {
+	t.Helper()
+	ing := New(nil, nil, engine)
+	out := headerSweepCounts{Label: sh.label, Frames: len(frames)}
+	distinct := map[string]int{}
+	for _, f := range frames {
+		res, err := ing.readField(ctx, f.Img, sh.rect, sh.spec, sh.opts)
+		if err != nil {
+			t.Fatalf("%s: seq %d: %v", sh.label, f.Seq, err)
+		}
+		distinct[res.Text]++
+		_, total, perr := parseGroupHeader(res.Text)
+		if perr != nil {
+			out.Refused++
+			continue
+		}
+		out.Parsed++
+		want, known := totals[ranks[f.Seq]]
+		switch {
+		case !known:
+			t.Logf("    %s: seq %d has no transcribed rank; its total %d is unscored", sh.label, f.Seq, total)
+		case total == want:
+			out.Correct++
+		default:
+			out.Wrong++
+			t.Logf("    %s: seq %2d (%s) parsed total=%d, want %d, from %q",
+				sh.label, f.Seq, ranks[f.Seq], total, want, res.Text)
+		}
+	}
+	out.Distinct = len(distinct)
+	// The reads themselves, not only how many there were. A sweep that printed
+	// counts alone could show a shape refusing 21 frames without ever saying
+	// what those frames read, which is the difference between "the crop still
+	// contains something" and "the count is not being seen at all" -- the two
+	// diagnoses this file exists to tell apart.
+	reportDistinctReads(t, "    "+sh.label, distinct, 8)
+	return out
+}
+
+// headerCountRegion is the count-only rectangle option (b) of task 6 is
+// measured through: the "N/M" token alone, with the group name outside it.
+// Placed off -roster.headerink over 61 frames and 2562 scanlines -- the count
+// occupies x=565..634 of a 720px frame, with zero ink from x=195..564 to its
+// left and the 16-column gutter at x=635..650 to its right -- so both edges sit
+// in a zero-ink plateau rather than against a glyph.
+var headerCountRegion = transport.Rect{X1: 0.7778, Y1: groupHeaderRegion.Y1, X2: 0.8917, Y2: groupHeaderRegion.Y2}
+
+// reportRosterHeaderSweep measures the GEOMETRY: the shipped crop, the crop
+// with its right edge walked across the chevron gutter, and the count-only
+// crop, all at the shipped preprocessing.
+//
+// It exists because the header crop is the third crop in this milestone to be
+// placed where a human reading the rectangle still saw the right answer, and
+// the rule after the second one was to place the next edge off a histogram and
+// then re-measure through it rather than reason about it.
+func reportRosterHeaderSweep(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame) {
+	t.Helper()
+	ranks := rosterFrameRanks()
+	totals := rosterGroupTotals(t)
+	t.Logf("  scoring against the transcribed group totals: %v", totals)
+
+	var shapes []headerShape
+	// The whole-header crop, right edge walked from the shipped 0.97 (x=698,
+	// past the chevron AND past the card) leftward through the chevron
+	// (x=651..683) and into the measured gutter (x=635..650, 0.8819..0.9028).
+	// 0.8806 is the count's own last column and is included as the far side of
+	// the gutter: a shape that clips a digit should show up as a WRONG total,
+	// not merely as a refusal, and that is the failure this column is here to
+	// catch.
+	for _, x2 := range []float64{0.97, 0.9500, 0.9042, 0.9028, 0.8917, 0.8819, 0.8806, 0.8750} {
+		shapes = append(shapes, headerShape{
+			label: fmt.Sprintf("header X2=%.4f", x2),
+			rect:  transport.Rect{X1: groupHeaderRegion.X1, Y1: groupHeaderRegion.Y1, X2: x2, Y2: groupHeaderRegion.Y2},
+			spec:  groupHeaderSpec,
+			opts:  groupHeaderOptions,
+		})
+	}
+	// The left edge, at the best right edge. X1=0.03 is x=21, which is OUTSIDE
+	// the header card (the card starts at x=28) and admits a strip of page
+	// background -- the likeliest source of the leading "{", "(", "[", "|" and
+	// "i" on every read. 0.0417 is rankBadgeRegion.X1, inside the card.
+	for _, x1 := range []float64{0.0417, 0.0500} {
+		shapes = append(shapes, headerShape{
+			label: fmt.Sprintf("header X1=%.4f X2=%.4f", x1, groupHeaderRegion.X2),
+			rect:  transport.Rect{X1: x1, Y1: groupHeaderRegion.Y1, X2: groupHeaderRegion.X2, Y2: groupHeaderRegion.Y2},
+			spec:  groupHeaderSpec,
+			opts:  groupHeaderOptions,
+		})
+	}
+	// Option (b): the count on its own, at the shipped preprocessing. Its own
+	// options are measured separately by -roster.headeropts, because a
+	// rectangle holding only cyan-and-white digits on light blue is not the
+	// rectangle groupHeaderOptions was fitted through either.
+	for _, x1 := range []float64{0.7778, 0.7847} {
+		shapes = append(shapes, headerShape{
+			label: fmt.Sprintf("count-only X1=%.4f", x1),
+			rect:  transport.Rect{X1: x1, Y1: headerCountRegion.Y1, X2: headerCountRegion.X2, Y2: headerCountRegion.Y2},
+			spec:  groupHeaderSpec,
+			opts:  groupHeaderOptions,
+		})
+	}
+
+	for _, sh := range shapes {
+		t.Log("  " + scoreHeaderShape(ctx, t, engine, frames, ranks, totals, sh).String())
+	}
+}
+
+// reportRosterHeaderOptions measures the PREPROCESSING, through both candidate
+// rectangles, at the eight skip-flag shapes and three upscale factors that set
+// every other option in this package.
+//
+// groupHeaderOptions' own comment records that every shape including adaptive
+// threshold after equalize scored 0-1/18 -- but that was measured through the
+// old rectangle, with the chevron in it, and CLAUDE.md says in as many words
+// that options measured through the wrong rectangle are not evidence about the
+// right one. This is the re-measurement. It is not cheap (48 configurations x
+// every frame), which is why it is its own flag.
+func reportRosterHeaderOptions(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame) {
+	t.Helper()
+	ranks := rosterFrameRanks()
+	totals := rosterGroupTotals(t)
+
+	rects := []struct {
+		name string
+		rect transport.Rect
+	}{
+		{"header-to-gutter", groupHeaderRegion},
+		{"count-only", headerCountRegion},
+	}
+	for _, r := range rects {
+		t.Logf("  through %s (X1=%.4f X2=%.4f):", r.name, r.rect.X1, r.rect.X2)
+		for _, cfg := range probeShapeGrid() {
+			sh := headerShape{
+				label: fmt.Sprintf("%s %s", r.name, cfg.label),
+				rect:  r.rect,
+				spec:  groupHeaderSpec,
+				opts:  cfg.opts,
+			}
+			t.Log("  " + scoreHeaderShape(ctx, t, engine, frames, ranks, totals, sh).String())
+		}
+	}
+
+	// The page-segmentation modes, through the count-only rectangle only. A
+	// short token in a small box is exactly the shape CLAUDE.md records PSM 7's
+	// layout analysis going blind to, and PSM 8 ("single word") and PSM 13
+	// ("raw line") are the two documented rescues. They are measured here
+	// rather than assumed inapplicable because the reads this mode is chasing
+	// are WRONG rather than EMPTY, and the retry rule -- confine a raw-line
+	// read to crops that produced nothing at all -- is about empty reads. If a
+	// PSM changed the answer here it would be evidence for a different
+	// mechanism than contrast.
+	for _, psm := range []int{8, 11, ocr.PSMRawLine} { // 8 = single word, 11 = sparse text
+		for _, cfg := range []probeConfig{
+			{label: "gray x3", opts: groupHeaderOptions},
+			{label: "gray+thr x2", opts: vision.Options{SkipEqualize: true, SkipInvert: true, UpscaleFactor: 2}},
+		} {
+			sh := headerShape{
+				label: fmt.Sprintf("count-only psm=%d %s", psm, cfg.label),
+				rect:  headerCountRegion,
+				spec:  ocr.Spec{MinConf: groupHeaderSpec.MinConf, PSM: psm},
+				opts:  cfg.opts,
+			}
+			t.Log("  " + scoreHeaderShape(ctx, t, engine, frames, ranks, totals, sh).String())
+		}
+	}
+}
+
+// reportRosterHeaderThreshold sweeps the two knobs the skip-flag grid never
+// touches: AdaptiveThreshold's block size and its C.
+//
+// It exists because the grid's answer was uniform in the way this repo treats
+// as a finding rather than a result. Every one of its 48 configurations reads
+// R3's "10/64" and none reads R2's "1/11", through either rectangle. That is
+// not a layout failure and not a crop failure -- R2's header card is GREEN,
+// its "1" is drawn in green on it, and Grayscale collapses the two to nearly
+// the same value before any of those flags is consulted. Threshold is the only
+// step in the chain that can recover a low-luminance-contrast glyph, and the
+// grid runs it at exactly one block size and one C.
+func reportRosterHeaderThreshold(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame) {
+	t.Helper()
+	ranks := rosterFrameRanks()
+	totals := rosterGroupTotals(t)
+
+	rects := []struct {
+		name string
+		rect transport.Rect
+	}{
+		{"header-to-gutter", groupHeaderRegion},
+		{"count-only", headerCountRegion},
+	}
+	for _, r := range rects {
+		t.Logf("  through %s (X1=%.4f X2=%.4f):", r.name, r.rect.X1, r.rect.X2)
+		for _, block := range []int{9, 15, 25, 41, 61} {
+			for _, c := range []int{2, 5, 10, 20} {
+				for _, inv := range []bool{true, false} {
+					opts := vision.Options{
+						SkipEqualize:   true,
+						SkipInvert:     inv,
+						ThresholdBlock: block,
+						ThresholdC:     c,
+						UpscaleFactor:  3,
+					}
+					label := fmt.Sprintf("%s thr b=%d c=%d%s", r.name, block, c, map[bool]string{true: "", false: "+inv"}[inv])
+					t.Log("  " + scoreHeaderShape(ctx, t, engine, frames, ranks, totals, headerShape{
+						label: label, rect: r.rect, spec: groupHeaderSpec, opts: opts,
+					}).String())
+				}
+			}
+		}
+	}
 }
