@@ -224,10 +224,16 @@ func printRosterSummary(out io.Writer, captureID int64, periodKey string, res in
 		// parsed a name for this rank (every frame queued to review before
 		// GroupTally.Name could be set) must not print a misleading empty
 		// quoted string.
+		// created= is printed beside parsed= because the two answer different
+		// questions and the gap between them is exactly the review queue:
+		// parsed counts row bands that reached OCR, created counts the ones
+		// that ended as a member. A group reading parsed=64 created=41 is a
+		// matching problem; parsed=41 expected=64 is a scrolling one, and
+		// without both numbers a triage cannot tell them apart.
 		if t.Name != "" {
-			fmt.Fprintf(out, "  group=%s name=%q parsed=%d expected=%d\n", k, t.Name, t.Parsed, t.Expected)
+			fmt.Fprintf(out, "  group=%s name=%q parsed=%d created=%d expected=%d\n", k, t.Name, t.Parsed, t.MatchedOrCreated, t.Expected)
 		} else {
-			fmt.Fprintf(out, "  group=%s parsed=%d expected=%d\n", k, t.Parsed, t.Expected)
+			fmt.Fprintf(out, "  group=%s parsed=%d created=%d expected=%d\n", k, t.Parsed, t.MatchedOrCreated, t.Expected)
 		}
 	}
 }

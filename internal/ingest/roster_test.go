@@ -757,6 +757,32 @@ func TestIngestRosterQueuesALowConfidenceNameRatherThanGuessing(t *testing.T) {
 	}
 }
 
+// GroupTally.Parsed and GroupTally.MatchedOrCreated answer different
+// questions, and this is the fixture where they diverge: eleven rows match a
+// known member and a twelfth reads ambiguously and is queued. Parsed counts
+// twelve because twelve bands reached OCR; MatchedOrCreated counts eleven
+// because that is what the group actually yielded. The gap of one is exactly
+// the review queue, which is the relation the roster gate's condition 4 and
+// `control ingest`'s created= column both read.
+//
+// Asserted here rather than left to the gate: the gate needs Postgres, the
+// blob store and tesseract, so nothing in `make test` would notice the
+// exported counter silently going to zero.
+func TestIngestRosterCountsMembersYieldedSeparatelyFromRowsParsed(t *testing.T) {
+	h := newRosterIngestHarness(t, rosterFixture{
+		group: "R2", groupTotal: 11, existing: 11, ambiguousName: true,
+	})
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	got := res.PerGroup["R2"]
+	if got.Parsed != 12 || got.MatchedOrCreated != 11 {
+		t.Errorf("R2 tally = %+v, want parsed 12 and matched-or-created 11 (the ambiguous row is parsed and yields nobody)", got)
+	}
+}
+
 func TestIngestRosterWritesFactsWithScreenshotProvenance(t *testing.T) {
 	h := newRosterIngestHarness(t, rosterFixture{group: "R2", groupTotal: 2, existing: 2})
 

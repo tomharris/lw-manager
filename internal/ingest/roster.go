@@ -401,6 +401,16 @@ type GroupTally struct {
 	// why GroupTally is keyed on rank (matchRankBadge's NCC read) and not on
 	// this field.
 	Name string
+
+	// MatchedOrCreated is how many of this group's rows ended as a member --
+	// matched to an existing one or created. It is deliberately distinct from
+	// Parsed, which counts row bands that reached OCR: a band that was read
+	// and then failed to match is parsed and contributes no member, so the
+	// two numbers answer different questions and the gap between them is
+	// exactly the review queue. Reconciliation keys on Parsed, because it is
+	// asking whether the scroll saw the whole group; the roster gate keys on
+	// this, because it is asking what the group yielded.
+	MatchedOrCreated int
 }
 
 // RosterResult summarizes one IngestRoster run.
@@ -809,6 +819,18 @@ func (run *rosterRun) readAllianceMemberCount(ctx context.Context, i *Ingester, 
 // resolve to a member at all: without a memberID no fact has anywhere to
 // attach, so an ambiguous or unmatched-and-group-full name still sends the
 // whole row to review, same as before.
+// noteMemberFor records on the group's public tally that one of its rows
+// ended as a member. It exists as a helper rather than inline at each site
+// because the private groupTracker.matchedOrCreated -- the group's creation
+// budget -- and the exported GroupTally.MatchedOrCreated must move together
+// or the gate's condition 4 would be scoring a counter nothing maintains.
+// Both call sites bump the tracker and then call this.
+func (run *rosterRun) noteMemberFor(groupKey string) {
+	tally := run.res.PerGroup[groupKey]
+	tally.MatchedOrCreated++
+	run.res.PerGroup[groupKey] = tally
+}
+
 func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Image, band RowBand, screenshotID int64, groupKey string) error {
 	nameRes, _, err := i.readFieldWithRetry(ctx, img,
 		fieldRect(band, img, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1),
@@ -863,6 +885,7 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 	case len(candidates) > 0 && candidates[0].Score >= roster.AutoAccept:
 		gt := run.groups[groupKey]
 		gt.matchedOrCreated++
+		run.noteMemberFor(groupKey)
 		run.res.Matched++
 		matchNorm := float64(candidates[0].Score) / 100.0
 		return run.writeFacts(ctx, i, screenshotID, band, candidates[0].MemberID, matchNorm, fieldReads(row, powerRes, levelRes, lastRes, perr, lerr, aerr))
@@ -907,6 +930,7 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 			}
 			run.members = append(run.members, roster.Member{ID: memberID, Name: row.Name})
 			gt.matchedOrCreated++
+			run.noteMemberFor(groupKey)
 			run.res.Created++
 			// A newly created member has no candidate to score against, so
 			// its match component is 1.0: the row is definitionally this

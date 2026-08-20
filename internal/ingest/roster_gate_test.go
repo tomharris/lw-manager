@@ -22,6 +22,7 @@
 package ingest_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,6 +32,13 @@ import (
 
 	yaml "go.yaml.in/yaml/v3"
 
+	"github.com/tomharris/lw-manager/internal/blob"
+	"github.com/tomharris/lw-manager/internal/config"
+	"github.com/tomharris/lw-manager/internal/db"
+	"github.com/tomharris/lw-manager/internal/dbtest"
+	"github.com/tomharris/lw-manager/internal/ingest"
+	"github.com/tomharris/lw-manager/internal/ocr"
+	"github.com/tomharris/lw-manager/internal/roster"
 	"github.com/tomharris/lw-manager/internal/vision"
 )
 
@@ -122,6 +130,25 @@ type expectedMember struct {
 // twenty, one bad row already breaks a 95% threshold and the percentage stops
 // meaning anything.
 const gateRosterMinMembers = 20
+
+// gateRosterCoverage is taken from gate-m4's bar rather than derived from what
+// this route currently does. That ordering is the point: the VS gate's 95%
+// came from the design doc and the pipeline had to climb 63/86 to 85/86 to
+// reach it. A bar set after seeing the number is a bar fitted to the pipeline
+// it was supposed to judge.
+//
+// It applies to TRANSCRIBED members (75 on capture 1), not to the alliance's
+// own count (97). The two differ by the two groups this capture never opened
+// -- R4 "This Is It" at 9 and R1 "Danger Zone" at 12 -- and by the leader's
+// banner row, none of which is anything the pipeline could read from these
+// pixels. Scoring against 97 would be scoring against frames the capture does
+// not contain, and would make the bar unreachable by construction at anything
+// above 77.3%.
+//
+// The cost is worth stating rather than burying: R4, R1 and the leader are
+// never exercised here, so a defect specific to a collapsed group or to the
+// banner goes uncaught until a capture that expands them exists.
+const gateRosterCoverage = 0.95
 
 func TestRosterGateFixtureShape(t *testing.T) {
 	exp := loadExpectedRoster(t, filepath.Join("testdata", "rostergate_shape.yaml"))
@@ -463,4 +490,300 @@ members:
 			}
 		})
 	}
+}
+
+func TestM4RosterGate(t *testing.T) {
+	ctx := context.Background()
+
+	exp := loadExpectedRoster(t, filepath.Join("..", "..", "fixtures", "m4rostergate", "expected.yaml"))
+	if len(exp.Members) < gateRosterMinMembers {
+		t.Fatalf("%d members transcribed, want at least %d", len(exp.Members), gateRosterMinMembers)
+	}
+	blobs := rosterGateBlobs(t, ctx, exp)
+
+	engine := ocr.NewTesseractEngine()
+	if !engine.Available() {
+		t.Skip("tesseract is not on PATH; install it with `apt install tesseract-ocr tesseract-ocr-eng` (Debian/Ubuntu) and re-run")
+	}
+
+	pool := gatePool(t, ctx)
+	captureID := seedRosterCapture(t, ctx, pool, exp)
+
+	res, err := ingest.New(pool, blobs, engine).IngestRoster(ctx, captureID, exp.PeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+
+	allianceID, err := pool.CurrentAllianceID(ctx)
+	if err != nil {
+		t.Fatalf("CurrentAllianceID: %v", err)
+	}
+	created, err := pool.ListMembers(ctx, allianceID)
+	if err != nil {
+		t.Fatalf("ListMembers: %v", err)
+	}
+
+	// Correspondence between a created member row and a transcribed member is
+	// judged by roster.Rank at AutoAccept -- the same scorer the pipeline
+	// uses, deliberately. A cosmetically wrong display name is recoverable:
+	// ALBANSO for a real ALBAN80 is a documented confusable, so a later VS
+	// ingest reading the name correctly matches it to that same row and the
+	// facts land in one place. Scoring by exact string would fail the gate on
+	// a defect that costs nothing, and hide the one that costs everything.
+	//
+	// roster.Member carries no NameNormalized field: TokenSetRatio normalizes
+	// internally, so the truth set is built from display names alone. IDs are
+	// synthetic indices -- nothing here keys on them, and Rank requires the
+	// field to exist.
+	truth := make([]roster.Member, 0, len(exp.Members))
+	for i, m := range exp.Members {
+		truth = append(truth, roster.Member{ID: int64(i + 1), Name: m.Name})
+	}
+
+	claimedBy := map[string][]string{} // transcribed name -> member rows claiming it
+	var orphans []string
+	for _, m := range created {
+		cands := roster.Rank(m.Name, truth) // sorted best-first
+		switch {
+		case len(cands) == 0:
+			t.Fatalf("roster.Rank returned nothing for %q against %d transcribed members", m.Name, len(truth))
+		case cands[0].Score < roster.AutoAccept:
+			orphans = append(orphans, fmt.Sprintf("%q (best %q at %d, below AutoAccept %d)",
+				m.Name, cands[0].Name, cands[0].Score, roster.AutoAccept))
+		default:
+			claimedBy[cands[0].Name] = append(claimedBy[cands[0].Name], m.Name)
+		}
+	}
+
+	// --- Condition 1: coverage.
+	//
+	// A miss names the group the member was actually created in alongside the
+	// one they belong to, not just the fact of the miss. The two failure
+	// shapes need opposite fixes -- never created is a read or match failure,
+	// created in the wrong group is an attribution failure -- and a count
+	// alone cannot tell them apart. Sticky-header lag is the known instance:
+	// IngestRoster takes a frame's rank from that frame's own sticky header,
+	// which still reads the outgoing group while the rows beneath it already
+	// belong to the next one, so the next group's opening rows land under the
+	// previous group's rank. That pattern is only visible if the assigned
+	// group is printed.
+	rankOf := map[string]string{}
+	for _, m := range created {
+		rankOf[m.Name] = m.Rank
+	}
+
+	var missing []string
+	covered := 0
+	for _, m := range exp.Members {
+		rows := claimedBy[m.Name]
+		if len(rows) == 0 {
+			missing = append(missing, fmt.Sprintf("%s %q: never created", m.Rank, m.Name))
+			continue
+		}
+		if got := rankOf[rows[0]]; got != m.Rank {
+			missing = append(missing, fmt.Sprintf("%s %q: created in group %q", m.Rank, m.Name, got))
+			continue
+		}
+		covered++
+	}
+	coverage := float64(covered) / float64(len(exp.Members))
+	if coverage < gateRosterCoverage {
+		sort.Strings(missing)
+		t.Errorf("roster gate condition 1: %d/%d members covered (%.4f) is below %.2f\n\n%s",
+			covered, len(exp.Members), coverage, gateRosterCoverage, join(missing))
+	}
+
+	// --- Condition 2: zero splits.
+	//
+	// Two failures, one hard zero each. An orphan is a member row matching
+	// nobody on the roster -- a person invented from a misread. A split is the
+	// same person minted twice under two different reads, and it is the worse
+	// of the two: their facts divide across two rows and no review-queue
+	// resolution rejoins them. This is the roster route's equivalent of a VS
+	// misattribution, and like it, it gets a hard zero rather than a
+	// percentage.
+	if len(orphans) > 0 {
+		sort.Strings(orphans)
+		t.Errorf("roster gate condition 2: %d member rows correspond to nobody transcribed\n\n%s", len(orphans), join(orphans))
+	}
+	var splits []string
+	for name, rows := range claimedBy {
+		if len(rows) > 1 {
+			sort.Strings(rows)
+			splits = append(splits, fmt.Sprintf("%q claimed by %d rows: %v", name, len(rows), rows))
+		}
+	}
+	if len(splits) > 0 {
+		sort.Strings(splits)
+		t.Errorf("roster gate condition 2: %d transcribed members are split across two member rows\n\n%s", len(splits), join(splits))
+	}
+
+	// --- Condition 3: nothing dropped silently.
+	//
+	// Counts rather than pairing each miss to its own review row, for the same
+	// reason gate_test.go's condition 2 does: a review row records a screen
+	// position and its raw text, not a member, because an unmatched name has
+	// no member to key on. It still catches the failure the condition exists
+	// for -- a member missed with no review row at all -- and it still cannot
+	// catch reviews raised for unrelated reasons padding the total, so read
+	// the two numbers together rather than the verdict alone.
+	pending, err := pool.PendingReviews(ctx)
+	if err != nil {
+		t.Fatalf("PendingReviews: %v", err)
+	}
+	queued := 0
+	for _, item := range pending {
+		if item.CaptureID == captureID {
+			queued++
+		}
+	}
+	if queued < len(missing) {
+		t.Errorf("roster gate condition 3: %d members are missing but only %d rows reached the review queue; %d were dropped silently",
+			len(missing), queued, len(missing)-queued)
+	}
+
+	// --- Condition 4: reconciliation reports truthfully.
+	//
+	// NOT "the capture is complete". Reconciliation marks any group-count
+	// mismatch partial, so a gate demanding complete cannot go green while the
+	// route is still climbing, and a gate that cannot go green is not a
+	// ratchet. Reconciliation is a reporting mechanism; what is worth
+	// asserting is that its report is honest.
+	//
+	// Capture 1 has TWO collapsed groups, R4 "This Is It" (9) and R1 "Danger
+	// Zone" (12), both transcribed with expanded: false and no members. Their
+	// headers are legible, so a healthy pipeline gives each a tally reading
+	// Expected N / Parsed 0 / MatchedOrCreated 0, which makes wholeEverywhere
+	// false and the capture correctly `partial`. That is not a failure to
+	// excuse -- it is precisely what condition 4 exists to assert, and a
+	// capture that reported `complete` with two groups it never opened would
+	// be the defect.
+	var lies []string
+	wholeEverywhere := true
+	for _, g := range exp.Groups {
+		tally, seen := res.PerGroup[g.Rank]
+		if !seen {
+			wholeEverywhere = false
+			// A group whose header never parsed leaves no tally at all. That
+			// is permitted -- it is what the route does today -- but only if
+			// it is visible in the queue rather than silently absent.
+			if queued == 0 {
+				lies = append(lies, fmt.Sprintf("group %s (%q, %d members) produced no tally and no review row", g.Rank, g.Name, g.Total))
+			}
+			continue
+		}
+		if tally.Expected != g.Total {
+			lies = append(lies, fmt.Sprintf("group %s: reported expected=%d, transcribed total is %d", g.Rank, tally.Expected, g.Total))
+		}
+		inGroup := 0
+		for _, m := range exp.Members {
+			if m.Rank == g.Rank && len(claimedBy[m.Name]) > 0 {
+				inGroup++
+			}
+		}
+		if tally.MatchedOrCreated != inGroup {
+			lies = append(lies, fmt.Sprintf("group %s: reported created=%d, but %d of its transcribed members are in members", g.Rank, tally.MatchedOrCreated, inGroup))
+		}
+		if tally.Parsed != tally.Expected {
+			wholeEverywhere = false
+		}
+	}
+	wantStatus := "partial"
+	if wholeEverywhere {
+		wantStatus = "complete"
+	}
+	if res.Status != wantStatus {
+		lies = append(lies, fmt.Sprintf("status is %q; every group whole = %v, so it should be %q", res.Status, wholeEverywhere, wantStatus))
+	}
+	if len(lies) > 0 {
+		sort.Strings(lies)
+		t.Errorf("roster gate condition 4: reconciliation does not describe what was parsed\n\n%s", join(lies))
+	}
+
+	t.Logf("roster gate: %d/%d members covered, orphans=%d splits=%d matched=%d created=%d queued=%d status=%s (game version %s)",
+		covered, len(exp.Members), len(orphans), len(splits), res.Matched, res.Created, res.Queued, res.Status, exp.GameVersion)
+}
+
+// seedRosterCapture builds the database state one real roster capture would
+// have left behind: an alliance, a screenshot row per frame pointing at the
+// content-addressed blob, and a capture referencing them in scroll order.
+//
+// Members are deliberately NOT seeded. The VS gate seeds them because IngestVS
+// never creates one; this route's entire job is to create them, and seeding
+// would mean the gate measured nothing while reporting a number.
+//
+// The alliance is scoped to this run for the reason gate_test.go records:
+// lw_manager_test is never truncated between runs, so a shared alliance
+// accumulates every previous run's members. It also has to be the MOST
+// RECENTLY observed alliance, because IngestRoster resolves its alliance via
+// CurrentAllianceID, which is `ORDER BY observed_at DESC LIMIT 1`.
+//
+// complete=false: capture 1 is a partial capture and the fixture transcribes
+// it as one. Condition 4 asserts that reconciliation says so, rather than
+// asserting a status the capture never had.
+func seedRosterCapture(t *testing.T, ctx context.Context, pool *db.Pool, exp expectedRoster) int64 {
+	t.Helper()
+
+	accountID := dbtest.SeedAccount(ctx, t, pool)
+
+	if _, err := pool.UpsertAlliance(ctx, db.Alliance{
+		Tag:         fmt.Sprintf("%s-%d", exp.Alliance.Tag, accountID),
+		Name:        fmt.Sprintf("%s (roster gate run %d)", exp.Alliance.Name, accountID),
+		MemberCount: exp.Alliance.MemberCount,
+	}); err != nil {
+		t.Fatalf("UpsertAlliance: %v", err)
+	}
+
+	frames := make([]db.CaptureFrameInput, len(exp.Frames))
+	for i, f := range exp.Frames {
+		var shotID int64
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO screenshots (account_id, captured_at, object_key, sha256)
+			 VALUES ($1, now(), $2, $3) RETURNING id`,
+			accountID, blob.Key(f.SHA256), f.SHA256).Scan(&shotID); err != nil {
+			t.Fatalf("seeding screenshot for frame %d: %v", f.Seq, err)
+		}
+		frames[i] = db.CaptureFrameInput{
+			ScreenshotID: shotID, Seq: f.Seq, OffsetPx: f.OffsetPx, GroupKey: f.GroupKey,
+		}
+	}
+
+	if err := pool.RecordCapture(ctx, accountID, "roster", frames, false); err != nil {
+		t.Fatalf("RecordCapture: %v", err)
+	}
+
+	var captureID int64
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM captures WHERE account_id = $1 AND route = 'roster'`, accountID,
+	).Scan(&captureID); err != nil {
+		t.Fatalf("reading back the seeded capture: %v", err)
+	}
+	return captureID
+}
+
+// rosterGateBlobs opens the configured blob store and confirms every
+// transcribed frame is in it. Only cfg.Blob is used: the database side goes
+// through internal/dbtest, which reads LW_TEST_DATABASE_URL and never the
+// application's LW_DATABASE_URL.
+func rosterGateBlobs(t *testing.T, ctx context.Context, exp expectedRoster) blob.Store {
+	t.Helper()
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load(): %v", err)
+	}
+	blobs, err := blob.New(ctx, cfg.Blob)
+	if err != nil {
+		t.Fatalf("opening blob store (%s): %v", cfg.Blob.Backend, err)
+	}
+	for _, f := range exp.Frames {
+		ok, err := blobs.Exists(ctx, blob.Key(f.SHA256))
+		if err != nil {
+			t.Fatalf("checking blob for frame %d: %v", f.Seq, err)
+		}
+		if !ok {
+			t.Skipf("frame %d (%s) is not in the %s blob store; set LW_BLOB_FS_ROOT to an absolute path (see CLAUDE.md)",
+				f.Seq, f.SHA256, cfg.Blob.Backend)
+		}
+	}
+	return blobs
 }

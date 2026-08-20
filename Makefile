@@ -63,6 +63,22 @@ gate-m4: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
 gate-m4:
 	LW_BLOB_FS_ROOT="$(LW_BLOB_FS_ROOT)" $(GO) test -tags m4gate -count=1 -v -timeout 20m ./internal/ingest/
 
+# The M4 roster gate: ingest reproduces a hand-transcribed roster capture.
+#
+# Same three dependencies as gate-m4 and for the same reasons — Postgres via
+# internal/dbtest (never the dev database), the blob store holding capture 1's
+# frames, and tesseract. It skips, naming what is missing, when the
+# transcription is absent or a frame is not in the configured store.
+#
+# LW_BLOB_FS_ROOT must be ABSOLUTE, for the reason spelled out above gate-m4:
+# `go test` runs each package binary in its own source directory, so the fs
+# backend's relative ./data/blobs would resolve under internal/ingest and find
+# nothing. ?= so an explicitly configured store still wins.
+.PHONY: gate-roster
+gate-roster: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
+gate-roster:
+	LW_BLOB_FS_ROOT="$(LW_BLOB_FS_ROOT)" $(GO) test -tags m4rostergate -count=1 -v -timeout 20m ./internal/ingest/
+
 # The M4 name probe: a measuring instrument for the name field, not a gate.
 #
 # It asserts nothing and always passes; its output is the point. Use it to
