@@ -1,0 +1,370 @@
+# M4 — The roster gate: design
+
+**Date:** 2026-08-20
+**Status:** approved, not yet implemented.
+**Gate:** new. `make gate-roster` at ≥95% member coverage with **zero splits**,
+against a hand-transcribed roster capture.
+
+This closes the half of M4 that no instrument was ever pointed at. The VS route
+has a gate (`make gate-m4`, 85/86 as of 2026-08-19) and three probes. The
+roster route has one probe, added four commits ago, and no gate at all — and
+the milestone has now twice discovered that the unmeasured thing is the thing
+that is wrong.
+
+---
+
+## 1. Where the roster route actually stands
+
+Measured against capture 1 as re-ingested on 2026-08-19, read out of the dev
+database rather than from any summary line:
+
+| field | facts written | review rows |
+|---|---|---|
+| name → `members` | **57** of 96 | 13 `low_confidence_name` |
+| `last_active_hours` | **46** | 10 unparseable, 13 low-confidence |
+| `power` | **0** | 83 `unparseable_power` |
+| `level` | **0** | 48 unparseable, 35 low-confidence |
+| group headers | — | 22 `unparseable_group_header` |
+
+Three things that table does not say, and that only a per-item view found.
+
+**Every one of the 57 members is `R3`.** The alliance has five rank groups —
+M4's design §6 records them as `R5 1 + R4 9 + R3 64 + R2 11 + R1 11 = 96`, and
+capture 1's own headers confirm two of those totals (`R4 This Is It 2/9`,
+`R3 Footloose 10/64`). `R3 Footloose` is the only group that produced anything.
+`roster.go` `continue`s on a header-parse error before `SegmentRows` is ever
+called, so a group whose header will not parse is dropped whole. The route is
+therefore at 57 of 64 inside the one group that works and **0 of the 32 members
+outside it**. The name field was never the dominant defect.
+
+**The header failures are a crop defect, and the raw text names it:**
+
+    [R4) This Is It ap
+    R2) I'm Alright VN iy}
+    R2) I'm Alright Vn WY
+    R2) I'm Alright VN iv]
+
+The group name survives; the `N/M` count does not. `groupHeaderRegion` spans
+`X1 0.03 → X2 0.97` — the entire header strip, read as one field at one PSM with
+grayscale and upscale(3) and no thresholding — and the collapse chevron sits
+inside that right edge. `VN iy]` is the chevron.
+
+**Power is not a legibility problem.** The frames render `Power: 211.5M`
+cleanly. What OCR returns is
+
+    Power:}175‘1M    Power}155:9M)    Power[2419M,    Powerte327M
+
+— a leading `}`/`[`/`t`, a decimal point read as `'`/`:`/`°`/`<`/`,`, and a
+trailing `)`/`,`. `ParsePower` refuses all of it, which is **correct**: task 23
+removed a charset whitelist that had been laundering 33/53 of these into
+well-formed wrong values 10x–1000x off. The pipeline is failing safe and
+yielding nothing.
+
+### The same defect, three times
+
+The status icon inside the name crop, the chevron inside the header crop, and
+whatever produces `}` in the power crop are one defect wearing three hats: a
+crop edge placed where a human reading the rectangle still sees the right
+answer. `CLAUDE.md` already records two instances and the method that finds
+them. This design's premise is that the method — an ink profile over every
+available band, not a read-back by eye — is now applied to the remaining
+fields, and that each field gets a committed instrument so the next occurrence
+is caught by a number instead of by someone noticing.
+
+---
+
+## 2. Scope
+
+**In the gate's bar: name and `last_active`.** These are what M5 consumes — the
+leaderboard needs member identity, the inactivity watchlist needs last-active —
+and M5's gate is "one full week of real alliance data producing a leaderboard
+you would actually post in alliance chat." A leaderboard missing a third of the
+alliance is not one.
+
+**Instrumented and measured, then deferred: power and level.** Both are at 0%.
+Both get a probe and a recorded measurement in this milestone, and neither is
+required to yield facts for M4 to close. The measurement is the deliverable;
+recording it is what stops the next person re-reasoning the fix from the
+review-queue text.
+
+**Out of scope:** the M5 surface itself, any second capture, and the
+`alliance_duel`/`gift_chest`/`tech_donation`/`rally_log` routes that M4 §1
+already excluded.
+
+---
+
+## 3. The fixture
+
+`fixtures/m4rostergate/expected.yaml`, with a README on the model of
+`fixtures/m4gate/README.md`.
+
+### What it records
+
+Per member: rank group, name, power, level, and online-or-last-active. **All
+four fields, though only two are in the bar** — transcription is the expensive
+part of this design and doing it twice would be indefensible. The gate reads
+the two in scope; the other two feed the probes.
+
+Per group: the rank badge, the group name, and the header count `N/M`. Group
+counts are the reconciliation ground truth and are currently the dominant
+defect, so they are ground truth here rather than something the gate infers.
+
+Plus the provenance block the VS fixture carries — capture id, period key,
+game version, alliance tag and name, and the frame list as `(seq, sha256,
+offset_px)`. `offset_px` is copied from `capture_frames`, never re-derived: it
+was measured against the frames as captured and ingest turns it into row
+positions.
+
+### How it is produced
+
+Read off the full-resolution frames, one at a time, out of the blob store.
+Not from `control ingest`'s summary, not from a `participation_facts` query,
+not from a previous gate run — the reasoning in `fixtures/m4gate/README.md`
+applies here unchanged, and this project has already paid once for a label that
+had nothing to disagree with it.
+
+**The transcription rule: a value is recorded only if it reads identically in
+every frame it appears in.** Capture 1 carries ~3.8x overlap (331 row bands
+across 61 member-list frames for ~96 members), so that is a real check rather
+than a formality. Disagreements and genuinely ambiguous glyphs are marked in
+the file, not guessed — the way the VS fixture marks its thirteen decorated
+names as "a best reading rather than a certain one."
+
+### On who transcribes it
+
+`fixtures/m4gate/README.md` calls `expected.yaml` "the one artifact in this
+repo that cannot be generated." That claim is about *provenance*, not about
+species: what makes it ground truth is that it is read off the pixels through a
+path that shares nothing with the pipeline it judges.
+
+The eye-check that failed twice in this milestone was a check of **a crop** — a
+rectangle whose contents the reader already knew, which is exactly why
+`[icon fragment]GersonGamer` read as a confirmation. Transcribing a **full
+frame** is the opposite act: the screen as the game rendered it, with no crop
+to be fooled by, at full resolution, through vision rather than through
+tesseract-on-a-preprocessed-band. The cross-frame agreement rule is the
+additional guard, and it is stronger than what the VS fixture had.
+
+This is recorded here because it is a judgement call, and a future reader is
+entitled to know it was made deliberately rather than by default.
+
+---
+
+## 4. The gate
+
+`make gate-roster`, tag `m4rostergate`, following every convention `gate-m4`
+established: device-free, explicit `-timeout`, `LW_BLOB_FS_ROOT` defaulted with
+`?=` in the Makefile, and a **named skip** when the fixture is absent or a frame
+is missing from the blob store rather than a failure that reads as though the
+numbers were wrong.
+
+### Four conditions
+
+**1. Coverage — ≥95% of transcribed members exist in `members`, attributed to
+the right rank group.** The 95% is taken from `gate-m4`'s bar rather than
+derived from what the pipeline currently does. That ordering is deliberate: the
+VS gate's 95% came from the design doc and the pipeline had to climb 63/86 →
+85/86 to reach it. A bar set after seeing the number is a bar fitted to the
+pipeline.
+
+**2. Zero splits.** Correspondence between a `members` row and a transcribed
+member is judged by `roster.Match` against the transcribed set at `AutoAccept`.
+Then:
+
+- every `members` row must correspond to some transcribed member; and
+- **no two `members` rows may correspond to the same transcribed member.**
+
+The second clause is the one with teeth, and the distinction matters. A
+cosmetically wrong display name is recoverable: `ALBANSO` for a real `ALBAN80`
+is a documented confusable, so when VS ingest later reads the name correctly,
+`roster.Match`'s confusable scoring matches it to that same row and the facts
+land in one place under a slightly wrong label. What is **not** recoverable is
+the same person minted twice under two different reads, because their facts
+then split across two rows and no review-queue resolution rejoins them. That is
+the roster route's equivalent of a VS misattribution, and like it, it gets a
+hard zero rather than a percentage.
+
+`gate-m4` has no analogue for this condition because it cannot happen there:
+the VS route matches into a closed set and the roster route *creates*.
+
+**3. Nothing dropped silently.** Every transcribed member not created produced a
+`review_queue` row naming them. This is `gate-m4`'s condition 2 unchanged, and
+it is what makes this a gate rather than an accuracy score — a pipeline that
+quietly drops the rows it finds hard scores well on condition 1 alone.
+
+**4. Reconciliation reports truthfully.** Not "the capture reaches `complete`",
+but, concretely, all three of:
+
+- for every group in the fixture, `RosterResult.PerGroup[rank].Expected` equals
+  the group's transcribed total, or that group is absent from `PerGroup`
+  entirely and a `review_queue` row explains why;
+- `PerGroup[rank]`'s matched-or-created count equals the number of that group's
+  transcribed members actually present in `members`; and
+- `Status` is `complete` if and only if every group's tally is whole.
+
+So a `partial` capture that correctly reports `R2: 0 of 11` **passes**; one
+claiming `complete` while a group is missing **fails**, and so does one whose
+`Expected` disagrees with the transcribed header.
+
+This inverts `gate-m4`'s condition 3 on purpose. Reconciliation marks any
+group-count mismatch `partial`, so a roster gate demanding `complete` cannot go
+green until the route is perfect, and a gate that cannot go green is not a
+ratchet. Reconciliation is a *reporting* mechanism; the useful thing to assert
+is that its report is honest.
+
+### What the gate will do on its first run
+
+Fail. Conditions 1, 2 and 4 all fail against today's pipeline — 57 of 96, at
+least two members whose correspondence needs checking, and four groups missing
+entirely. **That red baseline is recorded before any fix**, because a gate whose
+first run is green was fitted to the pipeline it was supposed to judge.
+
+---
+
+## 5. The fixes, in yield order
+
+**5.1 The group header count — worth ~32 members.** Ink profile over the header
+band across every frame in the capture, place the right edge in a gutter inside
+the chevron, and re-measure. Whether the count needs its **own crop and its own
+preprocessing** rather than sharing the name's is left open here deliberately:
+the count is cyan-and-white on light blue and the name is white, so one
+threshold serving both is a hypothesis. It gets measured, not reasoned.
+
+`parseGroupHeader` itself is not the defect and is not being relaxed. Its
+`total <= 0 || shown > total` check is what stops a fabricated count, and task
+24's review showed exactly what fabrication costs: a phantom `6` against a real
+64-member group stops the other 58 from being created.
+
+**5.2 Splits.** Whatever condition 2 finds. Deliberately not pre-solved — the
+mechanism depends on whether real splits exist in the capture at all, which the
+gate's first run answers.
+
+**5.3 The name residual — 57 of 64 inside R3**, 13 `low_confidence_name`. This
+may already be near its floor after PR #12's crop fix; it cannot be known until
+it is measured against complete ground truth instead of the VS fixture's
+incomplete, non-contemporaneous 86 names.
+
+**5.4 `last_active`** — 46 facts, 10 unparseable, 13 low-confidence. The field
+is green `Online` or a time string; the green is the first thing to measure.
+
+**5.5 Power and level** — instrument, measure, record, defer.
+
+---
+
+## 6. Instruments
+
+`zz_roster_probe_test.go` gains modes rather than sprouting sibling files,
+since they share a fixture and a harness:
+
+- `-roster.header` — what the header band reads, per frame, with the parsed
+  `N/M` beside it and the transcribed truth beside that.
+- `-roster.headerinkprofile` — the column histogram the new right edge is
+  placed from, mirroring `-roster.inkprofile`.
+- `-roster.power`, `-roster.level` — the deferred fields, so their state is a
+  recorded number rather than an impression.
+
+All assert nothing and always pass. Reading the output is the point.
+
+**Once `expected.yaml` exists, `probe-roster` should score against it rather
+than against the VS fixture's 86 names** — at which point its `exact` column
+stops being a lower bound and becomes an accuracy, and the caveat that
+currently dominates its doc comment, its Makefile target and `CLAUDE.md` can be
+retired. That retirement is part of this work, not a follow-up: a warning left
+standing after it stops being true is how the next person is misled.
+
+---
+
+## 7. Two items independent of the roster
+
+**7.1 `internal/ingest/vs.go:753` — zero rows on a `complete` capture zero every
+member.** The guard is `capture.Status == "complete" && run.res.Unidentified == 0`,
+and `Unidentified == 0` holds **vacuously** when nothing parsed at all. A capture
+that produced no rows and was nonetheless marked complete writes an inferred
+zero at confidence 0.90 for every member on the roster — a confident number on
+a leaderboard derived from no read whatsoever, which is what invariant #5
+exists to forbid. It also poisons the correction path: `UpsertFact` only
+overwrites on strictly higher confidence, so those zeros outrank the real reads
+a later ingest produces.
+
+Present on `main`, neither introduced nor worsened by the closed-set branch,
+and recorded in that branch's final review as I6.
+
+Fix: require that the run actually parsed rows before inferring absence. Test
+asserts no zeros are written for a complete capture with zero parsed rows, and
+is **mutation-checked** — the guard is removed and the test confirmed red —
+before the fix lands.
+
+**7.2 Rule on `gate-m4`'s 1% tolerance.** At rank 7 of the M4 capture, 1% is a
+window 183,000 wide; `Mar 89` was written 18,356,304 against a hand-checked
+18,356,804 and counted among the rows the gate passed. Every low-order digit
+misread in that capture passes the same way.
+
+This design does **not** change the tolerance. It records the ruling: the bar
+stays at 1% for M4, because a tighter one would start failing rows for
+transcription ambiguity in `expected.yaml` itself — 86 numbers read by eye and
+not regenerable — and the alternatives (an absolute tolerance, or one scaled to
+digit position) have never been measured. What changes is that the blind spot
+is stated in the gate's own output rather than only in a design document, so
+the number cannot be quoted as more than it is.
+
+---
+
+## 8. Testing
+
+| layer | tag | covers |
+|---|---|---|
+| unit | none | `parseGroupHeader` on real chevron-bleed strings; crop geometry; the `vs.go` zero-inference guard |
+| gate | `m4rostergate` | ingest vs the hand-transcribed roster capture |
+| probe | `m4probe` | header, power, level modes — assert nothing |
+
+The real failure strings (`R2) I'm Alright VN iy]` and its variants) go into
+`parse_test.go` as fixtures, so the parser's behaviour on real chevron bleed is
+pinned **without tesseract** and survives in `make test`.
+
+Crop geometry gets the treatment `TestNameCropStartsInTheGutterRightOfTheStatusIcon`
+established: pin the edge to the measured gutter, and carry a guard that fails
+loudly if the fixture frame ever stops containing a chevron. A test that cannot
+fail is worse than no test.
+
+`go test ./...` must still pass with no emulator, no adb and no Docker.
+
+---
+
+## 9. Sequence
+
+1. `vs.go:753` — small, independent, live correctness bug.
+2. Transcribe capture 1. Long pole; everything downstream needs it.
+3. Build the gate; run it; **record the red baseline**.
+4. Probes: header, `last_active`, power, level.
+5. Fixes in §5's order, re-measuring after each.
+6. Point `probe-roster` at `expected.yaml`; retire the lower-bound caveat.
+7. Write the tolerance ruling into the gate's output and `CLAUDE.md`.
+
+---
+
+## 10. Risks
+
+**The 95% bar may be unreachable on capture 1.** Four groups are missing
+entirely and the header fix is unproven. If the bar cannot be reached, the
+honest response is to record the measured number and say so — not to lower the
+bar to meet it. `CLAUDE.md`'s standing rule about `AutoAccept` applies to gate
+bars for the same reason.
+
+**Capture 1 predates the capture-side interleaving fix.** The gate will bake in
+a capture shape that new captures will not have, so a future clean capture may
+exercise paths this gate never touches. Accepted deliberately, to start work
+without a handset session; the second-capture check remains outstanding for
+this route exactly as §9 of the closed-set design records it outstanding for
+the VS route.
+
+**Transcription error is correlated-failure risk.** If a name is genuinely
+ambiguous at full resolution, my reading and the pipeline's could be wrong the
+same way, and the gate would confirm rather than catch it. The cross-frame
+agreement rule and explicit marking of ambiguous glyphs are the mitigations;
+neither is a proof, and any row the gate fails on should be re-read against the
+frames before the pipeline is blamed.
+
+**Every measurement still rests on one capture per route.** `ResidualFloor`,
+`ResidualMargin` and `residualMatchConfidence` are fitted to capture 6; whatever
+the header fix settles on will be fitted to capture 1. The honest figure to hold
+in mind is the decoy-padded one, not the headline.
