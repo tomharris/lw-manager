@@ -27,7 +27,7 @@ surface area at "a fast player."
 | **M0** Foundations | ✅ | Postgres, migrations, config, `Transport`, capture → blob store |
 | **M1** Vision core | ✅ | **99.53%** recognizer accuracy (632/635) against a 98% gate. All three misses are missed detections, not misidentifications — the confusion matrix has no false positives at all, which is the property invariant #3 depends on: a screen the recognizer declines to name is a task that declines to act. |
 | **M2** Task runtime | ✅ | Runtime, screen graph, panic route, kill switch, scheduler, and all five Tier 1 task bodies. Gated on the handset over 24 unattended hours: **95.82%** (229/239) against a 95% bar, zero stuck runs, and invariant #3 held through a four-hour display outage. The three defects that run exposed — a panic route that recovered nothing, a scheduler planning in UTC, and `radar`'s wrong flow model — are fixed since; `mail_collect` still has no successful unattended observation. |
-| **M4** Analytics collection | 🚧 | Both routes run end to end on the handset: scroll-and-stitch with measured offsets, phase-locked row segmentation, per-field OCR (plus NCC for the rank badges no OCR can read), append-only facts, and uncertain reads triaged in `agent studio`. Against a real 86-row capture the gate now **passes at 85/86 (98.84%)** against its 95% bar, up from 63/86: every row matched to a member, one queued for review, nothing dropped silently, and the capture still reconciles. The gain came from matching the whole ranking as a **closed set** — one assignment over all rows and all members at once — rather than 86 independent threshold lookups, plus points bounded by the ranking's own order and decoration-stripping in the matcher. Language packs were the obvious fix for the two decorated names and were measured inert. Three instruments are committed with it: `make probe-m4`, `make probe-points`, `make probe-assign`, the last of which self-checks with a shuffled-truth canary and decoy padding. Measured in full in `docs/superpowers/specs/2026-08-17-m4-closed-set-matching-design.md`. |
+| **M4** Analytics collection | 🚧 | Both routes run end to end on the handset: scroll-and-stitch with measured offsets, phase-locked row segmentation, per-field OCR (plus NCC for the rank badges no OCR can read), append-only facts, and uncertain reads triaged in `agent studio`. Against a real 86-row capture the gate now **passes at 85/86 (98.84%)** against its 95% bar, up from 63/86: every row matched to a member, one queued for review, nothing dropped silently, and the capture still reconciles. The gain came from matching the whole ranking as a **closed set** — one assignment over all rows and all members at once — rather than 86 independent threshold lookups, plus points bounded by the ranking's own order and decoration-stripping in the matcher. Language packs were the obvious fix for the two decorated names and were measured inert. Four instruments are committed with it: `make probe-m4`, `make probe-points`, `make probe-assign` — which self-checks with a shuffled-truth canary and decoy padding — and `make probe-roster`, added last because the roster was the one route with nothing measuring it. That gap is how its name crop stayed inside the per-member status icon for a milestone; moving it to a gutter read off an ink profile and retrying empty reads at raw line took one capture from 46 members created to 57, with name-plus-icon-fragment reads from 16 to 0. Measured in full in `docs/superpowers/specs/2026-08-17-m4-closed-set-matching-design.md`. |
 | **M5** Participation surface | ⬜ | Leaderboard, VS compliance, inactivity watchlist |
 | **M3** Fleet | 💤 | Deferred until after M5, and may not happen. Dashboard + WebSocket status; the registry and the multi-device run loop already shipped in M0/M2 |
 
@@ -144,19 +144,31 @@ make gate              # M1 recognizer accuracy against the real corpus
 make gate-m4           # M4 ingest against a hand-checked 86-row capture
 ```
 
-The three M4 probes are **measuring instruments, not gates** — they assert
+The four M4 probes are **measuring instruments, not gates** — they assert
 nothing and always pass, and their output is the point:
 
 ```bash
 make probe-m4          # the VS name field, scored against 86 hand-transcribed names
 make probe-points      # the points field: exact, within 1%, unparseable, retried
 make probe-assign      # closed-set matching, with a shuffled-truth canary and decoys
+make probe-roster      # the roster name field; read `junk-prefixed`, not `exact`
 ```
+
+`probe-roster` is the one with no ground truth of its own. There is no
+hand-checked roster transcription, so it scores against the VS fixture's 86
+names, which are neither complete — the ranking lists scorers, the alliance had
+97 members — nor contemporaneous. Its `exact` count is therefore a **lower
+bound** and must never be quoted as an accuracy. The column that carries signal
+is `junk-prefixed`: a known name plus one leading token is a provably-correct
+read with something the crop let in, and that measure does not depend on the
+truth set being complete.
 
 Reach for one before changing a crop, a preprocessing option, a
 page-segmentation mode or a matcher constant — and again afterwards. A crop
 "verified by eye" against a handful of rows is not measured: all three original
 M4 crops passed that review and scored 0 of 86 rows on the first real capture.
+It then happened a second time on the roster route, and an eye-check does not
+become reliable by being performed on a different field.
 
 Integration tests read `LW_TEST_DATABASE_URL`, never the application's
 `LW_DATABASE_URL`, and `internal/dbtest` refuses any database not named
