@@ -114,7 +114,7 @@ var (
 	rosterInkProfile = flag.Bool("roster.inkprofile", false,
 		"print the column ink histogram over the name line, which is how the crop's edges are placed")
 	rosterFrames = flag.String("roster.frames", "",
-		"path to the frame list (default fixtures/m4roster/frames.yaml)")
+		"path to the frame list (default fixtures/m4rostergate/expected.yaml)")
 	rosterMaxFrames = flag.Int("roster.maxframes", 0,
 		"read only the first N member-list frames (0 = all); the ink profile and sweeps are slow")
 	rosterNoRetry = flag.Bool("roster.noretry", false,
@@ -739,7 +739,13 @@ func loadRosterFramesFiltered(t *testing.T, ctx context.Context, wantSummary boo
 
 	path := *rosterFrames
 	if path == "" {
-		path = filepath.Join("..", "..", "fixtures", "m4roster", "frames.yaml")
+		// fixtures/m4rostergate/expected.yaml carries the identical frame
+		// list (verified entry-by-entry when the two fixtures were
+		// consolidated), so there is one file to keep in step rather than
+		// two. rosterProbeCapture only reads `capture` and `frames`, so the
+		// rest of expected.yaml's content (alliance, groups, members) is
+		// simply ignored here.
+		path = filepath.Join("..", "..", "fixtures", "m4rostergate", "expected.yaml")
 	}
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -799,12 +805,11 @@ func loadRosterFramesFiltered(t *testing.T, ctx context.Context, wantSummary boo
 // shows, which is the rank every row on that frame belongs to.
 //
 // It is NOT recoverable from fixtures/m4rostergate/expected.yaml. That fixture
-// records a rank per *member* and a total per *group*, and it copies the frame
-// list verbatim from fixtures/m4roster/frames.yaml — which carries seq, sha256
-// and offset_px and nothing about which group a frame is looking at. Nothing
-// in either file joins a member to a frame, so there is no derivation to do;
-// the brief anticipated this and asked for the mapping to be read off the
-// frames and said to be read off the frames rather than guessed.
+// records a rank per *member* and a total per *group*, and its own `frames:`
+// list carries seq, sha256 and offset_px and nothing about which group a
+// frame is looking at. Nothing in the file joins a member to a frame, so
+// there is no derivation to do; the brief anticipated this and asked for the
+// mapping to be read off the frames rather than guessed.
 //
 // So it was read off the frames, by eye, at 2x, from the header band of all 62
 // of them — the group NAME ("This Is It" / "Footloose" / "I'm Alright"), which

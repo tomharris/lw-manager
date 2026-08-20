@@ -144,7 +144,7 @@ const memberRowPitch = 112
 //
 // Run from the repo root with the blob store at its default ./data/blobs; the
 // hashes are capture 1's seq 2 (R3) and seq 23 (R2), both listed in
-// fixtures/m4roster/frames.yaml. Add -pmcharset "0123456789/" for the
+// fixtures/m4rostergate/expected.yaml. Add -pmcharset "0123456789/" for the
 // whitelist. Every one of its 24 variants reads seq 2's "10/64" or a near miss
 // and none reads seq 23's "1/11": "Vw", "Wu", "WAL", "U/L", "{i", "fit".
 //
