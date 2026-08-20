@@ -87,6 +87,7 @@ import (
 	"flag"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -136,6 +137,10 @@ var (
 		"sweep AdaptiveThreshold's block size and C through both candidate header rectangles; the count that resists every skip-flag shape is a contrast failure, not a layout one, and these are the only two knobs the shape grid never varies")
 	rosterBadgeShuffle = flag.Bool("roster.badgeshuffle", false,
 		"rotate every truth label one rank forward, so the badge mode's verdicts are wrong by construction; it must report ~0 agree. Implies -roster.badge")
+	rosterLastActive = flag.Bool("roster.lastactive", false,
+		"report what the last-active field reads per band, split by whether the transcribed value is the green \"Online\" or a grey elapsed time, through the shipped luma grayscale and through each colour channel")
+	rosterLASweep = flag.Bool("roster.lasweep", false,
+		"sweep the status crop's preprocessing over the bands whose transcribed value is the green \"Online\": 8 skip-flag shapes x 3 upscales x luma/green-channel, plus PSM 8 and 13. Implies -roster.lastactive")
 	rosterMembers = flag.Bool("roster.members", false,
 		"per-MEMBER view: each transcribed member's best band, and whether processRow would match it, create from it, or refuse it for confidence")
 )
@@ -260,6 +265,11 @@ func TestRosterNameProbe(t *testing.T) {
 		if *rosterHeaderThresh {
 			reportRosterHeaderThreshold(ctx, t, engine, frames)
 		}
+		return
+	}
+
+	if *rosterLastActive || *rosterLASweep {
+		reportRosterLastActive(ctx, t, engine, frames, truth)
 		return
 	}
 
@@ -1718,4 +1728,311 @@ func reportRosterHeaderThreshold(ctx context.Context, t *testing.T, engine ocr.O
 			}
 		}
 	}
+}
+
+// channelImage presents one colour channel of an image as a grayscale image,
+// so vision.Preprocess's own Grayscale step becomes a no-op and the rest of
+// the chain runs on that channel instead of on luma.
+//
+// It exists for one measured question. The status column renders two states:
+// a grey elapsed time and a green "Online", and lastActiveOptions' own comment
+// records every "Online" row reading as garbage ("oo", "ae") under every shape
+// tried. Luma is 0.299R + 0.587G + 0.114B, which weights green highest of the
+// three -- so green text on a cream card is exactly the case luma flattens,
+// while a grey elapsed time is by definition equal in all three channels and
+// cannot be hurt by choosing one. That is an argument, and this is how it gets
+// measured instead.
+type channelImage struct {
+	src image.Image
+	ch  int // 0 red, 1 green, 2 blue
+}
+
+func (c channelImage) ColorModel() color.Model { return color.GrayModel }
+func (c channelImage) Bounds() image.Rectangle { return c.src.Bounds() }
+func (c channelImage) At(x, y int) color.Color {
+	r, g, b, _ := c.src.At(x, y).RGBA()
+	v := r
+	switch c.ch {
+	case 1:
+		v = g
+	case 2:
+		v = b
+	}
+	return color.Gray{Y: uint8(v >> 8)}
+}
+
+// lastActiveShape is one way of preparing the status crop, named for the
+// report.
+type lastActiveShape struct {
+	label string
+	// wrap prepares the frame before vision.Preprocess sees it. nil is the
+	// shipped path: Preprocess's own luma Grayscale.
+	wrap func(image.Image) image.Image
+	opts vision.Options
+}
+
+// lastActiveCounts is one shape's score over the bands of one truth class.
+type lastActiveCounts struct {
+	Bands, Parsed, Exact, Empty int
+	// Wrong is a read that parsed to a value BELOW the transcribed one.
+	// last_active only advances while a capture runs, so a lower value cannot
+	// be the clock moving and is a confident wrong number -- the outcome this
+	// field's retry has to be measured against, not merely its parse rate.
+	Wrong int
+}
+
+// combinedLabel names the shipped read with a green-channel retry on a read
+// that did not parse.
+const combinedLabel = "shipped+green retry"
+
+// reportRosterLastActive measures the status column against the transcribed
+// last_active, split by what that value is.
+//
+// The split is the whole point. The field's two states are drawn differently
+// -- a grey elapsed time and a green "Online" -- and a single accuracy over
+// both cannot say whether a shape helps the state that is failing. Capture 1's
+// roster is roughly half online, so a shape that reads every elapsed time and
+// no Online row scores about 50% and looks like a coin flip rather than like a
+// colour problem.
+//
+// Bands are attributed to a member through the NAME read, at AutoAccept, so a
+// band whose name cannot be resolved is not scored at all: without a member
+// there is no transcribed value to score against. That undercounts, and it
+// undercounts the same way for every shape.
+//
+// `exact` is stricter than `parsed` and neither is the whole answer.
+// last_active ADVANCES while a capture runs -- the fixture records the value
+// on the earliest frame a member appears on, and its own header says
+// Rudester17 reads "1m ago" on seq 22 and "11m ago" on seq 58 -- so a later
+// frame reading one step further on is correct and scores as parsed-not-exact.
+// For the Online class the two nearly coincide, because a row that was online
+// at the start of the capture is almost always still online at the end.
+func reportRosterLastActive(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame, truth rosterTruth) {
+	t.Helper()
+
+	ing := &Ingester{engine: engine}
+	green := func(i image.Image) image.Image { return channelImage{i, 1} }
+	// The default four are the shipped shape and the three shapes
+	// -roster.lasweep put at the top of its grid over the online bands. They
+	// are re-measured here over BOTH classes, because the sweep skips the
+	// elapsed bands for cost and a shape that helps one state can cost the
+	// other.
+	shapes := []lastActiveShape{
+		{label: "shipped (luma)", opts: lastActiveOptions},
+		{label: "luma thr+inv", opts: vision.Options{SkipEqualize: true, UpscaleFactor: 3}},
+		{label: "green chan", wrap: green, opts: lastActiveOptions},
+		{label: "green chan inv", wrap: green, opts: vision.Options{SkipEqualize: true, SkipThreshold: true, UpscaleFactor: 3}},
+	}
+	specs := []ocr.Spec{lastActiveSpec}
+	if *rosterLASweep {
+		shapes = lastActiveSweepShapes()
+		specs = []ocr.Spec{
+			lastActiveSpec,
+			{Charset: lastActiveSpec.Charset, MinConf: lastActiveSpec.MinConf, PSM: 8},
+			{Charset: lastActiveSpec.Charset, MinConf: lastActiveSpec.MinConf, PSM: ocr.PSMRawLine},
+		}
+	}
+	type shapeSpec struct {
+		sh   lastActiveShape
+		spec ocr.Spec
+	}
+	var runs []shapeSpec
+	for _, sh := range shapes {
+		for _, sp := range specs {
+			label := sh.label
+			if len(specs) > 1 {
+				psm := sp.PSM
+				if psm == 0 {
+					psm = ocr.PSMSingleLine
+				}
+				label = fmt.Sprintf("%s psm%d", sh.label, psm)
+			}
+			runs = append(runs, shapeSpec{lastActiveShape{label: label, wrap: sh.wrap, opts: sh.opts}, sp})
+		}
+	}
+	shapes = nil
+	for _, r := range runs {
+		shapes = append(shapes, r.sh)
+	}
+	specOf := map[string]ocr.Spec{}
+	for _, r := range runs {
+		specOf[r.sh.label] = r.spec
+	}
+
+	// classOf is the transcribed value's class, not the read's: "Online" or
+	// an elapsed time. It is what the report is split on.
+	classOf := func(v string) string {
+		if strings.EqualFold(strings.TrimSpace(v), "Online") {
+			return "online"
+		}
+		return "elapsed"
+	}
+
+	byShape := map[string]map[string]*lastActiveCounts{}
+	for _, sh := range shapes {
+		byShape[sh.label] = map[string]*lastActiveCounts{
+			"online": {}, "elapsed": {},
+		}
+	}
+	reportOrder := append([]lastActiveShape{}, shapes...)
+	if !*rosterLASweep {
+		byShape[combinedLabel] = map[string]*lastActiveCounts{"online": {}, "elapsed": {}}
+		reportOrder = append(reportOrder, lastActiveShape{label: combinedLabel})
+	}
+	var detail []string
+
+	for _, f := range frames {
+		bands, err := SegmentRows(f.Img, memberListRegion, memberRowPitch)
+		if err != nil {
+			continue
+		}
+		for _, band := range bands {
+			nameRes, _, err := ing.readFieldWithRetry(ctx, f.Img,
+				fieldRect(band, f.Img, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1),
+				readPlan{spec: nameSpec, opts: nameOptions}, nameRetry)
+			if err != nil {
+				t.Fatalf("reading name on frame %d band %d: %v", f.Seq, band.Y0, err)
+			}
+			cands := roster.Rank(strings.TrimSpace(nameRes.Text), truth.Members)
+			if len(cands) == 0 || cands[0].Score < roster.AutoAccept {
+				continue
+			}
+			member := cands[0].Name
+			want := truth.LastActive[member]
+			class := classOf(want)
+			if *rosterLASweep && class != "online" {
+				// The sweep exists for the green state and costs one OCR
+				// call per band per shape per PSM. The elapsed state already
+				// reads at 250/253 through the shipped shape; re-measuring it
+				// 72 times would multiply the run by ten to confirm what is
+				// not in question.
+				continue
+			}
+			wantHours, wantErr := ParseLastActiveHours(want)
+
+			rect := fieldRect(band, f.Img, statusXFrac0, statusXFrac1, statusYFrac0, statusYFrac1)
+			line := fmt.Sprintf("    frame %2d y=%4d %-22q want %-8q", f.Seq, band.Y0, member, want)
+			perShape := map[string]string{}
+			for _, sh := range shapes {
+				src := f.Img
+				if sh.wrap != nil {
+					src = sh.wrap(f.Img)
+				}
+				res, err := ing.readField(ctx, src, rect, specOf[sh.label], sh.opts)
+				if err != nil {
+					t.Fatalf("reading last-active on frame %d band %d: %v", f.Seq, band.Y0, err)
+				}
+				c := byShape[sh.label][class]
+				c.Bands++
+				got, gerr := ParseLastActiveHours(res.Text)
+				switch {
+				case strings.TrimSpace(res.Text) == "":
+					c.Empty++
+				case gerr == nil:
+					c.Parsed++
+					switch {
+					case wantErr != nil:
+					case got == wantHours:
+						c.Exact++
+					case got < wantHours:
+						// See lastActiveCounts.Wrong. Counted here as well as
+						// on the combined shape: counting it on one column
+						// and not the others made the retry look like it had
+						// manufactured a value the shipped shape had in fact
+						// produced on its own, which is an instrument
+						// reporting a difference that is entirely its own.
+						c.Wrong++
+					}
+				}
+				perShape[sh.label] = strings.TrimSpace(res.Text)
+				line += fmt.Sprintf("  | %s %q", sh.label, strings.TrimSpace(res.Text))
+			}
+			if c, ok := byShape[combinedLabel]; ok {
+				// The retry the name field already ships, applied to this
+				// field: the shipped read, and on a read that does not PARSE
+				// (not merely one that is empty), the green channel's.
+				//
+				// It is the only combination in this mode that can be better
+				// than both its parts, and it is also the one that can be
+				// worse than either: CLAUDE.md's rule is that a retry on a
+				// NUMBER can manufacture a plausible value where a retry on a
+				// name merely fails to match. `wrong` is that risk, counted
+				// -- a read that parsed to a value the transcription
+				// contradicts by more than the clock could have moved.
+				text := perShape["shipped (luma)"]
+				if _, err := ParseLastActiveHours(text); err != nil {
+					text = perShape["green chan"]
+				}
+				cc := c[class]
+				cc.Bands++
+				got, gerr := ParseLastActiveHours(text)
+				switch {
+				case strings.TrimSpace(text) == "":
+					cc.Empty++
+				case gerr == nil:
+					cc.Parsed++
+					if wantErr == nil && got == wantHours {
+						cc.Exact++
+					} else if wantErr == nil && got < wantHours {
+						// last_active only ever advances during a capture, so
+						// a read BELOW the transcribed value cannot be the
+						// clock moving.
+						cc.Wrong++
+					}
+				}
+				line += fmt.Sprintf("  | %s %q", combinedLabel, text)
+			}
+			detail = append(detail, line)
+		}
+	}
+
+	t.Log("  last_active, by what the transcription says the row shows:")
+	for _, sh := range reportOrder {
+		for _, class := range []string{"online", "elapsed"} {
+			c := byShape[sh.label][class]
+			t.Logf("    %-22s %-8s bands %3d  parsed %3d  exact %3d  wrong %3d  empty %3d",
+				sh.label, class, c.Bands, c.Parsed, c.Exact, c.Wrong, c.Empty)
+		}
+	}
+	if *rosterDetail {
+		t.Log("  per band:")
+		for _, l := range detail {
+			t.Log(l)
+		}
+	}
+}
+
+// lastActiveSweepShapes is the option grid -roster.lasweep runs: every
+// skip-flag combination at three upscale factors, through luma and through the
+// green channel.
+//
+// It is the same shape of grid -roster.headeropts runs, and for the same
+// reason: the shipped Options for this field were fitted when the field was
+// believed to be grey text, and "Online" is not grey text. Options fitted for
+// one condition are not evidence about another.
+func lastActiveSweepShapes() []lastActiveShape {
+	greenCh := func(i image.Image) image.Image { return channelImage{i, 1} }
+	var out []lastActiveShape
+	for _, wrap := range []struct {
+		label string
+		fn    func(image.Image) image.Image
+	}{{"luma", nil}, {"green", greenCh}} {
+		for _, eq := range []bool{true, false} {
+			for _, th := range []bool{true, false} {
+				for _, inv := range []bool{true, false} {
+					for _, up := range []int{2, 3, 4} {
+						out = append(out, lastActiveShape{
+							label: fmt.Sprintf("%s eq%v th%v inv%v x%d", wrap.label, !eq, !th, !inv, up),
+							wrap:  wrap.fn,
+							opts: vision.Options{
+								SkipEqualize: eq, SkipThreshold: th, SkipInvert: inv,
+								UpscaleFactor: up,
+							},
+						})
+					}
+				}
+			}
+		}
+	}
+	return out
 }

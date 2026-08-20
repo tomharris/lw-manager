@@ -226,6 +226,18 @@ probe-assign:
 #                       classifies that run of vertical bars as "VN", "VL",
 #                       "Wu" or "U/L" -- which is the engine, not the crop and
 #                       not the contrast the mode was built to chase.
+#   -roster.lastactive  the status column, split by whether the TRANSCRIBED
+#                       value is the green "Online" or a grey elapsed time --
+#                       the two states are drawn differently and a single
+#                       accuracy over both cannot say which one is failing.
+#                       It reports `wrong` beside `parsed`: a read parsing
+#                       BELOW the transcribed value, which the clock cannot
+#                       explain, and the number any retry on this field has to
+#                       be judged by.
+#   -roster.lasweep     the 144-combination shape/PSM grid behind that mode's
+#                       shape list, run over the Online bands only. Nothing in
+#                       it serves both states: every shape reaching 12 of 24
+#                       Online rows costs 46 to 109 elapsed ones.
 #   -roster.power       the power column's reads and ParsePower's verdict,
 #                       counting refusals that are structurally one damaged
 #                       separator -- the shape the review queue is full of and
@@ -246,6 +258,8 @@ probe-assign:
 #	make probe-roster PROBE_ARGS='-roster.headerthresh'
 #	make probe-roster PROBE_ARGS='-roster.power'
 #	make probe-roster PROBE_ARGS='-roster.level'
+#	make probe-roster PROBE_ARGS='-roster.lastactive'
+#	make probe-roster PROBE_ARGS='-roster.lasweep'
 .PHONY: probe-roster
 probe-roster: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
 probe-roster:

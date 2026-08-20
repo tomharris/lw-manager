@@ -144,7 +144,9 @@ instead of creating a duplicate account.
   fitted to histograms. `-roster.inkprofile` prints the column ink histogram a
   crop edge is placed from, `-roster.x0sweep` sweeps `nameXFrac0`,
   `-roster.detail` is the per-band view, `-roster.members` the per-member one,
-  `-roster.noretry` measures what the shipped PSM-13 retry is worth.
+  `-roster.noretry` measures what the shipped PSM-13 retry is worth, and
+  `-roster.lastactive` / `-roster.lasweep` measure the status column split by
+  which of its two states a row is in.
   It scores against `fixtures/m4rostergate/expected.yaml` — 75 members, that
   capture, transcribed frame by frame — so `exact` is an accuracy and
   `unmatched` an error rate. It did **not** used to be: until the roster gate's
