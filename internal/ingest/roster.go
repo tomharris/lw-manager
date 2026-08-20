@@ -689,6 +689,13 @@ type collectedRow struct {
 	// review path does today. If a reviewer wants the clearest photograph, the
 	// answer is a queue row that can name several screenshots, not one whose
 	// three fields come from different frames.
+	//
+	// The flag only ever latches true; nothing clears it when a later
+	// sighting resolves the row (TestIngestRosterRereadsARowItsFirstSightingCouldNotResolve
+	// pins both outcomes on the same row). So a queued review row can outlive
+	// the resolution that makes it moot -- an operator is handed queue work
+	// for a member who by then already exists. Clearing it on resolution is a
+	// real design question and is deliberately not addressed here.
 	reviewed bool
 }
 

@@ -681,6 +681,17 @@ func TestM4RosterGate(t *testing.T) {
 	// name has no member to key on -- so it cannot prove the queued rows are
 	// the missing members. It catches the failure it exists for, a member lost
 	// with nothing in the queue at all, and no more than that.
+	//
+	// The right side is also inflated by rows that did resolve. A row can
+	// queue a name-class review on its first sighting and still be created on
+	// a later re-read of the same band (collectedRow.reviewed, and
+	// TestIngestRosterRereadsARowItsFirstSightingCouldNotResolve) -- nothing
+	// clears the queued row once that happens, so nameQueued counts it
+	// alongside rows that never resolved at all. That both hands an operator
+	// queue work for a member who already exists, and slackens this
+	// already-weak comparison further: the `<` check only gets easier to
+	// satisfy as more resolved rows sit in the right side uncounted against
+	// it.
 	pending, err := pool.PendingReviews(ctx)
 	if err != nil {
 		t.Fatalf("PendingReviews: %v", err)
