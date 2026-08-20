@@ -1459,6 +1459,70 @@ being created at all."
 
 ---
 
+### Task 6b: Stop dropping a whole frame when one field fails
+
+Inserted after Task 6, which established that R2's `1/11` count is unreadable by tesseract at any setting — the failure is the engine's classifier, not the crop — so R2's 11 members cannot be recovered by any crop or option change.
+
+That is a fact about OCR. What follows is a fact about **our** code, and it is a defect on its own terms: `internal/ingest/roster.go` `continue`s on a header-parse failure, so **one unreadable field discards every row on that frame**. Twenty-two frames' worth of members currently vanish behind a single `unparseable_group_header` review row each, rather than one row per member. That is the silent drop this milestone exists to prevent, committed by the ingest path itself, and it would still be wrong even if every count read perfectly — a future capture with one smudged header would lose a whole group the same way.
+
+**Files:**
+- Modify: `internal/ingest/roster.go` — the header-failure path
+- Test: `internal/ingest/roster_test.go`
+
+**Interfaces:**
+- Consumes: `parseGroupHeader`, `matchRankBadge`, `groupTracker{expected, matchedOrCreated}`, `run.queueReview`, `GroupTally`.
+- Produces: no new exported surface.
+
+- [ ] **Step 1: Write the failing test**
+
+A capture whose header count cannot be parsed, but whose rank badge matches confidently, must still segment its rows, still attribute them to the badge's rank, and produce **one review row per unmatched row** rather than one per frame. Assert the per-row count, not merely that something was queued — the whole defect is the ratio.
+
+- [ ] **Step 2: Run it and confirm it fails**
+
+Expect one `unparseable_group_header` row and no per-row reviews.
+
+- [ ] **Step 3: Decouple the two reads**
+
+The count and the rank are already documented as independent reads with independent failure paths (`roster.go`'s own comment says so). Make the count's failure non-fatal to the frame:
+
+- queue the `unparseable_group_header` review as now, then **continue processing the frame** rather than skipping it;
+- take the rank from `matchRankBadge`, which is unaffected and measured correct at 61/61;
+- create the group's tally with **no creation budget**.
+
+**A group with no readable count does not create members.** It matches rows against members already known and queues every row that does not match. This is the point of the change and the line not to cross: the count is the structural guard against minting phantoms (`design §4`, "creation is gated on the group count, not on a confidence threshold alone"), so a group whose size is unknown has no budget to spend. Ending the silent drop must not become a licence to invent people.
+
+Represent "no budget" explicitly — a sentinel or a separate flag — never as `expected: 0`, which `parseGroupHeader` already rejects as incoherent and which would read as a group of size zero.
+
+- [ ] **Step 4: Run the test, then the full suites**
+
+```bash
+go test ./internal/ingest/ -run TestIngestRoster -v
+go test ./...
+```
+
+- [ ] **Step 5: Mutation-check the budget guard**
+
+Remove the no-budget condition and confirm a test goes red showing members created for a countless group. If nothing fails, the guard is unpinned and the change is one edit away from minting phantoms.
+
+- [ ] **Step 6: Re-measure, and read the right number**
+
+```bash
+make gate-roster 2>&1 | tail -40
+make gate-m4 2>&1 | tail -20
+```
+
+Coverage should **not** move: no members can be created for R2, so `covered` stays where Task 6 left it. What must move is **condition 3** — R2's rows become individually queued instead of vanishing — and **condition 4**, since R2 now has a tally.
+
+**The number this task exists to produce** is how many R2 rows land in the review queue. That count is the measured value of building per-digit NCC for the header count, which is the open scope decision. Report it prominently and separately from the gate headline.
+
+If coverage moves, that is a finding: it would mean members are being created without a budget.
+
+- [ ] **Step 7: Commit**
+
+Record in the message that this is a correctness fix independent of R2 — a frame is no longer discarded because one field on it failed — and that the count is still what gates creation.
+
+---
+
 ### Task 7: The name residual, splits, and `last_active`
 
 Whatever conditions 1, 2 and 3 still show after Task 6.
