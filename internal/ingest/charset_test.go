@@ -215,3 +215,42 @@ func TestParseLastActiveRejectsRealMisreadsFromBothConditions(t *testing.T) {
 		}
 	}
 }
+
+// TestGroupHeaderSpecHasNoCharset is the third field in this file to have a
+// whitelist ruled out by measurement rather than by argument, and the first
+// where the measurement was taken BEFORE anyone proposed one.
+//
+// A digit whitelist is the obvious thing to reach for on this field: the group
+// header's "N/M" count is digits and a slash, and 21 of capture 1's 61 frames
+// fail to read theirs at all ("1/11" coming back as "VN", "VL", "Wu", "U/L" --
+// see groupHeaderRegion's doc comment in roster.go). So it was measured, over
+// every frame of that capture, through both candidate rectangles, and it is a
+// committed mode rather than a note: `make probe-roster
+// PROBE_ARGS=-roster.headeropts`.
+//
+// It does not read R2's count either. What it does instead is FABRICATE:
+// through groupHeaderRegion at gray+thr x2, "0123456789/" turns four of those
+// 21 unreadable frames into "2 1/1", which parseGroupHeader accepts as a total
+// of 1 for a group of 11. That is the direction of error this package has no
+// defence against downstream -- total feeds groupTracker.expected, and
+// gt.matchedOrCreated < gt.expected gates member creation, so an
+// under-count silently stops the rest of the group being created (task 24's
+// review measured a fabricated 6 against a real 64-member group costing 58
+// members). N <= M cannot catch it, because 1/1 is perfectly coherent.
+//
+// The unconstrained read is not merely as good, it is strictly safer: without
+// the whitelist those four frames produce no count-shaped token at all and
+// route to review, which is recoverable. This test exists because a comment
+// recording that measurement survives exactly until someone adds the field
+// without reading it.
+func TestGroupHeaderSpecHasNoCharset(t *testing.T) {
+	if groupHeaderSpec.Charset != "" {
+		t.Errorf("groupHeaderSpec.Charset = %q, want empty -- a whitelist here was measured "+
+			"FABRICATING a count, not fixing one: \"0123456789/\" turned four unreadable R2 headers "+
+			"into \"2 1/1\", i.e. a total of 1 for a group of 11, which parseGroupHeader accepts "+
+			"because 1/1 is coherent. total feeds groupTracker.expected and gates member creation, "+
+			"so that under-count silently stops the other 10 members being created. Re-run "+
+			"`make probe-roster PROBE_ARGS=-roster.headeropts` before restoring one, and read "+
+			"groupHeaderRegion's doc comment in roster.go", groupHeaderSpec.Charset)
+	}
+}

@@ -135,12 +135,14 @@ const memberRowPitch = 112
 // directory):
 //
 //	go test -tags scrolldiag ./internal/vision -run TestPreprocMeasure -v -args \
-//	  -pmframes "$PWD/data/blobs/sha256/6f/07/6f07eb91...|$PWD/data/blobs/sha256/b0/0b/b00b49dd..." \
+//	  -pmframes "$PWD/data/blobs/sha256/6f/07/6f07eb91d7cc88a193b1c35736f466814bee7c6bb5e41b5cf67cb5bd90ae32ac|$PWD/data/blobs/sha256/b0/0b/b00b49dd5d493db1bf2165aaf58e44ffc859b60d7b41f4a5156c48aca517fe5c" \
 //	  -pmexpect "10/64|1/11" -pmx1 0.7778 -pmy1 0.409 -pmx2 0.8917 -pmy2 0.435
 //
-// (frames are capture 1 seq 2 and seq 23; add -pmcharset "0123456789/" for the
+// Run from the repo root with the blob store at its default ./data/blobs; the
+// hashes are capture 1's seq 2 (R3) and seq 23 (R2), both listed in
+// fixtures/m4roster/frames.yaml. Add -pmcharset "0123456789/" for the
 // whitelist. Every one of its 24 variants reads seq 2's "10/64" or a near miss
-// and none reads seq 23's "1/11": "Vw", "Wu", "WAL", "U/L", "{i", "fit".)
+// and none reads seq 23's "1/11": "Vw", "Wu", "WAL", "U/L", "{i", "fit".
 //
 // That is a classifier failure on the glyphs themselves, not a crop defect and
 // not a contrast defect, and no move of this rectangle can reach it.
