@@ -246,3 +246,37 @@ func Grayscale(img image.Image) *image.Gray {
 	}
 	return g
 }
+
+// GreenChannel presents an image's green channel as a grayscale image, so a
+// caller that hands the result to Preprocess gets that channel instead of luma
+// (Preprocess's own Grayscale step is then a no-op).
+//
+// It exists for one measured field. The member list's status column renders
+// two states -- a grey elapsed time and the word "Online" in green with a dark
+// outline -- and luma (0.299R + 0.587G + 0.114B) leaves that green sitting
+// close to the cream card behind it, so the glyphs read as a hollow outline
+// and tesseract returns garbage. Measured over capture 1's 277 attributable
+// row bands (`make probe-roster PROBE_ARGS=-roster.lastactive`), the shipped
+// luma path parses 7 of 24 Online rows; the green channel parses 12.
+//
+// Why green and not the red channel the luma weights would suggest: the
+// argument from weights predicts red should separate green text from a cream
+// background best, and the measurement says red parses 0 of 24. That is the
+// whole reason this function exists behind a probe mode rather than behind a
+// derivation -- the sweep is in zz_roster_probe_test.go and the grid it ran is
+// 144 shape/PSM combinations.
+//
+// It is not a general improvement and must not be applied as one: the same
+// measurement has the green channel parsing 202 of 253 grey elapsed-time rows
+// against luma's 250. It is a RETRY for a read luma could not parse, never a
+// replacement for luma.
+func GreenChannel(img image.Image) image.Image { return greenChannel{img} }
+
+type greenChannel struct{ src image.Image }
+
+func (c greenChannel) ColorModel() color.Model { return color.GrayModel }
+func (c greenChannel) Bounds() image.Rectangle { return c.src.Bounds() }
+func (c greenChannel) At(x, y int) color.Color {
+	_, g, _, _ := c.src.At(x, y).RGBA()
+	return color.Gray{Y: uint8(g >> 8)}
+}

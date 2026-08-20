@@ -1192,7 +1192,8 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 	if err != nil {
 		return false, false, err
 	}
-	lastRes, err := i.readField(ctx, img, fieldRect(band, img, statusXFrac0, statusXFrac1, statusYFrac0, statusYFrac1), lastActiveSpec, lastActiveOptions)
+	statusRect := fieldRect(band, img, statusXFrac0, statusXFrac1, statusYFrac0, statusYFrac1)
+	lastRes, err := i.readField(ctx, img, statusRect, lastActiveSpec, lastActiveOptions)
 	if err != nil {
 		return false, false, err
 	}
@@ -1200,6 +1201,49 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 	power, perr := ParsePower(powerRes.Text)
 	level, lerr := ParseLevel(levelRes.Text)
 	lastActive, aerr := ParseLastActiveHours(lastRes.Text)
+	if aerr != nil {
+		// The status column has two states drawn differently, and the shipped
+		// preprocessing serves one of them. "Online" is green with a dark
+		// outline; luma leaves that green close to the cream card behind it,
+		// so tesseract is handed hollow glyphs -- the same class of failure
+		// Finding 4 records for the rank badges, which is why they are matched
+		// by NCC and not read at all.
+		//
+		// So this is a second READ, not different Options on the first: the
+		// green channel (vision.GreenChannel) is a different image, and it is
+		// worse than luma on the grey elapsed-time state by a wide margin, so
+		// it can only ever be a retry. Measured over capture 1's 277
+		// attributable bands (`make probe-roster PROBE_ARGS=-roster.lastactive`):
+		//
+		//   shipped luma          online  7/24 parsed   elapsed 250/253
+		//   green channel         online 12/24          elapsed 202/253
+		//   shipped, green retry  online 12/24          elapsed 253/253
+		//
+		// CLAUDE.md's rule is that retrying a NUMBER is not like retrying a
+		// name, because a number has no roster behind it and a second read can
+		// manufacture a plausible value out of noise. That is why the retry is
+		// gated on ParseLastActiveHours SUCCEEDING rather than on the read
+		// being non-empty, why the primary's raw text survives a retry that
+		// fails (so a review row still shows what the shipped path saw), and
+		// why the probe counts `wrong` -- a read parsing BELOW the transcribed
+		// value, which the clock cannot explain. The retry produced zero of
+		// those; the one on this capture is the shipped path's own ("9m ago"
+		// read as "3m ago" on Kapton Banana, seq 5).
+		//
+		// A grid of 144 shape/PSM combinations found nothing that serves both
+		// states: every shape reaching 12 online rows costs 46 to 109 elapsed
+		// ones (-roster.lasweep). The indicated end state for the Online half
+		// is an NCC template match like matchRankBadge's, since an outlined
+		// game glyph is not an OCR problem; this retry is what the measurement
+		// supports today.
+		greenRes, gerr := i.readField(ctx, vision.GreenChannel(img), statusRect, lastActiveSpec, lastActiveOptions)
+		if gerr != nil {
+			return false, false, gerr
+		}
+		if v, perr := ParseLastActiveHours(greenRes.Text); perr == nil {
+			lastRes, lastActive, aerr = greenRes, v, nil
+		}
+	}
 
 	row := RosterRow{
 		Name: nameRes.Text, NameConf: nameRes.Confidence,

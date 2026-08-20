@@ -952,6 +952,85 @@ func TestIngestRosterCollectsEveryRowOfAFrameScrolledAWholeNumberOfRows(t *testi
 	}
 }
 
+// The status column has two states drawn differently: a grey elapsed time and
+// "Online" in green with a dark outline. The shipped luma preprocessing parses
+// 7 of capture 1's 24 Online bands and 250 of its 253 elapsed ones; a
+// green-channel read of the same crop parses 12 of 24 Online and only 202 of
+// 253 elapsed. Neither serves both, so the green channel is a RETRY on a read
+// that did not parse -- never a replacement.
+func TestIngestRosterRetriesAnUnparseableStatusOnTheGreenChannel(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R1")
+	h.addFrame(rosterFrame(1), 0)
+
+	h.engine.Results = []ocr.Result{
+		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
+		{Text: "Zephyr", Confidence: 0.9},
+		{Text: "Power: 200.0M", Confidence: 0.9},
+		{Text: "Lv.30", Confidence: 0.9},
+		// What luma makes of the outlined green wordmark.
+		{Text: "oo", Confidence: 0.9},
+		// The green channel's read of the same crop.
+		{Text: "Online", Confidence: 0.9},
+	}
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Created != 1 {
+		t.Fatalf("created %d members, want 1", res.Created)
+	}
+	if got := h.reviewReasons()["unparseable_last_active"]; got != 0 {
+		t.Errorf("queued %d unparseable_last_active rows, want 0 -- the retry parsed it", got)
+	}
+	var found bool
+	for _, f := range h.store.Facts {
+		if f.Metric == "last_active_hours" {
+			found = true
+			if f.Value != 0 {
+				t.Errorf("last_active_hours = %v, want 0 (Online)", f.Value)
+			}
+		}
+	}
+	if !found {
+		t.Error("no last_active_hours fact written")
+	}
+}
+
+// The other half: a retry that also fails must leave the PRIMARY's raw text on
+// the review row. A number has no roster behind it, so the reviewer's only
+// evidence is what the shipped read saw -- replacing it with the retry's
+// output would hide the shipped path's own behaviour on exactly the crops it
+// is failing.
+func TestIngestRosterKeepsTheShippedStatusReadWhenTheGreenRetryAlsoFails(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R1")
+	h.addFrame(rosterFrame(1), 0)
+
+	h.engine.Results = []ocr.Result{
+		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
+		{Text: "Zephyr", Confidence: 0.9},
+		{Text: "Power: 200.0M", Confidence: 0.9},
+		{Text: "Lv.30", Confidence: 0.9},
+		{Text: "luma saw this", Confidence: 0.9},
+		{Text: "green saw this", Confidence: 0.9},
+	}
+
+	if _, err := h.IngestRoster(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	var raw string
+	for _, r := range h.store.Reviews {
+		if r.Reason == "unparseable_last_active" {
+			raw = r.RawText
+		}
+	}
+	if raw != "luma saw this" {
+		t.Errorf("review row raw text = %q, want the shipped read %q", raw, "luma saw this")
+	}
+}
+
 // A roster capture photographs most rows three or more times. Until this
 // test's fix exactly one of those photographs -- the first -- ever reached
 // OCR, because the geometric dedupe compared a band's position against the
