@@ -538,20 +538,20 @@ defect, so the gate cannot be allowed to take the pipeline's word for it."
 
 ### Task 3: Transcribe capture 1
 
-The long pole. **84 members** across 61 member-list frames, read at full resolution, with cross-frame agreement required.
+The long pole. **75 members** across 61 member-list frames, read at full resolution, with cross-frame agreement required.
 
 **What capture 1 contains, established during pre-flight — do not re-derive it, but do verify it as you go.** The alliance frame (`seq 0`) reads `[OrCa] Organized Chaos`, leader `RobElr`, `Members: 97/100`. There are four rank groups:
 
 | rank | name | total | expanded in this capture? |
 |---|---|---|---|
-| R4 | This Is It | 9 | yes |
+| R4 | This Is It | 9 | **no — collapsed, up chevron, no rows follow** |
 | R3 | Footloose | 64 | yes |
 | R2 | I'm Alright | 11 | yes |
 | R1 | Danger Zone | 12 | **no — still collapsed in the final frame** |
 
 `9 + 64 + 11 + 12 = 96`, plus leader `RobElr` in the banner = 97. R5 is not a rank group; it is the leader's badge in the banner, which is why `rankBadgeOrder` covers only `R1`–`R4`.
 
-**So transcribe 84 members — R4's 9, R3's 64, R2's 11 — and no R1 members**, because the capture holds no rows for them. Transcribe **all four group headers**, R1's included at its true total of 12 and `expanded: false`. The loader rejects a member listed under a group it was told was collapsed.
+**So transcribe 75 members — R3's 64 and R2's 11 — and no R4 or R1 members**, because the capture holds no rows for them. Transcribe **all four group headers**, R4's and R1's included at their true totals with `expanded: false`. The loader rejects a member listed under a group it was told was collapsed.
 
 If any of the above disagrees with the pixels, **the pixels win**: correct it, say so in the report, and note it in the file's header comment.
 

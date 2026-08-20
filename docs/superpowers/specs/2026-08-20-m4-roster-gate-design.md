@@ -45,18 +45,27 @@ The alliance frame reads `Members: 97/100`, `[OrCa] Organized Chaos`, leader
 the screen's banner rather than any group's list, which is the 97th. R5 is not
 a rank group at all; `rankBadgeOrder` covering `R1`–`R4` is correct, not a gap.
 
-Two of those members can never be created from this capture:
+**Only two of the four groups were ever expanded.** `R3 Footloose` and `R2 I'm
+Alright` carry the down chevron and are each followed by exactly as many rows
+as their header states — 64 and 11, counted. `R4 This Is It` and `R1 Danger
+Zone` carry the **up** chevron and are followed by no rows at all, anywhere in
+the capture's 61 member-list frames. `roster_capture` opens whichever
+`chevron_collapsed` anchor `Match` finds next and stops once none remain; this
+run ended with two still closed. The leader, separately, has no rank-group row
+at all — only the banner.
 
-- **`R1 Danger Zone` is collapsed in the final frame** (`0/12`, chevron up), so
-  its 12 members have no rows anywhere in the capture. `roster_capture` opens
-  whichever `chevron_collapsed` anchor it finds next and stops when none
-  remain; this run ended with one still closed.
-- **The leader has no rank-group row**, only the banner.
+So **75 members are reachable** — R3's 64 and R2's 11 — and the route's honest
+standing is **57 of 75 (76%)**, not 57 of 97. A gate whose denominator were the
+alliance count would be unreachable by construction at any bar above 77.3%,
+which is a property of the capture and not of the pipeline.
 
-So **84 members are reachable** — R4's 9, R3's 64, R2's 11 — and the route's
-honest standing is **57 of 84 (67.9%)**, not 57 of 97. A gate whose denominator
-were the alliance count would be unreachable by construction at any bar above
-86.6%, which is a property of the capture and not of the pipeline.
+This correction was itself an instance of the defect this project keeps
+rediscovering. An earlier pass read `seq 1`, saw the header `R4 This Is It 2/9`,
+and recorded R4 as expanded **without checking whether any rows followed it** —
+R3's header comes immediately after, with nothing between. The chevron's
+direction was the evidence and it was never consulted. Reading a frame and
+seeing what you expected is exactly the eye-check failure documented twice
+already for crops; it works the same way on a screen.
 
 **The header failures are a crop defect, and the raw text names it:**
 
@@ -197,16 +206,17 @@ VS gate's 95% came from the design doc and the pipeline had to climb 63/86 →
 85/86 to reach it. A bar set after seeing the number is a bar fitted to the
 pipeline.
 
-**The denominator is transcribed members (84), not the alliance count (97).**
-Those differ by R1's collapsed 12 and the leader's banner row, and neither is
-anything the pipeline could read from these pixels — scoring against 97 would
+**The denominator is transcribed members (75), not the alliance count (97).**
+Those differ by R4's collapsed 9, R1's collapsed 12 and the leader's banner
+row, and none of them is anything the pipeline could read from these pixels — scoring against 97 would
 be scoring against frames the capture does not contain. The cost of the
-narrower denominator is stated plainly: **R1 and the leader are never
+narrower denominator is stated plainly: **R4, R1 and the leader are never
 exercised by this gate**, so a defect specific to a collapsed group or to the
 banner would go uncaught, and only a capture that expands R1 can close that.
-The fixture therefore transcribes **every group's header** — R1's included, at
-its true total of 12 — even though it transcribes no R1 members, so condition 4
-still measures the reconciliation of a group the route saw and could not read.
+The fixture therefore transcribes **every group's header** — R4's and R1's
+included, at their true totals — even though it transcribes no members for
+either, so condition 4 still measures the reconciliation of a group the route
+saw and never opened.
 
 **2. Zero splits.** Correspondence between a `members` row and a transcribed
 member is judged by `roster.Match` against the transcribed set at `AutoAccept`.
