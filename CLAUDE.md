@@ -59,6 +59,7 @@ make probe-m4                                     # measure the name field; not 
 make probe-m4 PROBE_ARGS='-probe.detail'          # per-member, to localize
 make probe-points                                 # measure the points field; also not a gate
 make probe-assign                                 # measure closed-set matching; also not a gate
+make probe-roster                                 # measure the ROSTER name field; also not a gate
 ```
 
 `register` probes the device over adb rather than taking a resolution flag:
@@ -137,6 +138,19 @@ instead of creating a duplicate account.
   assignment is wrong by construction (it must report ~0 correct), and
   `-probe.assigndecoys=N` pads the member set, because the gate's capture is
   square and production is not.
+- `make probe-roster` — **not a gate**: the roster route's counterpart to the
+  three VS instruments above, and for a milestone the only route that had
+  none — which is how its name crop stayed wrong while the VS crops were being
+  fitted to histograms. `-roster.inkprofile` prints the column ink histogram a
+  crop edge is placed from, `-roster.x0sweep` sweeps `nameXFrac0`,
+  `-roster.detail` is the per-band view, `-roster.retry` measures the PSM-13
+  retry. Read its `junk-prefixed` column, not its `exact` column: there is no
+  hand-checked roster transcription, so it scores against the VS fixture's 86
+  names, which are neither complete (97 members) nor contemporaneous (three
+  days apart), and `exact` is therefore a lower bound that must never be quoted
+  as an accuracy. `junk-prefixed` counts reads that are a known name plus one
+  leading token — provably-correct reads with something the crop let in — and
+  that measure does not depend on the truth set being complete.
 - `make gate` — the M1 phase gate: recognizer accuracy against the real
   corpus. Tagged `//go:build corpus`, device-free but slow, so it stays out
   of `make test`. Skips when the corpus has not been pulled. Carries an
@@ -388,6 +402,27 @@ gutter carrying *zero* ink in all of them, which is a different quality of
 claim from "looked right on eight rows." The same profile is what showed the
 name crop had been clipping `MoreBallsThanBrains`, a defect nobody had thought
 to look for at all.
+
+**It happened a second time, on the roster route, and was found the same way.**
+`nameXFrac0` was 0.19 — x=137 of a 720px frame — which is inside the
+per-member *status icon* between the avatar and the name, so every member who
+has one had a fragment read as their first character: `7 Kun Tsunami`,
+`} Lothar232`, `P Ravenna Morrigan`. The constant's own comment recorded that
+task 21 had checked it against ten real rows "read back by eye before OCR ever
+ran" and concluded the geometry was correct. 56 of capture 1's 331 row bands
+were a correct name plus that fragment, against 53 that read exactly. The ink
+profile put the gutter at x=156-158 (ink 16 across 68 bands, against 787 at
+x=136 and 946 at x=160), and moving the edge there took exact reads from 53 to
+141 with junk-prefixed reads to 0.
+
+Two things generalize from the repeat. First, **an eye-check does not become
+reliable by being done on a different field** — it failed identically on the VS
+name crop and the roster name crop, for the same reason both times. Second,
+**the symptom named the wrong culprit**: reading `7 Leroy Jenkins 0914` off a
+list of members suggests a rank badge, which is per-group and constant, and the
+pixels showed a status icon, which is per-member and optional. That difference
+is exactly why only a third of names were affected, and no amount of staring at
+OCR output would have settled it.
 
 The corollary applies to anything fitted downstream of a crop: **options
 measured through the wrong rectangle are not evidence about the right one.**

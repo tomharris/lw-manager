@@ -88,12 +88,43 @@ var groupHeaderOptions = vision.Options{SkipEqualize: true, SkipThreshold: true,
 // Field sub-rects, as fractions of the full frame width (X) and of one row
 // band's own height (Y) — recon-measured from frame 03
 // (docs/superpowers/specs/evidence/m4-recon-2026-08-12/03-r3-expanded-after-tap.png).
-// Task 21 verified these against real capture-1 frames while measuring each
-// field's Options below (ten real rows across two frames, cropped at exactly
-// these fractions and read back by eye before OCR ever ran) — the crop
-// geometry was correct; readField's missing per-field Options was not.
+//
+// Task 21 recorded that it had verified these against real capture-1 frames
+// while measuring each field's Options below — ten real rows across two
+// frames, cropped at exactly these fractions and read back by eye before OCR
+// ever ran — and concluded "the crop geometry was correct; readField's missing
+// per-field Options was not." The second half was true. The first was not, and
+// it was wrong in exactly the way CLAUDE.md says an eye-check is always wrong:
+// a person reading a crop already knows what the name says, so a rectangle
+// holding "[status icon fragment]Lothar232" reads as ten confirmations rather
+// than as ten defects.
+//
+// nameXFrac0 was 0.19 — x=137 of a 720px frame — which is INSIDE the
+// per-member status icon that sits between the avatar and the name. Every
+// member who has one had a piece of it read as the first character of their
+// name: "7 Kun Tsunami", "} Lothar232", "P Ravenna Morrigan", "> Foskiitus".
+// Measured over capture 1's 331 row bands, 56 reads were a correct name plus
+// that fragment, against 53 that read exactly.
+//
+// It now starts in the gutter, placed off an ink profile over 68 row bands
+// (`make probe-roster PROBE_ARGS=-roster.inkprofile`) rather than off a
+// reading of the output:
+//
+//	x=136 (0.1889)  787   <- where it used to start, mid-icon
+//	x=155 (0.2153)  430       the icon's right edge
+//	x=156 (0.2167)   16   <- where it starts now
+//	x=158 (0.2194)   16       gutter, three columns wide
+//	x=160 (0.2222)  946       the name's own first column
+//
+// The right edge needed no change and that is also measured, not assumed: ink
+// is at the noise floor from x=440 (0.61) onward, so 0.67 clears the longest
+// name on this roster with room to spare. The VS name crop's truncation defect
+// has no twin here.
+//
+// TestNameCropStartsInTheGutterRightOfTheStatusIcon pins this, and carries a
+// guard so it cannot pass on a fixture whose row has no icon.
 const (
-	nameXFrac0, nameXFrac1     = 0.19, 0.67
+	nameXFrac0, nameXFrac1     = 0.2167, 0.67
 	powerXFrac0, powerXFrac1   = 0.19, 0.47
 	levelXFrac0, levelXFrac1   = 0.48, 0.67
 	statusXFrac0, statusXFrac1 = 0.69, 0.97
@@ -165,7 +196,41 @@ const (
 var (
 	groupHeaderSpec = ocr.Spec{MinConf: 0.5}
 	nameSpec        = ocr.Spec{MinConf: 0.4}
-	powerSpec       = ocr.Spec{MinConf: 0.6}
+)
+
+// nameRetry reads a name crop that the primary pass returned nothing for.
+//
+// It exists for the tesseract defect CLAUDE.md records under "Tesseract's
+// layout analysis is blind to some perfectly legible crops": PSM 7 returns the
+// empty string on crops that PSM 13 ("raw line", which bypasses the layout
+// hacks) reads without trouble. An empty read is not a near miss — no
+// threshold and no fuzzy match reaches it — so those bands were simply lost.
+//
+// The VS name field has retried since that was measured. The roster name field
+// did not, which mattered more after nameXFrac0 moved into the gutter: taking
+// the status icon out of the crop also took out ink the layout analysis had
+// been finding a line with, and empty reads went from 63 to 87 of 331 bands.
+// With the retry they go to 0, and exact name reads rise from 141 to 147
+// (`make probe-roster PROBE_ARGS=-roster.retry`).
+//
+// Retrying a NAME is safe in a way retrying a number is not, which is why
+// points still has no equivalent here: a name has a known roster behind it, so
+// a poor raw-line read fails to match and queues, while a raw-line read of a
+// number can manufacture a plausible value out of a crop that caught the
+// neighbouring row.
+//
+// Its preprocessing mirrors vsNameRetry rather than inheriting nameOptions,
+// because the primary's options were fitted for a mode whose layout analysis
+// works. That inheritance is its own unmeasured assumption — fitting the VS
+// retry separately was worth two members — and this one has NOT been swept.
+// Measure it before defending these values.
+var nameRetry = readPlan{
+	spec: ocr.Spec{MinConf: nameSpec.MinConf, PSM: ocr.PSMRawLine},
+	opts: vision.Options{SkipEqualize: true, SkipThreshold: true, UpscaleFactor: 4},
+}
+
+var (
+	powerSpec = ocr.Spec{MinConf: 0.6}
 
 	// levelSpec's charset is kept, on a narrower basis than a first pass at
 	// this comment claimed. "0/53 disagreements" is not, by itself, evidence
@@ -745,7 +810,9 @@ func (run *rosterRun) readAllianceMemberCount(ctx context.Context, i *Ingester, 
 // attach, so an ambiguous or unmatched-and-group-full name still sends the
 // whole row to review, same as before.
 func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Image, band RowBand, screenshotID int64, groupKey string) error {
-	nameRes, err := i.readField(ctx, img, fieldRect(band, img, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1), nameSpec, nameOptions)
+	nameRes, _, err := i.readFieldWithRetry(ctx, img,
+		fieldRect(band, img, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1),
+		readPlan{spec: nameSpec, opts: nameOptions}, nameRetry)
 	if err != nil {
 		return err
 	}

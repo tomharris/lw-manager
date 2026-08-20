@@ -591,8 +591,18 @@ func TestIngestRosterRefusesToCreateAMemberFromAnEmptyName(t *testing.T) {
 
 	var results []ocr.Result
 	results = append(results, ocr.Result{Text: "R1 Group 1/1", Confidence: 0.9})
-	results = append(results, rowResultsConf("", 0.0)...)
-	results = append(results, rowResultsConf("   ", 0.85)...) // whitespace-only, and confident: the structural rule must not need the confidence one
+	// An empty primary read is retried at raw line (see nameRetry), so this row
+	// scripts the retry too — and scripts it empty, because the rule under test
+	// is what happens when a name cannot be read AT ALL. Letting the retry
+	// succeed here would test the retry instead.
+	results = append(results, ocr.Result{Text: "", Confidence: 0.0})
+	results = append(results, ocr.Result{Text: "", Confidence: 0.0})
+	results = append(results, rowResultsConf("", 0.0)[1:]...)
+	// Whitespace-only is NOT empty, so it does not retry and needs no extra
+	// result — the distinction readFieldWithRetry draws, exercised here for
+	// free. Confident as well as blank: the structural rule must not need the
+	// confidence one.
+	results = append(results, rowResultsConf("   ", 0.85)...)
 	results = append(results, rowResultsConf("RealOne", 0.95)...)
 	h.engine.Results = results
 
@@ -1464,5 +1474,56 @@ func TestIngestRosterUpsertsARepeatObservationRatherThanDuplicatingTheFact(t *te
 		if f.Confidence != 0.95 {
 			t.Errorf("fact %+v confidence = %v, want 0.95 -- the second, cleaner read of the same figure should have won", f, f.Confidence)
 		}
+	}
+}
+
+// A roster name crop that PSM 7's layout analysis refuses to look at reads
+// empty, and an empty read is not a near miss -- no threshold and no fuzzy
+// match reaches it. The VS name field has retried such crops at raw line since
+// the layout blindness was measured; the roster name field was left calling
+// readField directly, so the same defect went unhandled on the route that
+// creates the members every VS row is later matched against.
+//
+// Measured on capture 1 with `make probe-roster PROBE_ARGS=-roster.retry`:
+// 87 of 331 row bands read empty at PSM 7 and every one of them reads at
+// PSM 13, taking exact name reads from 141 to 147.
+//
+// This is safe here for the reason CLAUDE.md gives for names and withholds
+// from points: a name has a known roster behind it, so a poor retried read
+// simply fails to match, while a number has no such guard and a raw-line
+// retry can manufacture a plausible value.
+func TestIngestRosterRetriesANameReadTheLayoutAnalysisRefused(t *testing.T) {
+	h := newHarness(t)
+	h.addFrame(rosterFrame(1), 0)
+
+	var results []ocr.Result
+	results = append(results, ocr.Result{Text: "R1 Group 1/1", Confidence: 0.9})
+	// The primary read returns nothing; the retry is the second result, and
+	// the remaining fields follow it. Without the retry the engine hands
+	// "Lothar232" to the POWER field and the name stays empty.
+	results = append(results, ocr.Result{Text: "", Confidence: 0.0})
+	results = append(results, ocr.Result{Text: "Lothar232", Confidence: 0.9})
+	results = append(results, ocr.Result{Text: "Power: 200.0M", Confidence: 0.9})
+	results = append(results, ocr.Result{Text: "Lv.30", Confidence: 0.9})
+	results = append(results, ocr.Result{Text: "Online", Confidence: 0.9})
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+
+	if res.Created != 1 {
+		t.Fatalf("created %d members, want 1: the empty primary read was not retried", res.Created)
+	}
+	var names []string
+	for _, m := range h.store.members {
+		names = append(names, m.Name)
+	}
+	if len(names) != 1 || names[0] != "Lothar232" {
+		t.Errorf("members = %q, want exactly [Lothar232] from the retried read", names)
+	}
+	if n := h.reviewReasons()["unreadable_name"]; n != 0 {
+		t.Errorf("unreadable_name reviews = %d, want 0: the retry read the name, so nothing should have queued", n)
 	}
 }
