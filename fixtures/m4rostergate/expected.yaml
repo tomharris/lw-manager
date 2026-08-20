@@ -1,0 +1,708 @@
+# The M4 roster gate's hand-transcribed capture.
+#
+# Capture 1, account 16, 2026-08-14: the alliance MEMBER LIST walked one rank
+# group at a time, 62 frames at 720x1600. Transcribed by eye out of the blob
+# store, one frame at a time at full resolution -- not from `control ingest`'s
+# summary, not from a `members` or `review_queue` query, and not from a
+# previous run of this gate. README.md in this directory says why that
+# distinction is the whole point of the file, and CLAUDE.md records what it
+# cost this project to learn it.
+#
+# THE CAPTURE HOLDS 75 MEMBERS, NOT 84. Pre-flight recorded R4 "This Is It" as
+# expanded with nine rows to read. It is not: seq 1 is the only frame in the
+# capture that shows R4's header at all, it reads "2/9" with the UP chevron,
+# and R3 "Footloose 10/64" follows it immediately with no rows in between. The
+# chevron's polarity is settled by the frames themselves rather than assumed --
+# R3 (10/64) and R2 (1/11) both carry the DOWN chevron and are both followed by
+# exactly as many rows as their headers state, 64 and 11 counted; R4 (2/9) and
+# R1 (0/12) both carry the UP chevron and are followed by none. So R4 is
+# collapsed in capture 1 exactly as R1 is, and its nine members have no rows
+# anywhere to have been read from. All four headers are still recorded at their
+# true totals, which is what keeps the arithmetic the screen states twice
+# intact: 9 + 64 + 11 + 12 = 96, plus leader RobElr in the banner = 97.
+#
+# THE RULE: a value is recorded only where it reads identically in every frame
+# the member appears in. Capture 1 sweeps the same stretch of list repeatedly
+# -- seq 26 onward re-reads R3's tail, the whole of R2, and R1's closed header,
+# over and over -- so most rows here were read three or more times, and every
+# power and level agreed on every reading.
+#
+# ONE FIELD CANNOT OBEY THAT RULE AND IS RECORDED DIFFERENTLY. last_active is
+# an elapsed time, and it advances while the capture runs: Rudester17 reads
+# "1m ago" on seq 22 and "11m ago" on seq 58, albambet "7h ago" on seq 20 and
+# "8h ago" on seq 26. That is the clock moving, not a disagreement between
+# frames, so the value recorded is the one on the EARLIEST frame the row
+# appears in, and a later frame reading one step further on confirms the row
+# rather than contradicting it. Anything downstream that asserts last_active
+# has to account for that; nothing does today.
+#
+# FIVE MEMBERS CARRY A NOTE, all of them for the same reason: an ornament or a
+# fallback-font glyph that is a best reading rather than a certain one. They
+# get the standing fixtures/m4gate/expected.yaml gives its thirteen decorated
+# names -- recorded rather than dropped, because dropping them would be editing
+# the ground truth to suit the parser, and asserted rather than excused,
+# because the note is what a failure should be re-read against before the
+# pipeline is blamed. Where a note names a disagreement with the VS fixture
+# ("ZaP") it is a disagreement between two hand readings of the same player,
+# not a defect in either.
+#
+# The four other decorated names are NOT noted, and the distinction is the
+# point of the field: 한씨아저씨, Danny 狂, ٣١٢ A l i ٣١٢ and M I C H E L L are
+# each unambiguous at full resolution, whatever an English-only tesseract makes
+# of them. Non-Latin is not the same thing as uncertain.
+#
+# WHAT IS NOT UNCERTAIN, and is called out because the pipeline currently reads
+# each of them differently: Biias Fortes carries two dotted i's of equal height
+# at 8x and is not "Bilas"; ALBAN80 ends in the digits 8 and 0, not "SO";
+# 19GENERALS68 ends in 8, not S; Bwiz21 and Delio1 end in the digit 1;
+# AA91AA carries 9 and 1 between the A pairs, not "SI"; King SiUuUU is
+# S-i-U-u-U-U. Those are confusables in the engine, not ambiguities in the
+# pixels, and this file is the thing that disagrees with the engine.
+#
+# game_version is not printed on this screen. 1.0.358 is what
+# fixtures/corpus/index.yaml records for every frame captured on 2026-08-12 and
+# 2026-08-13 and what fixtures/m4gate/expected.yaml records for capture 6 on
+# 2026-08-17; capture 1 sits between them, on the same handset. It is stated
+# here for the reason the field exists at all -- it is what later explains a
+# gate that used to pass and now does not -- and it is an inference from those
+# two observations rather than something read off a frame.
+#
+# Provenance only. The gate seeds its own capture row in lw_manager_test and
+# never looks this id up; it is here so a puzzling row can be traced back.
+capture: 1
+period_key: "2026-W33"
+game_version: "1.0.358"
+
+alliance:
+  tag: "OrCa"
+  name: "Organized Chaos"
+  # "Members: 97/100" on seq 0, the one frame carrying the alliance summary.
+  member_count: 97
+  # RobElr occupies the MEMBER LIST banner and has no rank-group row, which is
+  # why the group totals sum to 96 rather than 97.
+  leader: "RobElr"
+
+# Copied verbatim from fixtures/m4roster/frames.yaml, offset_px included and
+# never re-derived: it was measured against the frames as captured, and ingest
+# turns it into row positions, so a wrong value misaligns every row after it.
+frames:
+  - seq: 0
+    sha256: "124afc616a0c8abb559c6cae35855a2662f3205b580954ad92a2fe7d746aaa88"
+    offset_px: 0
+    group_key: "_alliance_summary"
+  - seq: 1
+    sha256: "c97cde231040fd0b54268dc74d9deb3e0e4dcb4e369aaec004baee708196403a"
+    offset_px: 0
+  - seq: 2
+    sha256: "6f07eb91d7cc88a193b1c35736f466814bee7c6bb5e41b5cf67cb5bd90ae32ac"
+    offset_px: 352
+  - seq: 3
+    sha256: "524d322f1c32335b3634b57692248f499fe8e80276aca4303cd4bf7da3bac60f"
+    offset_px: 329
+  - seq: 4
+    sha256: "2cda89fa7bf037b6854b238634c33406bd3253ad486889e42e6e347a1dbef74c"
+    offset_px: 338
+  - seq: 5
+    sha256: "b73155b2526fdaa08b048260eb9bbc290bc382a19a37171586a37bf4b9c9f2a1"
+    offset_px: 343
+  - seq: 6
+    sha256: "ea680d59b73d8a0b7f30ed868be765a78151f32f4438afa53488474be9971886"
+    offset_px: 347
+  - seq: 7
+    sha256: "89ba1ad32d18711fdb9a4ce47b31538e6ccf384758773b8847b57cbe62837e8f"
+    offset_px: 327
+  - seq: 8
+    sha256: "734a2ca2bd33365054d4955ab847dc6ed9a742bf1e3c31a11e848662dcbf5cfb"
+    offset_px: 319
+  - seq: 9
+    sha256: "d0ec192ab7215d2ed5acb8432f1453b1c8fc3c18570a111b74f71149e783b9b2"
+    offset_px: 282
+  - seq: 10
+    sha256: "976d73d1c3e3cfdca14b29ae44fc29ce5e52e9965b4bdda75f9400d43998514c"
+    offset_px: 253
+  - seq: 11
+    sha256: "1c1dac49b87371a8fb50511b596ffa70f66c1643f8e18a40c7bd8f9a7d652cd9"
+    offset_px: 270
+  - seq: 12
+    sha256: "986a4351c019cdff8d49ecbf0632b1581dcf525bb9e9cd1723ff594e7c451578"
+    offset_px: 325
+  - seq: 13
+    sha256: "9c5f5009a10d104b90487bf09215b28fff0ee6ca108b16dffe4860a6d85cd747"
+    offset_px: 334
+  - seq: 14
+    sha256: "15a012d4577572799e8891acebb95ffa9404a1057e0d02d010bab4ae878626c4"
+    offset_px: 399
+  - seq: 15
+    sha256: "3f3bcbc83b0567f58b03ae08cf6031d1fc877373e5b3086e1ba9e438fa24c74a"
+    offset_px: 289
+  - seq: 16
+    sha256: "05d3f48112601ec2ccfcea9f252458597058e29a13382521c4a6c2fefb1d8dfe"
+    offset_px: 307
+  - seq: 17
+    sha256: "218912e3891d077390410432db95098bf71c48e4043f07e4fc6e5080f73f5696"
+    offset_px: 363
+  - seq: 18
+    sha256: "c155b191b17c4919f9e7eae9cb079bc2898830b971c9b4b582c133ea42df5e66"
+    offset_px: 411
+  - seq: 19
+    sha256: "1eacc7d4d0a2bff42e83aedcd14ea643913aac1e3d9738763365a5d9af704dd8"
+    offset_px: 369
+  - seq: 20
+    sha256: "d248b241a88524d2afc2d1190b090ef677a794414874a3fdf738b37fdf7ede5a"
+    offset_px: 313
+  - seq: 21
+    sha256: "23780f45075732c0113161318f4802b4181df5ec1301dedd9fae9c356c400a3b"
+    offset_px: 324
+  - seq: 22
+    sha256: "f1597f529c33fa8dd6bc4e8cda8d4000cdb1077d91ccffe93eea55f10ed85cd9"
+    offset_px: 335
+  - seq: 23
+    sha256: "b00b49dd5d493db1bf2165aaf58e44ffc859b60d7b41f4a5156c48aca517fe5c"
+    offset_px: 383
+  - seq: 24
+    sha256: "a433a6d17744b54617813d95f2bfbcaacdd7a2f0aba2560e820da5bf0c75c066"
+    offset_px: 294
+  - seq: 25
+    sha256: "ada11ab92eeaea7c9ed64e9a2fe48e9da3e78edf9965f53fbb4c709a1b60dbae"
+    offset_px: 228
+  - seq: 26
+    sha256: "f91aca3b67acc0429db711c423c052290ed4e66fa224643eccb7db0d76fde5c6"
+    offset_px: 0
+  - seq: 27
+    sha256: "37e98e8fe0f0fcb92271cdfa2a82e803d087f54213eb559f8dead77f353f2bbc"
+    offset_px: 377
+  - seq: 28
+    sha256: "3e506211a84031c7420eeee5976bbf589224b46afd3e835b7b73eb91acc913d2"
+    offset_px: 276
+  - seq: 29
+    sha256: "fbcc8985a2ee1754cfdb2169226a5060813145d0ebf63054b140ba5e695f0d4a"
+    offset_px: 382
+  - seq: 30
+    sha256: "489d910ee6309bac6954ea3a22abe7559993ce011d67fd2bf99845850be2950b"
+    offset_px: 197
+  - seq: 31
+    sha256: "89052b7675103e1d414cf9378d653b85012dde3c2c096d4c261c8674e64469f8"
+    offset_px: 0
+  - seq: 32
+    sha256: "b737a63b52b237c1902a0b62a0ccfd9a97fdca89135a7d59fb9819976aba2f5a"
+    offset_px: 267
+  - seq: 33
+    sha256: "065d01158022b775cea16d4815160861c78428151a0c67698e7b4d1d593c5f2e"
+    offset_px: 330
+  - seq: 34
+    sha256: "847fa2719e5ddc5f75b5f363641bc3ba526e4c136ad1ce63b7d07fde38b50acd"
+    offset_px: 296
+  - seq: 35
+    sha256: "634e5b22953a47d3f656f1c37b51c0e760b0cf5085fd259f0ba5b82ab5c9f75d"
+    offset_px: 288
+  - seq: 36
+    sha256: "a334cfef60609995c639e6331d67b888c2649dc3d8a6170c06f3ae773fa4f380"
+    offset_px: 50
+  - seq: 37
+    sha256: "76126ae40c1e6a4776f291f4875ccc1c9efd283779de5ad869909da10bcfe95a"
+    offset_px: 0
+  - seq: 38
+    sha256: "27507b0cbbdcb135617b2521c289b886dcc201700b972e45b1d7e1ec6f07732c"
+    offset_px: 367
+  - seq: 39
+    sha256: "ca2b0d4e0c92de27481325e301c41f32d00c93372523604d6b4d9508282135b6"
+    offset_px: 372
+  - seq: 40
+    sha256: "fc226c6e5a9536aae3e7dff07b625020307d3600b2aaed8f2412c0aa1d1f72df"
+    offset_px: 321
+  - seq: 41
+    sha256: "c416c3fbb4f8398b208926e0f37bd84dd4b7a8293e90433c915d888d297e1293"
+    offset_px: 171
+  - seq: 42
+    sha256: "e3fc83864c40c7cae95518f904dddc19541b3ce304ca5f2aafe4d46f7f25932e"
+    offset_px: 0
+  - seq: 43
+    sha256: "b472be1030e1046bf463358cdabcf5c8f7bdddac79917be6959d7797f54e1bdb"
+    offset_px: 347
+  - seq: 44
+    sha256: "e8483ee906753bab28e1fd42cd8f7bd190b5d73f1bf34aed1191a1be1a84ebd2"
+    offset_px: 361
+  - seq: 45
+    sha256: "7e92fc6d7207fb1e93010b4a58edd5cc9fb8af14905106f81ce8bcf95c69d9e6"
+    offset_px: 330
+  - seq: 46
+    sha256: "bb65dadff17796772b7f2bea9ac41eb7f3be9425f4336e77d3078f22ee5ad5c0"
+    offset_px: 195
+  - seq: 47
+    sha256: "4c1bd88c10774ee039331c1879df58c52b59230cc9b84e703f260effb4991702"
+    offset_px: 0
+  - seq: 48
+    sha256: "cf312ebe3f90609e39d7684b98b21dc8d60364d6b1fecd006c25271598cc1695"
+    offset_px: 342
+  - seq: 49
+    sha256: "d7b74aea2a7c62e8961d0d5f4d5812c6da8e7a92415474a12729e666c1325d61"
+    offset_px: 344
+  - seq: 50
+    sha256: "5a974fdc14c06f74770545e0c6231dc249bfd79d2c7677942f1f789745784698"
+    offset_px: 299
+  - seq: 51
+    sha256: "b50d110d7c3284e00c0fed86beef60e4f0b3b5c607fbd2e37f8442e2a6f773ac"
+    offset_px: 247
+  - seq: 52
+    sha256: "6e805064199ed37f81ceec7dc68d2bf546db41bc3c2c1c37d4d7f7173da73dec"
+    offset_px: 0
+  - seq: 53
+    sha256: "897e5a39abecc95c5187df83fae74477a54da0f5cb374e59737992944b4e9a5a"
+    offset_px: 340
+  - seq: 54
+    sha256: "085dccac12c2070d783e1b8f310aa7be6f5bba760939c97c58c9c8d63dd1a18a"
+    offset_px: 356
+  - seq: 55
+    sha256: "5340db46efa9ee40fca3e59e8910a3a8497cba163cf9dc4525affed5daf66070"
+    offset_px: 325
+  - seq: 56
+    sha256: "7813ba4502afe7f5de71ec7bea54680b3cd67465c01fbcc67b6c21f516e94802"
+    offset_px: 212
+  - seq: 57
+    sha256: "f84c8fd43865522821a819ac3a1375199ca5e1f292afb41992f0604820429a1b"
+    offset_px: 0
+  - seq: 58
+    sha256: "2baa240b4aedacd03e207517219eb5dc633eeb651bafcaf439a31c770bdbe531"
+    offset_px: 347
+  - seq: 59
+    sha256: "55d1d1187fd0b50b98b0260cf0fc988095808040d9d338abb233659c69344165"
+    offset_px: 327
+  - seq: 60
+    sha256: "7c15e5b526534613bbb7f70cbd07088218824c184dc83289fdae276b21b8f980"
+    offset_px: 359
+  - seq: 61
+    sha256: "31658517323b066d4dda06da5ab2ae79c47321392873689ba8979f403c49eeda"
+    offset_px: 200
+
+# Every group's own sticky header, read off the pixels. total is the M of the
+# header's "N/M" -- the group's size, not its online count, which is the N and
+# moves during the capture.
+groups:
+  - rank: "R4"
+    name: "This Is It"
+    total: 9
+    # "2/9" with the UP chevron on seq 1, and R3's header directly beneath it
+    # with no rows between. roster_capture never opened this group.
+    expanded: false
+  - rank: "R3"
+    name: "Footloose"
+    total: 64
+    expanded: true
+  - rank: "R2"
+    name: "I'm Alright"
+    total: 11
+    expanded: true
+  - rank: "R1"
+    name: "Danger Zone"
+    total: 12
+    # "0/12" with the UP chevron, on seq 25, 30, 36, 41, 46, 51 and 56. The 0
+    # is how many of its members are online; the 12 is the group's size.
+    expanded: false
+
+# In list order within each group, which is the order the game sorts by: online
+# members first, then by increasing time since last active.
+members:
+  - rank: "R3"
+    name: "Kain445"
+    power: 211500000
+    level: 34
+    last_active: "Online"
+  - rank: "R3"
+    name: "ΔKΔŽΔ"
+    power: 230800000
+    level: 35
+    last_active: "Online"
+    note: >-
+      every glyph renders in a fallback font; the second is a K-shape
+      with a small nick in its upper arm and could be Latin K, Greek Κ
+      or Cyrillic К. A best reading, not a certain one.
+      fixtures/m4gate/expected.yaml reads the same player the same way.
+  - rank: "R3"
+    name: "Recon13Bravo"
+    power: 189200000
+    level: 32
+    last_active: "Online"
+  - rank: "R3"
+    name: "K4RAZOR1"
+    power: 195000000
+    level: 35
+    last_active: "Online"
+  - rank: "R3"
+    name: "KIRCHO"
+    power: 228100000
+    level: 35
+    last_active: "Online"
+  - rank: "R3"
+    name: "Mar 89"
+    power: 193600000
+    level: 34
+    last_active: "Online"
+  - rank: "R3"
+    name: "King SiUuUU"
+    power: 184300000
+    level: 34
+    last_active: "Online"
+  - rank: "R3"
+    name: "BobLeeSwagger44"
+    power: 236000000
+    level: 35
+    last_active: "Online"
+  - rank: "R3"
+    name: "Otogen VS"
+    power: 221500000
+    level: 35
+    last_active: "Online"
+  - rank: "R3"
+    name: "한씨아저씨"
+    power: 240000000
+    level: 34
+    last_active: "Online"
+  - rank: "R3"
+    name: "ZāP ꙅઉ"
+    power: 290900000
+    level: 35
+    last_active: "1m ago"
+    note: >-
+      the mark over the a is a solid horizontal bar at 12x -- a macron,
+      not a wave -- while fixtures/m4gate/expected.yaml reads the same
+      player as "ZãP", a tilde. The two trailing ornaments are
+      fallback-font glyphs that cannot be pinned to codepoints from a
+      26px rendering; ꙅઉ follows the VS fixture's choice and is a best
+      reading. Only the ZaP core is beyond doubt.
+  - rank: "R3"
+    name: "Carlito Buttson Esq"
+    power: 250600000
+    level: 35
+    last_active: "2m ago"
+  - rank: "R3"
+    name: "event2k5"
+    power: 207500000
+    level: 35
+    last_active: "3m ago"
+  - rank: "R3"
+    name: "Beangraff"
+    power: 209200000
+    level: 35
+    last_active: "4m ago"
+  - rank: "R3"
+    name: "SHERLOCK Holmes"
+    power: 229200000
+    level: 34
+    last_active: "7m ago"
+  - rank: "R3"
+    name: "Smileypwns"
+    power: 179200000
+    level: 35
+    last_active: "9m ago"
+  - rank: "R3"
+    name: "Kapton Banana"
+    power: 209500000
+    level: 35
+    last_active: "9m ago"
+  - rank: "R3"
+    name: "Lothar232"
+    power: 225000000
+    level: 34
+    last_active: "10m ago"
+  - rank: "R3"
+    name: "Luis Volpe"
+    power: 204700000
+    level: 35
+    last_active: "15m ago"
+  - rank: "R3"
+    name: "Riesige Banane"
+    power: 205700000
+    level: 34
+    last_active: "18m ago"
+  - rank: "R3"
+    name: "Delio1"
+    power: 223700000
+    level: 35
+    last_active: "18m ago"
+  - rank: "R3"
+    name: "Drizzlers12"
+    power: 195900000
+    level: 33
+    last_active: "18m ago"
+  - rank: "R3"
+    name: "Bwiz21"
+    power: 214600000
+    level: 35
+    last_active: "20m ago"
+  - rank: "R3"
+    name: "Bujangann"
+    power: 208800000
+    level: 35
+    last_active: "22m ago"
+  - rank: "R3"
+    name: "Your Target"
+    power: 201500000
+    level: 35
+    last_active: "23m ago"
+  - rank: "R3"
+    name: "W Ana"
+    power: 197000000
+    level: 33
+    last_active: "26m ago"
+  - rank: "R3"
+    name: "Leroy Jenkins 0914"
+    power: 269600000
+    level: 34
+    last_active: "27m ago"
+  - rank: "R3"
+    name: "Thanos474"
+    power: 200100000
+    level: 33
+    last_active: "28m ago"
+  - rank: "R3"
+    name: "Commander Ponce"
+    power: 214200000
+    level: 34
+    last_active: "30m ago"
+  - rank: "R3"
+    name: "Danny 狂"
+    power: 188100000
+    level: 33
+    last_active: "33m ago"
+  - rank: "R3"
+    name: "Kun Tsunami"
+    power: 204200000
+    level: 34
+    last_active: "41m ago"
+  - rank: "R3"
+    name: "xLIFERUINERx"
+    power: 166700000
+    level: 33
+    last_active: "44m ago"
+  - rank: "R3"
+    name: "Nawtzz"
+    power: 190100000
+    level: 34
+    last_active: "44m ago"
+  - rank: "R3"
+    name: "Angel 4am"
+    power: 218700000
+    level: 35
+    last_active: "47m ago"
+  - rank: "R3"
+    name: "KimmyTX"
+    power: 211100000
+    level: 35
+    last_active: "54m ago"
+  - rank: "R3"
+    name: "Innovo"
+    power: 200900000
+    level: 34
+    last_active: "1h ago"
+  - rank: "R3"
+    name: "Ravenna Morrigan"
+    power: 185000000
+    level: 33
+    last_active: "1h ago"
+  - rank: "R3"
+    name: "Battlestar Em"
+    power: 171800000
+    level: 30
+    last_active: "1h ago"
+  - rank: "R3"
+    name: "Mush Dias"
+    power: 224300000
+    level: 35
+    last_active: "1h ago"
+  - rank: "R3"
+    name: "katd178"
+    power: 141000000
+    level: 30
+    last_active: "1h ago"
+  - rank: "R3"
+    name: "B52RN10"
+    power: 158500000
+    level: 30
+    last_active: "1h ago"
+  - rank: "R3"
+    name: "Kyra ♡"
+    power: 203900000
+    level: 35
+    last_active: "1h ago"
+    note: >-
+      the ornament is an outline heart drawn in a fallback font; ♡ is a
+      best reading of the shape rather than a certain codepoint. "Kyra"
+      is beyond doubt.
+  - rank: "R3"
+    name: "19GENERALS68"
+    power: 180100000
+    level: 33
+    last_active: "1h ago"
+  - rank: "R3"
+    name: "ALBAN80"
+    power: 247100000
+    level: 35
+    last_active: "2h ago"
+  - rank: "R3"
+    name: "IamIronman2025"
+    power: 229800000
+    level: 33
+    last_active: "2h ago"
+  - rank: "R3"
+    name: "MadMan7"
+    power: 161700000
+    level: 31
+    last_active: "3h ago"
+  - rank: "R3"
+    name: "2Rule"
+    power: 217400000
+    level: 35
+    last_active: "3h ago"
+  - rank: "R3"
+    name: "silentdrummer"
+    power: 220600000
+    level: 35
+    last_active: "4h ago"
+  - rank: "R3"
+    name: "MARVINNN"
+    power: 223900000
+    level: 35
+    last_active: "4h ago"
+  - rank: "R3"
+    name: "AnthraxVIII"
+    power: 174000000
+    level: 34
+    last_active: "4h ago"
+  - rank: "R3"
+    name: "Handbol"
+    power: 211500000
+    level: 35
+    last_active: "4h ago"
+  - rank: "R3"
+    name: "Mr Lazy"
+    power: 171900000
+    level: 32
+    last_active: "4h ago"
+  - rank: "R3"
+    name: "٣١٢ A l i ٣١٢"
+    power: 220700000
+    level: 35
+    last_active: "5h ago"
+  - rank: "R3"
+    name: "TearsOfDragon"
+    power: 217600000
+    level: 35
+    last_active: "5h ago"
+  - rank: "R3"
+    name: "Quindici Lune"
+    power: 251000000
+    level: 35
+    last_active: "5h ago"
+  - rank: "R3"
+    name: "Biias Fortes"
+    power: 217200000
+    level: 33
+    last_active: "6h ago"
+  - rank: "R3"
+    name: "Foskiitus"
+    power: 173700000
+    level: 35
+    last_active: "6h ago"
+  - rank: "R3"
+    name: "HAL 9000"
+    power: 237200000
+    level: 35
+    last_active: "7h ago"
+  - rank: "R3"
+    name: "Stoininger"
+    power: 203600000
+    level: 31
+    last_active: "7h ago"
+  - rank: "R3"
+    name: "M I C H E L L"
+    power: 168100000
+    level: 33
+    last_active: "7h ago"
+  - rank: "R3"
+    name: "albambet"
+    power: 210600000
+    level: 35
+    last_active: "7h ago"
+  - rank: "R3"
+    name: "ZeL1"
+    power: 164100000
+    level: 32
+    last_active: "7h ago"
+  - rank: "R3"
+    name: "TYRIO∩"
+    power: 284200000
+    level: 35
+    last_active: "9h ago"
+    note: >-
+      "TY" and "IO" are drawn in the game's own font; the R and the
+      closing arch are thin fallback-font glyphs, so both are non-ASCII
+      lookalikes. The arch carries no diagonal and is therefore not an N
+      -- Armenian Ո and the set operator ∩ are both consistent with it,
+      and ∩ is a best reading rather than a settled codepoint. The core
+      reads TYRION.
+  - rank: "R3"
+    name: "ϟϟ Leo ϟϟ"
+    power: 247500000
+    level: 35
+    last_active: "10h ago"
+    note: >-
+      the four ornaments render as paired curls in a fallback font,
+      which is not what a lightning bolt looks like in most faces; ϟ is
+      the reading fixtures/m4gate/expected.yaml settled on for the same
+      player and is carried here as a best reading, not a certain one.
+      Only "Leo" is beyond doubt.
+  - rank: "R2"
+    name: "mini tomx1000"
+    power: 232700000
+    level: 34
+    last_active: "Online"
+  - rank: "R2"
+    name: "Rudester17"
+    power: 173600000
+    level: 32
+    last_active: "1m ago"
+  - rank: "R2"
+    name: "ArmArak"
+    power: 241900000
+    level: 35
+    last_active: "7m ago"
+  - rank: "R2"
+    name: "S a n d m a n"
+    power: 155900000
+    level: 33
+    last_active: "24m ago"
+  - rank: "R2"
+    name: "Bubs1000"
+    power: 212100000
+    level: 35
+    last_active: "58m ago"
+  - rank: "R2"
+    name: "AA91AA"
+    power: 175100000
+    level: 33
+    last_active: "2h ago"
+  - rank: "R2"
+    name: "MQ the Beast"
+    power: 229100000
+    level: 34
+    last_active: "4h ago"
+  - rank: "R2"
+    name: "Nichoj"
+    power: 188900000
+    level: 34
+    last_active: "6h ago"
+  - rank: "R2"
+    name: "Kalor13"
+    power: 181100000
+    level: 31
+    last_active: "7h ago"
+  - rank: "R2"
+    name: "O Nyankopo N"
+    power: 217500000
+    level: 35
+    last_active: "13h ago"
+  - rank: "R2"
+    name: "OwNeD"
+    power: 186300000
+    level: 35
+    last_active: "1d ago"

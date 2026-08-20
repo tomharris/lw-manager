@@ -133,6 +133,25 @@ func TestRosterGateFixtureShape(t *testing.T) {
 	}
 }
 
+// TestRosterGateGroundTruthShape runs the real transcription through the same
+// validator. The shape fixture above proves parseExpectedRoster works; this
+// proves the artifact the gate will actually read is well formed, which is a
+// separate claim and the one that matters -- a fixture that fails to load
+// turns the gate into a skip, and a skip is indistinguishable from a pass in
+// a CI summary.
+//
+// It skips when the file is absent so a fresh clone still builds, the same
+// shape as the M1 gate skipping an unpulled corpus.
+func TestRosterGateGroundTruthShape(t *testing.T) {
+	exp := loadExpectedRoster(t, filepath.Join("..", "..", "fixtures", "m4rostergate", "expected.yaml"))
+	if len(exp.Members) < gateRosterMinMembers {
+		t.Fatalf("%d members transcribed, want at least %d; fewer cannot support a 95%% threshold",
+			len(exp.Members), gateRosterMinMembers)
+	}
+	t.Logf("ground truth: %d members across %d groups, alliance count %d, game version %s",
+		len(exp.Members), len(exp.Groups), exp.Alliance.MemberCount, exp.GameVersion)
+}
+
 // loadExpectedRoster reads and validates the ground truth, skipping when it
 // has not been transcribed yet -- the same shape as the M1 gate skipping an
 // unpulled corpus, and for the same reason: the artifact is deliberately not

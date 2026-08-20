@@ -141,7 +141,7 @@ the digest by `blob.Key`, so `sha256` is the whole reference.
 # never looks this id up; it is here so a puzzling row can be traced back.
 capture: 1
 period_key: "2026-W33"
-game_version: "1.0.357"
+game_version: "1.0.358"
 
 alliance:
   tag: "OrCa"
@@ -163,7 +163,7 @@ groups:
   - rank: "R4"
     name: "This Is It"
     total: 9
-    expanded: true
+    expanded: false
   - rank: "R3"
     name: "Footloose"
     total: 64
@@ -178,12 +178,22 @@ groups:
     expanded: false
 
 members:
-  - rank: "R4"
+  - rank: "R3"
     name: "Lothar232"
-    power: 211500000
+    power: 225000000
     level: 34
-    last_active: "Online"
+    last_active: "10m ago"
 ```
+
+**Capture 1 leaves TWO groups collapsed, not one.** R4 "This Is It" reads
+`2/9` with the up chevron on seq 1 -- the only frame in the capture that shows
+its header -- and R3's header follows it immediately with no rows between, so
+R4 is closed exactly as R1 is. The chevron's polarity is not assumed: R3
+(`10/64`) and R2 (`1/11`) carry the down chevron and are each followed by
+exactly as many rows as their header states, counted; R4 and R1 carry the up
+chevron and are followed by none. That is why `expected.yaml` transcribes 75
+members and not the 84 an earlier reading expected, and why `expanded` is a
+field rather than an assumption.
 
 At least twenty members are required (`gateRosterMinMembers`), for the same
 reason `fixtures/m4gate/README.md` requires twenty rows: below that, one bad
