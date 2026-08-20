@@ -761,13 +761,15 @@ func TestIngestRosterQueuesALowConfidenceNameRatherThanGuessing(t *testing.T) {
 // questions, and this is the fixture where they diverge: eleven rows match a
 // known member and a twelfth reads ambiguously and is queued. Parsed counts
 // twelve because twelve bands reached OCR; MatchedOrCreated counts eleven
-// because that is what the group actually yielded. The gap of one is exactly
-// the review queue, which is the relation the roster gate's condition 4 and
-// `control ingest`'s created= column both read.
+// because that is what the group actually yielded. The gap of one is the
+// ambiguous row's NAME-class review -- not the review queue as a whole, which
+// on a real capture also carries a row per unparseable or low-confidence
+// numeric field on rows that resolved perfectly well.
 //
-// Asserted here rather than left to the gate: the gate needs Postgres, the
-// blob store and tesseract, so nothing in `make test` would notice the
-// exported counter silently going to zero.
+// Asserted here rather than left to a gate: `control ingest` prints this as
+// yielded=, and the roster gate needs Postgres, the blob store and tesseract,
+// so nothing in `make test` would notice the exported counter silently going
+// to zero.
 func TestIngestRosterCountsMembersYieldedSeparatelyFromRowsParsed(t *testing.T) {
 	h := newRosterIngestHarness(t, rosterFixture{
 		group: "R2", groupTotal: 11, existing: 11, ambiguousName: true,

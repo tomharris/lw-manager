@@ -90,11 +90,13 @@ type expectedRosterFrame struct {
 // count is the structural gate on member creation and is currently the
 // route's dominant defect.
 // Expanded records whether roster_capture opened this group during the run.
-// R1 Danger Zone reads "0/12" and is still COLLAPSED in capture 1's final
-// frame, so its twelve members have no rows anywhere in the capture: they are
-// a group the capture saw and never opened, not twelve members the pipeline
-// lost. The distinction is the whole reason this field exists -- without it a
-// collapsed group is indistinguishable from a catastrophic read failure.
+// Capture 1 has TWO collapsed groups, not one: R4 "This Is It" reads "2/9" and
+// R1 "Danger Zone" reads "0/12", both carry the UP chevron, and neither is
+// followed by a single row anywhere in the capture. Their twenty-one members
+// are a group the capture saw and never opened, not twenty-one members the
+// pipeline lost. The distinction is the whole reason this field exists --
+// without it a collapsed group is indistinguishable from a catastrophic read
+// failure.
 type expectedGroup struct {
 	Rank     string `yaml:"rank"`
 	Name     string `yaml:"name"`
@@ -535,6 +537,36 @@ func TestM4RosterGate(t *testing.T) {
 	// internally, so the truth set is built from display names alone. IDs are
 	// synthetic indices -- nothing here keys on them, and Rank requires the
 	// field to exist.
+	// Before any of that runs, the truth set has to be separable by the scorer
+	// that is about to score against it. If two transcribed names reach
+	// AutoAccept against each other, two correct member rows both resolve to
+	// the same truth entry: condition 2 reports a split -- a hard zero -- and
+	// condition 1 reports the other member as never created. Both failures
+	// would be the gate blaming the pipeline for a defect in the fixture, and
+	// nothing in the output would say so.
+	//
+	// t.Fatalf, not t.Errorf, and before the scoring loop rather than beside
+	// it: every number this gate then prints is computed through the
+	// correspondence that just failed to be well defined, so continuing would
+	// produce a full, confident, meaningless report. make probe-m4 already
+	// fails on the same measure over the VS roster, for the same reason
+	// (roster.ClosestPairScore's own doc comment makes the argument).
+	names := make([]string, 0, len(exp.Members))
+	for _, m := range exp.Members {
+		names = append(names, m.Name)
+	}
+	closestPair, pairA, pairB := roster.ClosestPairScore(names)
+	if closestPair >= roster.AutoAccept {
+		t.Fatalf("this fixture cannot be scored: transcribed members %q and %q score %d against each other, at or above AutoAccept %d, so a correct read of either resolves to both -- give one an alias or re-read the transcription before believing any number from this gate",
+			pairA, pairB, closestPair, roster.AutoAccept)
+	}
+	// Logged whether or not it fires, on probe-m4's model: the margin is the
+	// budget every later change to confusableCost or the pair table spends,
+	// and a headline that only appears on failure gives nobody a baseline to
+	// read the next one against.
+	t.Logf("roster gate truth set: %d members, closest pair %q/%q at %d against AutoAccept %d",
+		len(exp.Members), pairA, pairB, closestPair, roster.AutoAccept)
+
 	truth := make([]roster.Member, 0, len(exp.Members))
 	for i, m := range exp.Members {
 		truth = append(truth, roster.Member{ID: int64(i + 1), Name: m.Name})
@@ -572,20 +604,24 @@ func TestM4RosterGate(t *testing.T) {
 		rankOf[m.Name] = m.Rank
 	}
 
-	var missing []string
+	// The two shapes are collected separately as well as together. Condition 1
+	// wants both -- a member in the wrong group is not covered -- but condition
+	// 3 wants only neverCreated, for the reason argued at its own site.
+	var neverCreated, wrongGroup []string
 	covered := 0
 	for _, m := range exp.Members {
 		rows := claimedBy[m.Name]
 		if len(rows) == 0 {
-			missing = append(missing, fmt.Sprintf("%s %q: never created", m.Rank, m.Name))
+			neverCreated = append(neverCreated, fmt.Sprintf("%s %q: never created", m.Rank, m.Name))
 			continue
 		}
 		if got := rankOf[rows[0]]; got != m.Rank {
-			missing = append(missing, fmt.Sprintf("%s %q: created in group %q", m.Rank, m.Name, got))
+			wrongGroup = append(wrongGroup, fmt.Sprintf("%s %q: created in group %q", m.Rank, m.Name, got))
 			continue
 		}
 		covered++
 	}
+	missing := append(append([]string{}, neverCreated...), wrongGroup...)
 	coverage := float64(covered) / float64(len(exp.Members))
 	if coverage < gateRosterCoverage {
 		sort.Strings(missing)
@@ -620,26 +656,54 @@ func TestM4RosterGate(t *testing.T) {
 
 	// --- Condition 3: nothing dropped silently.
 	//
-	// Counts rather than pairing each miss to its own review row, for the same
-	// reason gate_test.go's condition 2 does: a review row records a screen
-	// position and its raw text, not a member, because an unmatched name has
-	// no member to key on. It still catches the failure the condition exists
-	// for -- a member missed with no review row at all -- and it still cannot
-	// catch reviews raised for unrelated reasons padding the total, so read
-	// the two numbers together rather than the verdict alone.
+	// Both sides of this comparison are narrowed to the name class, and each
+	// narrowing fixes a different way the raw counts lie.
+	//
+	// The right side counts only name-class review reasons. writeFacts queues
+	// up to three FIELD-level rows per successfully matched row -- an
+	// unparseable power, a level below the confidence gate -- so the
+	// capture-wide review count is dominated by traffic that has no
+	// relationship to a member going missing. Measured on capture 1's first
+	// run: 224 review rows against roughly 120 parsed rows. A comparison
+	// against that number is satisfied by field noise and asserts nothing.
+	//
+	// The left side counts only members that were never created. A member
+	// created under the wrong group is not dropped: the row was read, matched
+	// and its facts written, and by construction it queued no name review at
+	// all. Counting it as "dropped" would make the left side unanswerable by
+	// any correct pipeline behaviour. Wrong-group attribution is condition 1's
+	// failure, and condition 1 names it.
+	//
+	// What is left is a real, if weak, claim: a member the pipeline failed to
+	// produce should have left a name-class row behind saying so. It is still
+	// a count comparison rather than a pairing -- a review row records a
+	// screen position and its raw text, not a member, because an unmatched
+	// name has no member to key on -- so it cannot prove the queued rows are
+	// the missing members. It catches the failure it exists for, a member lost
+	// with nothing in the queue at all, and no more than that.
 	pending, err := pool.PendingReviews(ctx)
 	if err != nil {
 		t.Fatalf("PendingReviews: %v", err)
 	}
-	queued := 0
+	nameReviewReasons := map[string]bool{
+		"unreadable_name":               true,
+		"ambiguous_name_match":          true,
+		"low_confidence_name":           true,
+		"no_confident_match_group_full": true,
+	}
+	queued, nameQueued := 0, 0
 	for _, item := range pending {
-		if item.CaptureID == captureID {
-			queued++
+		if item.CaptureID != captureID {
+			continue
+		}
+		queued++
+		if nameReviewReasons[item.Reason] {
+			nameQueued++
 		}
 	}
-	if queued < len(missing) {
-		t.Errorf("roster gate condition 3: %d members are missing but only %d rows reached the review queue; %d were dropped silently",
-			len(missing), queued, len(missing)-queued)
+	if nameQueued < len(neverCreated) {
+		t.Errorf("roster gate condition 3: %d members were never created but only %d name-class rows reached the review queue (%d rows queued in total, all reasons); %d were dropped silently",
+			len(neverCreated), nameQueued, queued, len(neverCreated)-nameQueued)
 	}
 
 	// --- Condition 4: reconciliation reports truthfully.
@@ -650,58 +714,101 @@ func TestM4RosterGate(t *testing.T) {
 	// ratchet. Reconciliation is a reporting mechanism; what is worth
 	// asserting is that its report is honest.
 	//
+	// Three things are asserted, and they are all about the REPORT: that every
+	// group the capture contains is described at all, that the size it is
+	// described with is the size its own header states, and that Status
+	// follows from those tallies by the rule IngestRoster actually applies.
+	//
+	// A per-group CREATED-count check was tried here and removed. GroupTally's
+	// MatchedOrCreated counts row EVENTS -- every band that resolved to a
+	// member, including the same member re-matched on a later frame's overlap
+	// -- and this fixture knows only members. On capture 1 that check read
+	// "R3 reported created=83, but 45 of its transcribed members are in
+	// members" and called it a lie; the 38-row gap was 26 legitimate
+	// re-matches, 7 orphans and 5 rows correctly counted under the group the
+	// pipeline had assigned them to. Reconciliation had reported exactly what
+	// happened. Putting two aggregates side by side and calling the difference
+	// a defect is the error CLAUDE.md names outright, and the gate committed
+	// it. There is no rescoping that saves it either: with no independent row
+	// count in the fixture, such a check can only agree once conditions 1 and
+	// 2 are already green, and adds no signal before then. The attribution
+	// question it was reaching for is condition 1's "created in group X".
+	//
 	// Capture 1 has TWO collapsed groups, R4 "This Is It" (9) and R1 "Danger
 	// Zone" (12), both transcribed with expanded: false and no members. Their
 	// headers are legible, so a healthy pipeline gives each a tally reading
-	// Expected N / Parsed 0 / MatchedOrCreated 0, which makes wholeEverywhere
-	// false and the capture correctly `partial`. That is not a failure to
-	// excuse -- it is precisely what condition 4 exists to assert, and a
-	// capture that reported `complete` with two groups it never opened would
-	// be the defect.
+	// Expected N / Parsed 0, which is a shortfall and makes the capture
+	// correctly `partial`. That is not a failure to excuse -- it is precisely
+	// what this condition exists to assert, and a capture that reported
+	// `complete` with two groups it never opened would be the defect.
 	var lies []string
-	wholeEverywhere := true
 	for _, g := range exp.Groups {
 		tally, seen := res.PerGroup[g.Rank]
 		if !seen {
-			wholeEverywhere = false
-			// A group whose header never parsed leaves no tally at all. That
-			// is permitted -- it is what the route does today -- but only if
-			// it is visible in the queue rather than silently absent.
-			if queued == 0 {
-				lies = append(lies, fmt.Sprintf("group %s (%q, %d members) produced no tally and no review row", g.Rank, g.Name, g.Total))
-			}
+			// Unconditional. This was once gated on the review queue being
+			// empty, which silenced it on capture 1 -- three of four groups
+			// produced no tally and the condition designed to catch a
+			// reconciliation misdescription said nothing, because `queued` is
+			// capture-wide and 224 field-level rows kept it non-zero. The
+			// guard was not even scoped to this group, so the message's claim
+			// about review rows would have been unfounded whenever it did
+			// fire. A run that describes a four-group capture with one group's
+			// tally IS a misdescription, whatever else reached the queue.
+			lies = append(lies, fmt.Sprintf("group %s (%q, %d members) produced no tally at all; reconciliation describes this capture without it", g.Rank, g.Name, g.Total))
 			continue
 		}
 		if tally.Expected != g.Total {
 			lies = append(lies, fmt.Sprintf("group %s: reported expected=%d, transcribed total is %d", g.Rank, tally.Expected, g.Total))
 		}
-		inGroup := 0
-		for _, m := range exp.Members {
-			if m.Rank == g.Rank && len(claimedBy[m.Name]) > 0 {
-				inGroup++
-			}
-		}
-		if tally.MatchedOrCreated != inGroup {
-			lies = append(lies, fmt.Sprintf("group %s: reported created=%d, but %d of its transcribed members are in members", g.Rank, tally.MatchedOrCreated, inGroup))
-		}
+	}
+
+	// Status, re-derived from the tallies by IngestRoster's own rule, which
+	// has TWO halves (roster.go, after the frame loop): a shortfall in any
+	// group that was seen, OR an alliance-total check that was performed and
+	// disagreed. Modelling only the first half would be inert on this capture
+	// -- two collapsed groups force a shortfall regardless -- and wrong on a
+	// fully-expanded one, where the gate would demand `complete` while
+	// production correctly said `partial`, and condition 4 would report a lie
+	// that is not one.
+	//
+	// What this asserts is narrower than it looks, and worth stating: both
+	// sides are computed from the same run's output, so it cannot catch a
+	// tally that is itself wrong -- that is what the Expected-vs-header check
+	// above is for. It catches a Status that contradicts the numbers printed
+	// beside it.
+	//
+	// totalParsed inside IngestRoster is incremented once per collected band,
+	// the same event that increments the band's group tally, so summing Parsed
+	// over PerGroup reproduces it exactly.
+	groupShortfall, sumParsed := false, 0
+	for _, tally := range res.PerGroup {
+		sumParsed += tally.Parsed
 		if tally.Parsed != tally.Expected {
-			wholeEverywhere = false
+			groupShortfall = true
 		}
 	}
-	wantStatus := "partial"
-	if wholeEverywhere {
-		wantStatus = "complete"
+	allianceShortfall := res.AllianceTotalChecked && sumParsed != res.AllianceMemberCount
+	wantStatus := "complete"
+	if groupShortfall || allianceShortfall {
+		wantStatus = "partial"
 	}
 	if res.Status != wantStatus {
-		lies = append(lies, fmt.Sprintf("status is %q; every group whole = %v, so it should be %q", res.Status, wholeEverywhere, wantStatus))
+		lies = append(lies, fmt.Sprintf("status is %q; group shortfall = %v, alliance-total shortfall = %v (checked=%v, parsed %d against %d), so it should be %q",
+			res.Status, groupShortfall, allianceShortfall, res.AllianceTotalChecked, sumParsed, res.AllianceMemberCount, wantStatus))
 	}
 	if len(lies) > 0 {
 		sort.Strings(lies)
 		t.Errorf("roster gate condition 4: reconciliation does not describe what was parsed\n\n%s", join(lies))
 	}
 
-	t.Logf("roster gate: %d/%d members covered, orphans=%d splits=%d matched=%d created=%d queued=%d status=%s (game version %s)",
-		covered, len(exp.Members), len(orphans), len(splits), res.Matched, res.Created, res.Queued, res.Status, exp.GameVersion)
+	// never_created and wrong_group are printed apart because they are the two
+	// halves of condition 1 that need opposite fixes, and name_queued beside
+	// queued is what makes condition 3's verdict readable: queued is every
+	// reason, name_queued is the only part of it that can answer for a member
+	// that never appeared.
+	t.Logf("roster gate: %d/%d members covered (never_created=%d wrong_group=%d), orphans=%d splits=%d matched=%d created=%d queued=%d name_queued=%d status=%s (game version %s)",
+		covered, len(exp.Members), len(neverCreated), len(wrongGroup), len(orphans), len(splits),
+		res.Matched, res.Created, res.Queued, nameQueued, res.Status, exp.GameVersion)
 }
 
 // seedRosterCapture builds the database state one real roster capture would

@@ -406,10 +406,21 @@ type GroupTally struct {
 	// matched to an existing one or created. It is deliberately distinct from
 	// Parsed, which counts row bands that reached OCR: a band that was read
 	// and then failed to match is parsed and contributes no member, so the
-	// two numbers answer different questions and the gap between them is
-	// exactly the review queue. Reconciliation keys on Parsed, because it is
-	// asking whether the scroll saw the whole group; the roster gate keys on
-	// this, because it is asking what the group yielded.
+	// two numbers answer different questions. Their difference is the
+	// NAME-CLASS review rows for this group (unreadable_name,
+	// ambiguous_name_match, low_confidence_name,
+	// no_confident_match_group_full) and nothing else -- not the review queue
+	// as a whole, which also carries a row per unparseable or low-confidence
+	// numeric field on rows that resolved to a member perfectly well.
+	//
+	// Reconciliation keys on Parsed, because it is asking whether the scroll
+	// saw the whole group. `control ingest` prints this as yielded=, because
+	// what a group produced is the other half of a triage.
+	//
+	// It counts row EVENTS, not distinct members: a member whose row is
+	// collected on two frames counts twice, so it can legitimately exceed the
+	// number of people the group contains. Anything comparing it to a member
+	// count is comparing two different units.
 	MatchedOrCreated int
 }
 
@@ -804,6 +815,18 @@ func (run *rosterRun) readAllianceMemberCount(ctx context.Context, i *Ingester, 
 	return count, true
 }
 
+// noteMemberFor records on the group's public tally that one of its rows
+// ended as a member. It exists as a helper rather than inline at each site
+// because the private groupTracker.matchedOrCreated -- the group's creation
+// budget -- and the exported GroupTally.MatchedOrCreated count the same event
+// and must move together, or `control ingest` prints a yielded= column that
+// nothing maintains. Both call sites bump the tracker and then call this.
+func (run *rosterRun) noteMemberFor(groupKey string) {
+	tally := run.res.PerGroup[groupKey]
+	tally.MatchedOrCreated++
+	run.res.PerGroup[groupKey] = tally
+}
+
 // processRow crops and reads one row's four fields, then routes it to a
 // match, a creation, or the review queue.
 //
@@ -819,18 +842,6 @@ func (run *rosterRun) readAllianceMemberCount(ctx context.Context, i *Ingester, 
 // resolve to a member at all: without a memberID no fact has anywhere to
 // attach, so an ambiguous or unmatched-and-group-full name still sends the
 // whole row to review, same as before.
-// noteMemberFor records on the group's public tally that one of its rows
-// ended as a member. It exists as a helper rather than inline at each site
-// because the private groupTracker.matchedOrCreated -- the group's creation
-// budget -- and the exported GroupTally.MatchedOrCreated must move together
-// or the gate's condition 4 would be scoring a counter nothing maintains.
-// Both call sites bump the tracker and then call this.
-func (run *rosterRun) noteMemberFor(groupKey string) {
-	tally := run.res.PerGroup[groupKey]
-	tally.MatchedOrCreated++
-	run.res.PerGroup[groupKey] = tally
-}
-
 func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Image, band RowBand, screenshotID int64, groupKey string) error {
 	nameRes, _, err := i.readFieldWithRetry(ctx, img,
 		fieldRect(band, img, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1),

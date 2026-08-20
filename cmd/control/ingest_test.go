@@ -146,7 +146,7 @@ func TestIngestDispatchesTheRosterRouteFromTheCaptureRow(t *testing.T) {
 		// The whole group line, not its pieces: the run-level "created=3"
 		// above already satisfies a bare "created=" search, so only the
 		// assembled line says anything about the per-group count.
-		"group=R2 parsed=18 created=17 expected=20"} {
+		"group=R2 parsed=18 yielded=17 expected=20"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("stdout %q missing %q", got, want)
 		}
