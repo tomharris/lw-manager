@@ -82,9 +82,10 @@ alliance:
   # why the group totals sum to 96 rather than 97.
   leader: "RobElr"
 
-# Copied verbatim from fixtures/m4roster/frames.yaml, offset_px included and
-# never re-derived: it was measured against the frames as captured, and ingest
-# turns it into row positions, so a wrong value misaligns every row after it.
+# Copied verbatim from the probe's original frame-list fixture, later retired
+# once this file became the sole copy. offset_px was measured against the
+# frames as captured and is never re-derived: ingest turns it into row
+# positions, so a wrong value misaligns every row after it.
 frames:
   - seq: 0
     sha256: "124afc616a0c8abb559c6cae35855a2662f3205b580954ad92a2fe7d746aaa88"
