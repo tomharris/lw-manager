@@ -641,9 +641,6 @@ func absDiff(a, b uint32) uint32 {
 	return b - a
 }
 
-// loadRosterTruth reads the hand-transcribed names out of the VS gate's
-// fixture. It is the only hand-checked name set this project has; see the
-// package comment for what that borrowing costs.
 // rosterTruth is the hand-transcribed roster capture, as much of it as the
 // name modes need: the set of names for the exact/junk-prefixed scoring, and
 // the same names as roster.Members so a band can be scored the way processRow
