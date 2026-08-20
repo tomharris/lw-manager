@@ -113,8 +113,8 @@ func TestLastActiveCharsetCannotLaunderACorrectRead(t *testing.T) {
 // argument was insufficient here -- see this file's header comment and
 // vsPointsSpec's own doc comment in vs.go for why. Measured directly: 6 of
 // 11 real bands cut from a committed VS frame produced a parseable number
-// out of text that was not a number, once the whitelist was applied; 0 of
-// those failed safely without it. Mirrors TestPowerSpecHasNoCharset.
+// out of text that was not a number, once the whitelist was applied; all 6
+// of those failed safely without it. Mirrors TestPowerSpecHasNoCharset.
 func TestVSPointsSpecHasNoCharset(t *testing.T) {
 	if vsPointsSpec.Charset != "" {
 		t.Errorf("vsPointsSpec.Charset = %q, want empty -- see vsPointsSpec's doc comment in vs.go "+
