@@ -469,14 +469,43 @@ profile put the gutter at x=156-158 (ink 16 across 68 bands, against 787 at
 x=136 and 946 at x=160), and moving the edge there took exact reads from 53 to
 141 with junk-prefixed reads to 0.
 
-Two things generalize from the repeat. First, **an eye-check does not become
-reliable by being done on a different field** — it failed identically on the VS
-name crop and the roster name crop, for the same reason both times. Second,
+**It happened a third time, on `groupHeaderRegion`, and this time nobody
+noticed — an instrument did.** `X2` was 0.97, x=698 of a 720px frame, which is
+past the collapse chevron (x=651..683) and past the header card's own right
+edge (x=691), so every header read ended in a fragment of the button:
+`10/64 yi]`, `2/9)`, `10/64) y]`. Those strings had been in front of people for
+the whole milestone and read as "10/64, fine" every time. What found it was
+`-roster.headerink` over 61 frames × 42 scanlines: a 15-column plateau at
+x=636..650 carrying literally zero ink at every threshold down to 5. The edge
+now sits at its midpoint. The generalization is not "check crops harder", it is
+**instrument a field before you change it** — the first two instances were
+caught by a person eventually deciding to look, and the third was caught the
+first time a histogram was run over the region, before anyone suspected it.
+
+**And it is not confined to crops.** The same failure works on a whole screen:
+a pre-flight pass read capture 1's `seq 1`, saw the sticky header `R4 This Is
+It 2/9`, and recorded R4 as an expanded group — without checking whether any
+rows followed it. R3's own header sits immediately beneath with nothing in
+between, and the chevron's direction was never consulted. The frame was read
+correctly and the conclusion was still wrong, because the reader was
+confirming what they expected rather than asking what the pixels ruled out.
+It was overturned only by going through all 61 member-list frames
+individually, which found that **no frame anywhere shows a row belonging to
+R4** — the group is collapsed in this capture and the roster fixture
+transcribes 75 members, not 84.
+
+Three things generalize from the repeats. First, **an eye-check does not
+become reliable by being done on a different field** — it failed identically
+on the VS name crop, the roster name crop and the group header crop, for the
+same reason all three times. Second,
 **the symptom named the wrong culprit**: reading `7 Leroy Jenkins 0914` off a
 list of members suggests a rank badge, which is per-group and constant, and the
 pixels showed a status icon, which is per-member and optional. That difference
 is exactly why only a third of names were affected, and no amount of staring at
-OCR output would have settled it.
+OCR output would have settled it. Third, **the unit is not the rectangle** —
+the same defect took a screen-level reading (R4 "expanded") down with it, so
+"did I check the whole thing, or the part I already had a belief about"
+applies to a frame exactly as it does to a crop.
 
 The corollary applies to anything fitted downstream of a crop: **options
 measured through the wrong rectangle are not evidence about the right one.**
@@ -528,6 +557,41 @@ flipped. There, implausible *uniformity* was the tell. Here the result was
 plausible and simply unvalidated, and the discipline is the same either way:
 before believing a measurement, establish that it can produce the answer you
 are hoping not to see.
+
+### Committing a measurement can change the measurement
+
+An ad-hoc run measured a digit whitelist on the group header and reported that
+it "returns empty on every R2 frame" — a clean negative, and the basis for
+rejecting the whitelist. Rebuilt as a committed probe mode over both candidate
+rectangles, the same whitelist **fabricates** a count on four frames (see the
+charset section below). The original claim was not sloppy; it was true of the
+one rectangle it happened to test, and false as stated.
+
+So a finding worth acting on is worth re-taking as a committed mode, and not
+because someone might want to re-run it later: the act of writing it down as a
+mode forces the axes to be enumerated, and enumerating them is what found the
+second rectangle. A one-liner measures whatever its author already had loaded.
+
+### A citation that resolves to nothing is worse than no citation
+
+It transfers authority the source never granted, and it is cheap to write and
+expensive to check. Two instances in one milestone, both caught only in
+review:
+
+- A production comment rested a scope decision on a Python one-liner and an
+  ad-hoc whitelist run that nobody could re-run and that no longer existed.
+- A `README.md` sentence explained a gate shortfall with "(see `CLAUDE.md`)"
+  for reasoning `CLAUDE.md` did not contain — and the mechanism it asserted
+  was wrong on every point besides.
+
+The rule: cite something a reader can open — a committed probe mode, a test
+name, a file and its doc comment, a fixture. If the evidence was an ad-hoc run,
+either commit it (see above) or write the number without the citation and say
+it was measured once, by hand. Note where the second one came from: **a
+rewrite whose own stated purpose was retiring a claim that had stopped being
+true.** Correcting the record is exactly when a plausible-sounding citation
+gets reached for, so this is not a matter of being careful enough — assume a
+citation you did not personally open is unverified.
 
 ### The gate's capture is square and production is not
 
