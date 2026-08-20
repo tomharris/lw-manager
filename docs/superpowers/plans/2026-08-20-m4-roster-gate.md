@@ -648,11 +648,11 @@ Re-read the frame for any disagreement. Resolve it from the pixels, in both dire
 git add fixtures/m4rostergate/expected.yaml internal/ingest/roster_gate_test.go
 git commit -m "Transcribe capture 1: the roster route's first ground truth
 
-84 members across 61 member-list frames, read at full resolution out of the
-blob store, one frame at a time. 84 rather than the alliance's 97 because R1
-Danger Zone is still collapsed in the final frame -- its twelve members have no
-rows anywhere in this capture -- and the leader occupies the banner rather than
-any group's list. Both are recorded in the fixture as what they are, so the
+75 members across 61 member-list frames, read at full resolution out of the
+blob store, one frame at a time. 75 rather than the alliance's 97 because two
+of the four rank groups were never opened -- R4 This Is It and R1 Danger Zone
+both carry the up chevron and are followed by no rows anywhere in the capture
+-- and the leader occupies the banner rather than any group's list. Both are recorded in the fixture as what they are, so the
 gate measures the pipeline against frames that exist. Not from control ingest's summary, not from a
 members query, not from a previous gate run -- checking a pipeline against its
 own output proves nothing, and this project has already paid for that lesson
