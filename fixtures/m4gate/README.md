@@ -116,6 +116,16 @@ Condition 2 is the one that makes this a gate rather than an accuracy score. A
 pipeline that quietly drops the rows it finds hard scores well on condition 1
 alone, and quiet dropping is the failure this milestone exists to prevent.
 
+Condition 1's tolerance is wider than it sounds and the gate says so in its own
+output. 1% of rank 7's 18,356,804 is a window ~183,000 wide, and rank 7 was in
+fact written as 18,356,304 — an 8 read as a 3 — and counted among the rows that
+pass. So a pass means each row reached the right member carrying roughly the
+right magnitude; it does not mean the numbers are correct, and the headline
+must not be quoted as if it did. The bar stays at 1% deliberately: a tighter
+one would start failing rows for transcription ambiguity in this file, which is
+86 numbers read by eye and cannot be regenerated. See `gateTolerance` in
+`internal/ingest/gate_test.go` for the ruling.
+
 ## Frames are not in git
 
 The PNGs live in the blob store, like the corpus — `fixtures/**/*.png` is
