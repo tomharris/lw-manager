@@ -640,7 +640,8 @@ type groupTracker struct {
 // OCR -- that is the dedupe, and it is what stops one member being minted
 // twice -- while a sighting of a row that has not resolved is read again.
 // The cost is bounded by the capture: a row nothing can read is re-read once
-// per photograph of it, which is OCR time and review rows, not wrong facts.
+// per photograph of it, which is OCR time, not wrong facts -- the `reviewed`
+// flag below stops the re-read from also costing a review row per photograph.
 //
 // WHAT THIS COST AND WHAT THE LIST COST, separated, because they are two
 // changes in one place and the group tallies distinguish them exactly. A
