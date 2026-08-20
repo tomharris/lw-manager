@@ -145,6 +145,12 @@ make gate-m4           # M4 VS ingest against a hand-checked 86-row capture
 make gate-roster       # M4 roster ingest against a hand-checked 75-member capture
 ```
 
+**Never run `gate-m4` and `gate-roster` concurrently.** They are two `go test`
+invocations of the same package under different build tags, both seeding and
+truncating `lw_manager_test`, so in parallel they truncate each other's
+fixtures — and it does not fail as an error, it fails as `0/86 rows within 1%`,
+which reads exactly like a broken pipeline. Run serially.
+
 The four M4 probes are **measuring instruments, not gates** — they assert
 nothing and always pass, and their output is the point:
 

@@ -230,6 +230,28 @@ This only ever fails on a clean database, which means it fails on CI and on a
 new developer's first run and nowhere else. Test it with a `DROP DATABASE`
 first, not by re-running a suite that already passed.
 
+### The two M4 gates cannot run at the same time
+
+`make gate-m4` and `make gate-roster` are two `go test` invocations of the
+same package under different build tags, both seeding and truncating
+`lw_manager_test`. Run them concurrently to save wall-clock and they truncate
+each other's fixtures mid-run. **Run them serially. Always.**
+
+This is a different failure from the clean-database race above — that one is
+about two `CREATE DATABASE` calls, this one is two *populated* gates
+overwriting each other — and it is far more dangerous, because it **fails as
+a plausible catastrophic result rather than as an error**. Run in parallel,
+`gate-m4` reports `0/86 rows within 1%, matched=0 queued=86`: no panic, no
+connection error, just a number that reads exactly like the ingest pipeline
+having been broken by whatever you last touched. Run serially, the same code
+gives 85/86 and 47/75. It cost a session, and the session was spent looking
+at the pipeline.
+
+Nothing in the Makefile prevents it. The general shape is worth holding onto
+rather than just the one pair: any two test binaries that share
+`lw_manager_test` and truncate are in this relationship, which includes
+either gate run alongside `make test-integration`.
+
 ### ReplayTransport exhaustion
 
 Holds its last frame once fixtures run out, but caps total serves
