@@ -1315,7 +1315,7 @@ func scoreHeaderShape(ctx context.Context, t *testing.T, engine ocr.OCREngine, f
 // measured through: the "N/M" token alone, with the group name outside it.
 // Placed off -roster.headerink over 61 frames and 2562 scanlines -- the count
 // occupies x=565..634 of a 720px frame, with zero ink from x=195..564 to its
-// left and the 16-column gutter at x=635..650 to its right -- so both edges sit
+// left and the gutter at x=636..650 to its right -- so both edges sit
 // in a zero-ink plateau rather than against a glyph.
 var headerCountRegion = transport.Rect{X1: 0.7778, Y1: groupHeaderRegion.Y1, X2: 0.8917, Y2: groupHeaderRegion.Y2}
 
@@ -1336,7 +1336,10 @@ func reportRosterHeaderSweep(ctx context.Context, t *testing.T, engine ocr.OCREn
 	var shapes []headerShape
 	// The whole-header crop, right edge walked from the shipped 0.97 (x=698,
 	// past the chevron AND past the card) leftward through the chevron
-	// (x=651..683) and into the measured gutter (x=635..650, 0.8819..0.9028).
+	// (x=651..683) and into the measured gutter (x=636..650, 0.8833..0.9028;
+	// x=635 reads as gutter only at the profile's default threshold of 90 and
+	// carries the count's antialiasing tail below it, so the plateau starts one
+	// column later than a single-threshold reading suggests).
 	// 0.8806 is the count's own last column and is included as the far side of
 	// the gutter: a shape that clips a digit should show up as a WRONG total,
 	// not merely as a refusal, and that is the failure this column is here to
@@ -1387,8 +1390,14 @@ func reportRosterHeaderSweep(ctx context.Context, t *testing.T, engine ocr.OCREn
 // threshold after equalize scored 0-1/18 -- but that was measured through the
 // old rectangle, with the chevron in it, and CLAUDE.md says in as many words
 // that options measured through the wrong rectangle are not evidence about the
-// right one. This is the re-measurement. It is not cheap (48 configurations x
-// every frame), which is why it is its own flag.
+// right one. This is the re-measurement.
+//
+// What it runs, stated exactly so the total is not double-counted the way a
+// bare "48 configurations" invites: 24 shapes (8 skip-flag combinations x 3
+// upscale factors) through EACH of the two rectangles, then PSM 8/11/13
+// through the count-only rectangle alone, then a "0123456789/" whitelist
+// through both. 58 reads of every frame in all, which is why it is its own
+// flag.
 func reportRosterHeaderOptions(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame) {
 	t.Helper()
 	ranks := rosterFrameRanks()
@@ -1437,19 +1446,58 @@ func reportRosterHeaderOptions(ctx context.Context, t *testing.T, engine ocr.OCR
 			t.Log("  " + scoreHeaderShape(ctx, t, engine, frames, ranks, totals, sh).String())
 		}
 	}
+
+	// The character whitelist, through both rectangles. groupHeaderSpec does
+	// NOT carry one and this is not a proposal that it should -- CLAUDE.md
+	// records a charset forcing tesseract's classifier to reclassify every
+	// glyph as a digit and manufacturing "3732407604" out of a crop that was
+	// not a number at all, and a count feeds groupTracker.expected, where an
+	// under-count stops a group's members being created.
+	//
+	// It is measured because it is the obvious next thing to reach for once
+	// every shape, threshold and PSM has failed on a token of digits, and an
+	// argument that it is dangerous is not a measurement of what it does. What
+	// it does here is in the numbers: it does not read R2's count either, and
+	// it launders R4's "2/9" into a wrong total. A claim that a whitelist was
+	// ruled out has to be re-runnable to be worth anything.
+	for _, r := range rects {
+		for _, cfg := range []probeConfig{
+			{label: "gray x3", opts: groupHeaderOptions},
+			{label: "gray+thr x2", opts: vision.Options{SkipEqualize: true, SkipInvert: true, UpscaleFactor: 2}},
+		} {
+			sh := headerShape{
+				label: fmt.Sprintf("%s charset 0-9/ %s", r.name, cfg.label),
+				rect:  r.rect,
+				spec:  ocr.Spec{MinConf: groupHeaderSpec.MinConf, Charset: "0123456789/"},
+				opts:  cfg.opts,
+			}
+			t.Log("  " + scoreHeaderShape(ctx, t, engine, frames, ranks, totals, sh).String())
+		}
+	}
 }
 
 // reportRosterHeaderThreshold sweeps the two knobs the skip-flag grid never
 // touches: AdaptiveThreshold's block size and its C.
 //
-// It exists because the grid's answer was uniform in the way this repo treats
-// as a finding rather than a result. Every one of its 48 configurations reads
-// R3's "10/64" and none reads R2's "1/11", through either rectangle. That is
-// not a layout failure and not a crop failure -- R2's header card is GREEN,
-// its "1" is drawn in green on it, and Grayscale collapses the two to nearly
-// the same value before any of those flags is consulted. Threshold is the only
-// step in the chain that can recover a low-luminance-contrast glyph, and the
-// grid runs it at exactly one block size and one C.
+// It exists because the shape grid's answer was uniform in the way this repo
+// treats as a finding rather than a result: every one of its configurations
+// reads R3's "10/64" and none reads R2's "1/11", through either rectangle.
+//
+// THE HYPOTHESIS THAT BUILT THIS MODE WAS WRONG, and the mode is what
+// disproved it. The reasoning was contrast: R2's header card is green, its "1"
+// is drawn in green on it, Grayscale collapses the two, and threshold is the
+// only step in the chain that can recover a low-luminance-contrast glyph while
+// the grid runs it at exactly one block size and one C. All 40 settings, at
+// both rectangles, read R2 as "VN", "VL", "Wu" or "U/L" -- the same wrong
+// answers the grid gave, not degraded ones. The glyphs are legible to the eye
+// in the plain grayscale crop, so what fails is tesseract's classifier on a
+// run of near-identical vertical bars, not the contrast the crop presents.
+//
+// Do not re-derive the contrast hypothesis from this mode's existence. It is
+// kept because a negative measured over 40 settings is worth more than the
+// argument that replaced it, and because any future change to
+// groupHeaderOptions' ThresholdBlock/ThresholdC has to be read against it --
+// not because there is anything left down that path for R2.
 func reportRosterHeaderThreshold(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame) {
 	t.Helper()
 	ranks := rosterFrameRanks()

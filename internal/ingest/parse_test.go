@@ -330,10 +330,12 @@ func TestParseGroupHeaderAcceptsEveryRealHeader(t *testing.T) {
 //
 // It is untagged deliberately, so real chevron bleed survives in `make test`
 // with no device, no Docker, no blob store and no tesseract.
-// TestParseGroupHeaderToleratesBadgeAndChevronNoise above is the other half of
-// the same rule -- a header that does carry its count parses despite the same
-// noise -- so what is pinned here is the absence of a count rather than a
-// blanket refusal of anything the chevron touched.
+// Two tests already pin the other half of the same rule, which is why no third
+// one is added here: TestParseGroupHeaderAcceptsEveryRealHeader immediately
+// above parses "{R2) I'm Alright 1/11" and "{R3) Footloose 10/64 yi]", and
+// TestParseGroupHeaderToleratesBadgeAndChevronNoise, five tests above, parses
+// the same chevron noise this corpus is made of. So what is pinned here is the
+// absence of a count, not a blanket refusal of anything the chevron touched.
 func TestParseGroupHeaderRefusesChevronBleed(t *testing.T) {
 	for _, raw := range []string{
 		"R2) I'm Alright VN iy]",  // x8 of the 22

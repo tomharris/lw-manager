@@ -200,15 +200,21 @@ probe-assign:
 #                       whether it parsed -- an under-count is the failure that
 #                       does silent damage, so a fabrication must not outrank a
 #                       refusal.
-#   -roster.headeropts  the eight-shape x three-upscale preprocessing grid, and
-#                       PSM 8/11/13, through both candidate rectangles. Options
-#                       measured through the wrong rectangle are not evidence
-#                       about the right one, so moving the crop obliges this.
+#   -roster.headeropts  24 preprocessing shapes (8 skip-flag combinations x 3
+#                       upscale factors) through EACH candidate rectangle, then
+#                       PSM 8/11/13 through the count-only one, then a
+#                       "0123456789/" whitelist through both. Options measured
+#                       through the wrong rectangle are not evidence about the
+#                       right one, so moving the crop obliges this. The
+#                       whitelist is measured, not endorsed: it reads R2 as
+#                       nothing and manufactures a total of 1 for an 11-member
+#                       group on four frames.
 #   -roster.headerthresh  AdaptiveThreshold's block size and C, the two knobs
-#                       the shape grid never varies. R2's "1/11" resists all of
-#                       them: tesseract classifies that run of vertical bars as
-#                       "VN", "VL", "Wu" or "U/L", which is the engine, not the
-#                       crop and not the contrast.
+#                       the shape grid never varies: 40 settings through EACH
+#                       rectangle. R2's "1/11" resists all of them -- tesseract
+#                       classifies that run of vertical bars as "VN", "VL",
+#                       "Wu" or "U/L" -- which is the engine, not the crop and
+#                       not the contrast the mode was built to chase.
 #   -roster.power       the power column's reads and ParsePower's verdict,
 #                       counting refusals that are structurally one damaged
 #                       separator -- the shape the review queue is full of and

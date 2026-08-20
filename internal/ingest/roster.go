@@ -91,21 +91,57 @@ const memberRowPitch = 112
 //
 // A plateau, not a spike: 15 columns carrying literally no deviation from the
 // card's own colour on any of the 2562 scanlines, which is the shape CLAUDE.md
-// requires before an edge is placed. Every value inside it measures identically
-// (`-roster.headersweep`: 0.8819, 0.8917 and 0.9028 all read 40 frames with 40
-// correct totals and no wrong one), so 0.8917 is the plateau's midpoint rather
-// than a fitted number -- the margin is 8px from the count and 9px from the
-// chevron either way.
+// requires before an edge is placed. So 0.8917 is the plateau's midpoint rather
+// than a fitted number -- 8px clear of the count, 9px clear of the chevron.
+//
+// The margin is the point, and it is what the geometry test enforces. OCR
+// accuracy does not distinguish the plateau's ends from its middle:
+// `-roster.headersweep` reads 40 frames with 40 correct totals at 0.8819,
+// 0.8917 and 0.9028 alike. TestGroupHeaderCropEndsInTheGutterLeftOfTheChevron
+// is stricter on purpose -- it requires four ink-free columns either side of
+// the edge, which admits exactly x=639..647 (0.8875..0.8986, measured by
+// running it at each) and REJECTS both ends of that accuracy-equal range. A future reader moving this edge on the
+// accuracy numbers alone gets a red test; the test is asserting clearance for
+// a count or a button that renders a pixel wider tomorrow, which an accuracy
+// measured on one capture cannot see.
 //
 // WHAT THIS DID NOT FIX, recorded because the obvious reading of the change is
 // wrong. It was expected to recover 22 dropped frames; it recovers ONE. The
 // chevron was never why R2's 21 frames failed. Their count is "1/11", and
-// tesseract classifies that token as "VN", "VL", "Wu" or "U/L" -- a token of
+// tesseract classifies that token as "VN", "VL", "Wu" or "U/L" -- a run of
 // near-identical vertical bars -- through every rectangle, preprocessing shape,
-// threshold setting, page-segmentation mode and character whitelist measured
-// (`-roster.headersweep`, `-roster.headeropts`, `-roster.headerthresh`: 12
-// geometries, 48 shapes, 80 threshold settings, 3 PSMs; and the same failure
-// reproduces calling tesseract directly on the crop, outside this pipeline).
+// threshold setting, page-segmentation mode and character whitelist measured.
+// Every one of those is a committed mode, because a claim that closes off a
+// line of work has to be contestable by the next person:
+//
+//	-roster.headersweep   12 geometries (both rectangles)
+//	-roster.headeropts    24 preprocessing shapes through EACH of the two
+//	                      rectangles; PSM 8/11/13 through the count-only
+//	                      rectangle; a "0123456789/" whitelist through both
+//	-roster.headerthresh  40 AdaptiveThreshold block/C settings through EACH
+//	                      of the two rectangles
+//
+// The whitelist deserves its own line because it is the obvious thing to reach
+// for on a field of digits, and because it does not merely fail: through the
+// count-only rectangle it returns the empty string on every R2 frame, and
+// through this rectangle at gray+thr x2 it manufactures "2 1/1" on four of
+// them -- a parsed total of 1 against a real 11-member group, which is exactly
+// the under-count that stops a group's members being created. It is measured
+// so that it stays rejected on evidence.
+//
+// The same reads reproduce outside internal/ingest's read path entirely, on
+// vision.Preprocess plus the tesseract binary, with none of this package
+// involved (paths must be absolute -- `go test` runs in the package's own
+// directory):
+//
+//	go test -tags scrolldiag ./internal/vision -run TestPreprocMeasure -v -args \
+//	  -pmframes "$PWD/data/blobs/sha256/6f/07/6f07eb91...|$PWD/data/blobs/sha256/b0/0b/b00b49dd..." \
+//	  -pmexpect "10/64|1/11" -pmx1 0.7778 -pmy1 0.409 -pmx2 0.8917 -pmy2 0.435
+//
+// (frames are capture 1 seq 2 and seq 23; add -pmcharset "0123456789/" for the
+// whitelist. Every one of its 24 variants reads seq 2's "10/64" or a near miss
+// and none reads seq 23's "1/11": "Vw", "Wu", "WAL", "U/L", "{i", "fit".)
+//
 // That is a classifier failure on the glyphs themselves, not a crop defect and
 // not a contrast defect, and no move of this rectangle can reach it.
 //
