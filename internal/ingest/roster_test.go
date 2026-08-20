@@ -952,6 +952,119 @@ func TestIngestRosterCollectsEveryRowOfAFrameScrolledAWholeNumberOfRows(t *testi
 	}
 }
 
+// A roster capture photographs most rows three or more times. Until this
+// test's fix exactly one of those photographs -- the first -- ever reached
+// OCR, because the geometric dedupe compared a band's position against the
+// last row collected and skipped anything already covered. A row whose first
+// sighting read badly was therefore never read again, however clean the next
+// photograph of it was.
+//
+// Capture 1 loses two members to exactly that and nothing else. Bujangann
+// reads at confidence 0.03 on seq 7 and 0.00 on seq 8, then "Bujangann" at
+// 0.80 on seq 9; Riesige Banane reads at 0.38 on seq 6 -- just under
+// nameSpec.MinConf -- and 0.77 on seq 7. Both good reads were photographed
+// and thrown away.
+func TestIngestRosterRereadsARowItsFirstSightingCouldNotResolve(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R1")
+
+	h.addFrame(rosterFrame(1), 0)
+	// A small offset: the same physical row, a little further up the screen.
+	// Well inside half a pitch, so the dedupe recognizes it as the row it
+	// already collected rather than a new one.
+	h.addFrame(rosterFrame(1), 20)
+
+	h.engine.Results = []ocr.Result{
+		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
+		// Read correctly and far below nameSpec.MinConf, so processRow
+		// refuses to create a member from it. This is Riesige Banane's shape.
+		{Text: "Zephyr", Confidence: 0.1},
+		{Text: "Power: 200.0M", Confidence: 0.9},
+		{Text: "Lv.30", Confidence: 0.9},
+		{Text: "Online", Confidence: 0.9},
+		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
+		{Text: "Zephyr", Confidence: 0.9},
+		{Text: "Power: 200.0M", Confidence: 0.9},
+		{Text: "Lv.30", Confidence: 0.9},
+		{Text: "Online", Confidence: 0.9},
+	}
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Created != 1 {
+		t.Errorf("created %d members, want 1: the second photograph of a row nobody could read must be read", res.Created)
+	}
+	if reasons := h.reviewReasons(); reasons["low_confidence_name"] != 1 {
+		t.Errorf("queued %d low_confidence_name rows, want 1 -- the first sighting still queues", reasons["low_confidence_name"])
+	}
+	// Parsed asks whether the scroll photographed the whole group. Re-reading
+	// one row does not make the group larger, so it must stay 1.
+	if got := res.PerGroup["R1"].Parsed; got != 1 {
+		t.Errorf("parsed = %d, want 1: a re-read of a row already collected is not a second row", got)
+	}
+}
+
+// A row nothing can read is re-read on every photograph of it, and each of
+// those failures used to put another row in front of a human describing the
+// same piece of work. Capture 1 photographs some rows seventeen times; the
+// review queue went 271 -> 378 rows before this was suppressed.
+func TestIngestRosterQueuesOneReviewRowPerUnresolvableRowNotPerPhotograph(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R1")
+
+	for range 3 {
+		h.addFrame(rosterFrame(1), 20)
+	}
+
+	var results []ocr.Result
+	for range 3 {
+		results = append(results, ocr.Result{Text: groupHeaderText("R1", 5), Confidence: 0.9})
+		results = append(results, rowResultsConf("Zephyr", 0.1)...)
+	}
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Created != 0 {
+		t.Fatalf("created %d members, want 0 -- every sighting is below nameSpec.MinConf", res.Created)
+	}
+	if got := h.reviewReasons()["low_confidence_name"]; got != 1 {
+		t.Errorf("queued %d low_confidence_name rows, want 1: three photographs of one unreadable row are one piece of human work", got)
+	}
+}
+
+// The other half of the same rule, and the one that stops a member being
+// minted twice: a row that DID resolve is never read again. The second frame
+// scripts a header and nothing else, so any field read on it exhausts the
+// fake engine and fails the test by name.
+func TestIngestRosterNeverRereadsARowThatAlreadyResolved(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R1")
+
+	h.addFrame(rosterFrame(1), 0)
+	h.addFrame(rosterFrame(1), 20)
+
+	results := []ocr.Result{{Text: groupHeaderText("R1", 5), Confidence: 0.9}}
+	results = append(results, rowResults("Zephyr")...)
+	results = append(results, ocr.Result{Text: groupHeaderText("R1", 5), Confidence: 0.9})
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v (an OCR call past the second frame's header means a resolved row was read again)", err)
+	}
+	if res.Created != 1 {
+		t.Errorf("created %d members, want 1", res.Created)
+	}
+	if res.Matched != 0 {
+		t.Errorf("matched %d rows, want 0: the resolved row must not reach the matcher a second time", res.Matched)
+	}
+}
+
 // TestIngestRosterQueuesAnUnreadableBadgeWithItsFullHeaderText is task 24's
 // brief test 6, which was specified and never written. Two things are being
 // pinned, and the second is the one a human depends on.
@@ -1617,7 +1730,7 @@ func TestGroupTrackerAdvanceResumesAnInterruptedGroupRatherThanRestarting(t *tes
 	for idx, s := range steps {
 		gt, ok := groups[s.group]
 		if !ok {
-			gt = &groupTracker{lastRowY: -1}
+			gt = &groupTracker{}
 			groups[s.group] = gt
 		}
 		sameAsPrev := havePrev && s.group == prevGroup
@@ -1743,7 +1856,7 @@ func TestIngestRosterSurvivesInterleavedGroupsAcrossARerun(t *testing.T) {
 // just across separate runs -- capture 1's interleaving is one cause, but an
 // ordinary overlap between two screenfuls of a group that never closed is
 // another, and needs no group switch to demonstrate. The two rows here are
-// deliberately far enough apart geometrically that gt.lastRowY's dedupe does
+// deliberately far enough apart geometrically that the group's row-position dedupe does
 // NOT recognize them as the same physical row -- only name-identity does,
 // which is the case this task's fix (writeFacts calling UpsertFact) has to
 // carry once geometric dedupe has already let a genuine repeat through.
@@ -1763,7 +1876,7 @@ func TestIngestRosterUpsertsARepeatObservationRatherThanDuplicatingTheFact(t *te
 
 	h.addFrame(rosterFrame(1), 0)
 	// A huge offset, not a realistic scroll distance: the point is to place
-	// this frame's one real row far past gt.lastRowY's dedupe window, so it
+	// this frame's one real row far past every collected row's dedupe window, so it
 	// reaches processRow as a "new" row on identity grounds even though it
 	// names the same member as frame 1's row.
 	h.addFrame(rosterFrame(1), 5000)

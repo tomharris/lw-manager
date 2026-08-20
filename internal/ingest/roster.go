@@ -616,7 +616,65 @@ type groupTracker struct {
 	countKnown       bool
 	matchedOrCreated int
 	contentY         int
-	lastRowY         int // content-Y of the last collected row; -1 = none yet
+	rows             []collectedRow
+}
+
+// collectedRow is one row band this group has already been photographed
+// with, in the group's own content coordinates, and whether reading it
+// produced a member.
+//
+// The resolved flag is the whole reason this is a slice rather than the
+// single monotonic cursor (`lastRowY`) it replaces. A roster capture
+// photographs most rows three or more times -- capture 1 reads some of them
+// seventeen times -- and the cursor let exactly one of those sightings reach
+// OCR: the first. A row whose first sighting read badly was never read
+// again, however many clean photographs of it the capture went on to take.
+// Two members of capture 1 are lost precisely that way and no other:
+// Bujangann reads at confidence 0.03 and 0.00 on seq 7 and 8 and 0.80 on
+// seq 9, and Riesige Banane at 0.38 on seq 6 (just under nameSpec.MinConf)
+// and 0.77 on seq 7. Neither is a matcher problem, a crop problem or a
+// preprocessing problem; the good photograph was taken and thrown away.
+//
+// So a sighting of a row that has already RESOLVED is still skipped before
+// OCR -- that is the dedupe, and it is what stops one member being minted
+// twice -- while a sighting of a row that has not resolved is read again.
+// The cost is bounded by the capture: a row nothing can read is re-read once
+// per photograph of it, which is OCR time and review rows, not wrong facts.
+type collectedRow struct {
+	y        int
+	resolved bool
+	// reviewed records that this row has already put a row in front of a
+	// human. A row nothing can read is re-read on every photograph of it --
+	// capture 1 photographs some rows seventeen times -- and without this the
+	// queue grows by one row per photograph while the amount of human work
+	// stays at one. Measured: the review queue went 271 -> 378 rows on
+	// capture 1 with the re-read and no suppression, R2's eleven unresolvable
+	// members alone accounting for 49 of them.
+	//
+	// One row per collected row, not per reason: the alternative (suppress
+	// only a REPEAT of the same reason) keeps a second row whenever a later
+	// sighting fails differently, which is more rows describing one piece of
+	// work, which is the thing being avoided. The reason kept is the first
+	// sighting's.
+	reviewed bool
+}
+
+// seenRow finds the already-collected row whose content-Y is within half a
+// pitch of y, which is the same proximity test the monotonic cursor applied
+// -- it is the tolerance the scroll offset is trusted to, not a new one.
+//
+// Scanning the slice rather than keying a map on a quantized y: quantizing
+// puts a boundary somewhere, and two sightings of one row that straddle it
+// would become two rows, which is the split this whole mechanism exists to
+// avoid. A group holds tens of rows and a frame holds six bands, so the scan
+// is not worth avoiding.
+func (gt *groupTracker) seenRow(y int) (int, bool) {
+	for i, r := range gt.rows {
+		if d := y - r.y; d >= -memberRowPitch/2 && d <= memberRowPitch/2 {
+			return i, true
+		}
+	}
+	return -1, false
 }
 
 // canCreate reports whether this group may mint a new member for one more
@@ -665,8 +723,8 @@ func (gt *groupTracker) canCreate() bool {
 // away group does not move while it is off screen, which is the only
 // assumption this frame pair has any evidence for either way — and it is
 // what makes returning to a group idempotent rather than merely
-// non-crashing: the resumed position lines up with gt.lastRowY well enough
-// for the geometric dedupe below to recognize rows already collected,
+// non-crashing: the resumed position lines up with the rows this group has
+// already collected well enough for the geometric dedupe below to recognize them,
 // instead of a reset making them look brand new (task 27's brief; the
 // resulting duplicate INSERT is what actually crashed the first real run).
 //
@@ -893,7 +951,7 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 
 		gt, exists := run.groups[groupKey]
 		if !exists {
-			gt = &groupTracker{expected: headerTotal, countKnown: countKnown, lastRowY: -1}
+			gt = &groupTracker{expected: headerTotal, countKnown: countKnown}
 			run.groups[groupKey] = gt
 			run.res.PerGroup[groupKey] = GroupTally{Expected: headerTotal, ExpectedKnown: countKnown, Name: groupName}
 		} else if !gt.countKnown && countKnown {
@@ -967,19 +1025,37 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 			// as PhaseDuplicate before its residual phase ever runs (see
 			// vs.go and assign.go). This route has no such phenomenon to
 			// guard against in the first place.
-			if gt.lastRowY >= 0 && rowY <= gt.lastRowY+memberRowPitch/2 {
-				continue // geometric duplicate; OCR never runs on it
+			idx, seen := gt.seenRow(rowY)
+			switch {
+			case seen && gt.rows[idx].resolved:
+				// This row is already somebody. OCR never runs on it again:
+				// that is the geometric dedupe, and it is what stops one
+				// member being minted twice off two photographs.
+				continue
+			case seen:
+				// Collected before and still nobody. The capture took
+				// another photograph of it, so read it again rather than
+				// leave a member lost to whichever sighting happened to be
+				// first (see collectedRow). It is NOT counted as a second
+				// parsed row -- Parsed asks whether the scroll photographed
+				// the whole group, and re-reading one row does not make the
+				// group larger.
+			default:
+				gt.rows = append(gt.rows, collectedRow{y: rowY})
+				idx = len(gt.rows) - 1
+
+				totalParsed++
+				tally := run.res.PerGroup[groupKey]
+				tally.Parsed++
+				run.res.PerGroup[groupKey] = tally
 			}
-			gt.lastRowY = rowY
 
-			totalParsed++
-			tally := run.res.PerGroup[groupKey]
-			tally.Parsed++
-			run.res.PerGroup[groupKey] = tally
-
-			if err := run.processRow(ctx, i, img, band, frame.ScreenshotID, groupKey); err != nil {
+			resolved, reviewed, err := run.processRow(ctx, i, img, band, frame.ScreenshotID, groupKey, gt.rows[idx].reviewed)
+			if err != nil {
 				return RosterResult{}, err
 			}
+			gt.rows[idx].resolved = resolved
+			gt.rows[idx].reviewed = gt.rows[idx].reviewed || reviewed
 		}
 	}
 
@@ -1086,24 +1162,39 @@ func (run *rosterRun) noteMemberFor(groupKey string) {
 // resolve to a member at all: without a memberID no fact has anywhere to
 // attach, so an ambiguous or unmatched-and-group-full name still sends the
 // whole row to review, same as before.
-func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Image, band RowBand, screenshotID int64, groupKey string) error {
+//
+// It reports whether the row RESOLVED -- matched an existing member or
+// created one. The caller records that against the row's position so a later
+// photograph of the same row is read again if this one produced nobody, and
+// skipped if it did (see collectedRow). Every name-class review path returns
+// false: a queued row is a row that is still nobody, whatever the reason.
+//
+// alreadyReviewed says this row's name has already been queued for a human on
+// an earlier photograph, so a name-class failure here must not queue a second
+// row describing the same piece of work. It gates the NAME class only. The
+// field-level rows writeFacts queues belong to a row that did resolve, so
+// they are written once by construction and need no such guard.
+//
+// The second return value reports whether this call queued a name-class row,
+// which is what the caller latches.
+func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Image, band RowBand, screenshotID int64, groupKey string, alreadyReviewed bool) (resolved, reviewed bool, err error) {
 	nameRes, _, err := i.readFieldWithRetry(ctx, img,
 		fieldRect(band, img, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1),
 		readPlan{spec: nameSpec, opts: nameOptions}, nameRetry)
 	if err != nil {
-		return err
+		return false, false, err
 	}
 	powerRes, err := i.readField(ctx, img, fieldRect(band, img, powerXFrac0, powerXFrac1, bottomRowYFrac0, bottomRowYFrac1), powerSpec, powerOptions)
 	if err != nil {
-		return err
+		return false, false, err
 	}
 	levelRes, err := i.readField(ctx, img, fieldRect(band, img, levelXFrac0, levelXFrac1, bottomRowYFrac0, bottomRowYFrac1), levelSpec, levelOptions)
 	if err != nil {
-		return err
+		return false, false, err
 	}
 	lastRes, err := i.readField(ctx, img, fieldRect(band, img, statusXFrac0, statusXFrac1, statusYFrac0, statusYFrac1), lastActiveSpec, lastActiveOptions)
 	if err != nil {
-		return err
+		return false, false, err
 	}
 
 	power, perr := ParsePower(powerRes.Text)
@@ -1132,7 +1223,7 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 	// confidence gate below would have caught them too -- the point of keeping
 	// both is that neither should have to rely on the other.)
 	if strings.TrimSpace(row.Name) == "" {
-		return run.queueReview(ctx, i, screenshotID, band, nameRes.Text, nil, "unreadable_name", row.NameConf)
+		return run.queueNameReview(ctx, i, screenshotID, band, nameRes.Text, nil, "unreadable_name", row.NameConf, alreadyReviewed)
 	}
 
 	candidates := roster.Rank(row.Name, run.members)
@@ -1143,10 +1234,10 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 		run.noteMemberFor(groupKey)
 		run.res.Matched++
 		matchNorm := float64(candidates[0].Score) / 100.0
-		return run.writeFacts(ctx, i, screenshotID, band, candidates[0].MemberID, matchNorm, fieldReads(row, powerRes, levelRes, lastRes, perr, lerr, aerr))
+		return true, false, run.writeFacts(ctx, i, screenshotID, band, candidates[0].MemberID, matchNorm, fieldReads(row, powerRes, levelRes, lastRes, perr, lerr, aerr))
 
 	case len(candidates) > 0 && candidates[0].Score >= roster.ReviewFloor:
-		return run.queueReview(ctx, i, screenshotID, band, row.Name, candidates, "ambiguous_name_match", 0)
+		return run.queueNameReview(ctx, i, screenshotID, band, row.Name, candidates, "ambiguous_name_match", 0, alreadyReviewed)
 
 	default:
 		// Creating a member is the one irreversible thing this loop does: a
@@ -1170,7 +1261,7 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 		// starts losing real members here, the answer is to re-measure the
 		// field's OCR, not to lower this.
 		if !nameRes.Accepted(nameSpec) {
-			return run.queueReview(ctx, i, screenshotID, band, nameRes.Text, candidates, "low_confidence_name", row.NameConf)
+			return run.queueNameReview(ctx, i, screenshotID, band, nameRes.Text, candidates, "low_confidence_name", row.NameConf, alreadyReviewed)
 		}
 		gt := run.groups[groupKey]
 		if gt.canCreate() {
@@ -1181,7 +1272,7 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 				Rank:           groupKey,
 			})
 			if err != nil {
-				return fmt.Errorf("ingest: creating member %q: %w", row.Name, err)
+				return false, false, fmt.Errorf("ingest: creating member %q: %w", row.Name, err)
 			}
 			run.members = append(run.members, roster.Member{ID: memberID, Name: row.Name})
 			gt.matchedOrCreated++
@@ -1191,7 +1282,7 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 			// its match component is 1.0: the row is definitionally this
 			// member. Only each field's own OCR confidence gates its fact
 			// from here.
-			return run.writeFacts(ctx, i, screenshotID, band, memberID, 1.0, fieldReads(row, powerRes, levelRes, lastRes, perr, lerr, aerr))
+			return true, false, run.writeFacts(ctx, i, screenshotID, band, memberID, 1.0, fieldReads(row, powerRes, levelRes, lastRes, perr, lerr, aerr))
 		}
 		// The group's own header says it is already full. A 12th "new
 		// member" against an 11-member group is an OCR artifact, not a
@@ -1211,8 +1302,24 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 		if !gt.countKnown {
 			reason = "no_confident_match_group_count_unknown"
 		}
-		return run.queueReview(ctx, i, screenshotID, band, row.Name, candidates, reason, 0)
+		return run.queueNameReview(ctx, i, screenshotID, band, row.Name, candidates, reason, 0, alreadyReviewed)
 	}
+}
+
+// queueNameReview queues one name-class review row unless this row's name has
+// already been queued on an earlier photograph of it, and reports the two
+// values processRow's callers latch: the row did not resolve, and whether a
+// review row was written this time.
+//
+// It exists because the re-read of an unresolved row (collectedRow) turns one
+// piece of human work into one row per photograph. Suppression is here rather
+// than at the call site so no name-class branch can be added later that
+// forgets it.
+func (run *rosterRun) queueNameReview(ctx context.Context, i *Ingester, screenshotID int64, band RowBand, rawText string, candidates []roster.Candidate, reason string, confidence float64, alreadyReviewed bool) (bool, bool, error) {
+	if alreadyReviewed {
+		return false, false, nil
+	}
+	return false, true, run.queueReview(ctx, i, screenshotID, band, rawText, candidates, reason, confidence)
 }
 
 // fieldRead is one numeric field's OCR read, parse outcome, and the label
