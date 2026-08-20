@@ -143,14 +143,21 @@ instead of creating a duplicate account.
   none — which is how its name crop stayed wrong while the VS crops were being
   fitted to histograms. `-roster.inkprofile` prints the column ink histogram a
   crop edge is placed from, `-roster.x0sweep` sweeps `nameXFrac0`,
-  `-roster.detail` is the per-band view, `-roster.retry` measures the PSM-13
-  retry. Read its `junk-prefixed` column, not its `exact` column: there is no
-  hand-checked roster transcription, so it scores against the VS fixture's 86
-  names, which are neither complete (97 members) nor contemporaneous (three
-  days apart), and `exact` is therefore a lower bound that must never be quoted
-  as an accuracy. `junk-prefixed` counts reads that are a known name plus one
-  leading token — provably-correct reads with something the crop let in — and
-  that measure does not depend on the truth set being complete.
+  `-roster.detail` is the per-band view, `-roster.members` the per-member one,
+  `-roster.noretry` measures what the shipped PSM-13 retry is worth.
+  It scores against `fixtures/m4rostergate/expected.yaml` — 75 members, that
+  capture, transcribed frame by frame — so `exact` is an accuracy and
+  `unmatched` an error rate. It did **not** used to be: until the roster gate's
+  fixture existed it scored against the VS ranking's 86 ranked names, three
+  days later and missing 11 of this roster's members, and every number carried
+  a "lower bound, never an accuracy" caveat. Two columns still need their own
+  reading: `junk-prefixed` (a known name plus one leading token — the direct
+  measure of a left-edge crop defect) and `exact (below MinConf)` (read
+  correctly, refused for confidence, and invisible to an accuracy count).
+  **`-roster.members` is the mode that answers the gate's question**, because
+  the gate reports members never created and every other mode reports bands: a
+  band-keyed count and a member-keyed loss are two aggregates, and pairing them
+  by hand is the inference this milestone got wrong twice.
 - `make gate` — the M1 phase gate: recognizer accuracy against the real
   corpus. Tagged `//go:build corpus`, device-free but slow, so it stays out
   of `make test`. Skips when the corpus has not been pulled. Carries an

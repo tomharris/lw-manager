@@ -25,6 +25,7 @@
 //	make probe-roster PROBE_ARGS='-roster.headerthresh'   # AdaptiveThreshold's block size and C
 //	make probe-roster PROBE_ARGS='-roster.power'          # the power column
 //	make probe-roster PROBE_ARGS='-roster.level'          # the level column
+//	make probe-roster PROBE_ARGS='-roster.members'        # per MEMBER, not per band
 //
 // The last three score against the transcribed group TOTALS, not merely
 // against whether a header parsed: parseGroupHeader's doc comment records that
@@ -44,20 +45,29 @@
 //
 // # What it can and cannot tell you
 //
-// There is no hand-checked transcription of a roster capture the way
-// fixtures/m4gate/expected.yaml is one for the VS ranking, so this probe
-// cannot report an accuracy. It scores against the 86 hand-transcribed names
-// in the VS fixture, and that set is neither complete (the ranking lists
-// scorers, and this alliance had 97 members) nor contemporaneous (three days
-// separate the two captures). A correct read can therefore match nothing.
+// It scores against fixtures/m4rostergate/expected.yaml: 75 members, this
+// capture, transcribed frame by frame at full resolution. That file did not
+// exist when this probe was written -- it scored against the VS ranking's 86
+// ranked names instead, three days later and missing 11 of this roster's
+// members -- so every number here used to carry a caveat that `exact` was a
+// lower bound and `junk-prefixed` was the only column that meant anything.
+// The caveat is gone. `exact` is an accuracy, `unmatched` is an error rate,
+// and a member missing from the per-member view is missing from the capture's
+// reads rather than possibly missing from the truth set.
 //
-// So the headline "exact" count is a LOWER bound and must never be quoted as
-// an accuracy. The number that carries the actual signal is `junk-prefixed`:
-// reads that match a known name only after one leading token is stripped.
-// That counter does not depend on the truth set being complete — every one of
-// its hits is a read that is provably correct except for something the crop
-// let in — and it is the direct measure of the defect the ink profile
-// localized. A crop change is read against that column first.
+// Two columns still need their own reading:
+//
+//   - `junk-prefixed` counts reads that match a name only after one leading
+//     token is stripped. It is the direct measure of a left-edge crop defect
+//     (a status icon read as a first character) and it is the column a crop
+//     change is read against first. It is 0 today.
+//   - `exact (below MinConf)` counts reads that are byte-identical to a
+//     transcribed name and BELOW nameSpec.MinConf, which processRow refuses to
+//     create a member from. A pure accuracy count hides those completely: the
+//     name was read correctly and the member was dropped anyway.
+//
+// -roster.members is the per-MEMBER view, and it is the one that answers the
+// gate's question. See its own doc comment for why a per-band count cannot.
 //
 // # Why an ink profile mode lives in here
 //
@@ -90,21 +100,10 @@ import (
 	"github.com/tomharris/lw-manager/internal/blob"
 	"github.com/tomharris/lw-manager/internal/config"
 	"github.com/tomharris/lw-manager/internal/ocr"
+	"github.com/tomharris/lw-manager/internal/roster"
 	"github.com/tomharris/lw-manager/internal/transport"
 	"github.com/tomharris/lw-manager/internal/vision"
 )
-
-// rosterNameRetry mirrors vsNameRetry: a raw-line read of a crop that PSM 7's
-// layout analysis refused to look at. The roster name field does NOT ship this
-// -- processRow calls readField, not readFieldWithRetry -- and -roster.retry
-// is how the case for changing that is made in numbers rather than by
-// analogy. See CLAUDE.md, "Tesseract's layout analysis is blind to some
-// perfectly legible crops", and note its warning that the retry's own
-// preprocessing is a separate measurement from the primary's.
-var rosterNameRetry = readPlan{
-	spec: ocr.Spec{MinConf: nameSpec.MinConf, PSM: ocr.PSMRawLine},
-	opts: vision.Options{SkipEqualize: true, SkipThreshold: true, UpscaleFactor: 4},
-}
 
 var (
 	rosterDetail = flag.Bool("roster.detail", false,
@@ -117,8 +116,8 @@ var (
 		"path to the frame list (default fixtures/m4roster/frames.yaml)")
 	rosterMaxFrames = flag.Int("roster.maxframes", 0,
 		"read only the first N member-list frames (0 = all); the ink profile and sweeps are slow")
-	rosterRetry = flag.Bool("roster.retry", false,
-		"retry an empty read at PSM 13, the way the VS name field does; the roster name field does not, and this measures what that costs")
+	rosterNoRetry = flag.Bool("roster.noretry", false,
+		"read the name at PSM 7 only, without the PSM 13 retry production ships; this is what the retry is worth, measured, not the shipped configuration")
 	rosterBadge = flag.Bool("roster.badge", false,
 		"report matchRankBadge's per-frame verdict: winning rank, runner-up, gap, against the fixture's own group")
 	rosterHeader = flag.Bool("roster.header", false,
@@ -137,6 +136,8 @@ var (
 		"sweep AdaptiveThreshold's block size and C through both candidate header rectangles; the count that resists every skip-flag shape is a contrast failure, not a layout one, and these are the only two knobs the shape grid never varies")
 	rosterBadgeShuffle = flag.Bool("roster.badgeshuffle", false,
 		"rotate every truth label one rank forward, so the badge mode's verdicts are wrong by construction; it must report ~0 agree. Implies -roster.badge")
+	rosterMembers = flag.Bool("roster.members", false,
+		"per-MEMBER view: each transcribed member's best band, and whether processRow would match it, create from it, or refuse it for confidence")
 )
 
 // leadingToken matches one short token followed by whitespace at the start of
@@ -163,12 +164,21 @@ type rosterLoadedFrame struct {
 	Img image.Image
 }
 
-// rosterBandRead is one row band's name read, kept so the sweep and the detail
-// view can be built from a single pass over the pixels.
+// rosterBandRead is one row band's name read, kept so the sweep, the detail
+// view and the per-member report can be built from a single pass over the
+// pixels.
+//
+// Conf and Retried are here because the name's OCR confidence is not
+// decoration on this route: processRow enforces nameSpec.MinConf on the
+// member-CREATION branch, so a band read perfectly at confidence 0.39 mints
+// nobody. A per-band report that showed only the text could not distinguish
+// "read wrong" from "read right and refused", and those need opposite fixes.
 type rosterBandRead struct {
-	Seq  int
-	Y0   int
-	Text string
+	Seq     int
+	Y0      int
+	Text    string
+	Conf    float64
+	Retried bool
 }
 
 type rosterCounts struct {
@@ -180,15 +190,24 @@ type rosterCounts struct {
 	// stripped. This is the defect counter; see the package comment.
 	JunkPrefixed int
 	Empty        int
-	// Unmatched reads that matched nothing either way. Ambiguous by
-	// construction: an unreadable name and a member absent from the truth
-	// set are indistinguishable here, which is why this is not an error rate.
+	// Unmatched reads that matched nothing either way. Against the roster's
+	// own transcription this IS an error rate: every member of this capture
+	// is in the truth set, so a read matching nothing is a read that is
+	// wrong. (It was not one against the VS fixture, which lacked 11 of these
+	// members outright -- see rosterTruth.)
 	Unmatched int
+	// ExactBelowMinConf is the subset of Exact that processRow would refuse
+	// to create a member from: the read is byte-identical to a transcribed
+	// name and the engine's own confidence is below nameSpec.MinConf. It is
+	// broken out because it is the one failure an accuracy count actively
+	// hides -- the pipeline read the name correctly and dropped it anyway,
+	// which looks like a success in every column but this one.
+	ExactBelowMinConf int
 }
 
 func (c rosterCounts) String() string {
-	return fmt.Sprintf("%-22s bands %3d  exact %3d  junk-prefixed %3d  empty %3d  unmatched %3d",
-		c.Label, c.Bands, c.Exact, c.JunkPrefixed, c.Empty, c.Unmatched)
+	return fmt.Sprintf("%-22s bands %3d  exact %3d (below MinConf %2d)  junk-prefixed %3d  empty %3d  unmatched %3d",
+		c.Label, c.Bands, c.Exact, c.ExactBelowMinConf, c.JunkPrefixed, c.Empty, c.Unmatched)
 }
 
 func TestRosterNameProbe(t *testing.T) {
@@ -197,9 +216,10 @@ func TestRosterNameProbe(t *testing.T) {
 	truth := loadRosterTruth(t)
 	frames := loadRosterFrames(t, ctx)
 	t.Logf("roster probe: %d member-list frames, %d hand-transcribed names to score against",
-		len(frames), len(truth))
-	t.Logf("  the truth set is the VS ranking's scorers, three days later: incomplete and not")
-	t.Logf("  contemporaneous. `exact` is a lower bound, `junk-prefixed` is the defect measure.")
+		len(frames), len(truth.Names))
+	t.Logf("  the truth set is fixtures/m4rostergate/expected.yaml -- THIS capture, transcribed")
+	t.Logf("  frame by frame. `exact` is an accuracy now, not the lower bound it was against")
+	t.Logf("  the VS ranking's 86 scorers. `unmatched` is a read that is wrong.")
 
 	// Each mode below returns rather than falling through to the name pass.
 	// They are independent instruments and the default pass costs an OCR call
@@ -271,6 +291,9 @@ func TestRosterNameProbe(t *testing.T) {
 		if *rosterDetail {
 			reportRosterDetail(t, reads, truth)
 		}
+		if *rosterMembers {
+			reportRosterMembers(t, reads, truth)
+		}
 	}
 }
 
@@ -279,6 +302,15 @@ func TestRosterNameProbe(t *testing.T) {
 // overlapping frames is scored three times, so one bad band reads differently
 // from a systematic miss — the same choice zz_name_probe_test.go makes and for
 // the same reason.
+//
+// "Production" means production: readFieldWithRetry against the shipped
+// nameRetry, because processRow ships that retry. It did not when this mode
+// was written, and the flag inverted with it -- what used to be -roster.retry
+// ("what would the retry buy?") is now -roster.noretry ("what is the retry
+// worth, measured against its own absence?"). A probe whose default models a
+// weaker pipeline than the one that ships reports failures production does not
+// have, which CLAUDE.md records costing a correct change its acceptance on the
+// VS route.
 func readRosterNames(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame, x0 float64) []rosterBandRead {
 	t.Helper()
 
@@ -295,31 +327,38 @@ func readRosterNames(ctx context.Context, t *testing.T, engine ocr.OCREngine, fr
 		for _, band := range bands {
 			rect := fieldRect(band, f.Img, x0, nameXFrac1, topRowYFrac0, topRowYFrac1)
 			var res ocr.Result
+			var retried bool
 			var err error
-			if *rosterRetry {
-				res, _, err = ing.readFieldWithRetry(ctx, f.Img, rect,
-					readPlan{spec: nameSpec, opts: nameOptions}, rosterNameRetry)
-			} else {
+			if *rosterNoRetry {
 				res, err = ing.readField(ctx, f.Img, rect, nameSpec, nameOptions)
+			} else {
+				res, retried, err = ing.readFieldWithRetry(ctx, f.Img, rect,
+					readPlan{spec: nameSpec, opts: nameOptions}, nameRetry)
 			}
 			if err != nil {
 				t.Fatalf("reading frame %d band %d: %v", f.Seq, band.Y0, err)
 			}
-			out = append(out, rosterBandRead{Seq: f.Seq, Y0: band.Y0, Text: strings.TrimSpace(res.Text)})
+			out = append(out, rosterBandRead{
+				Seq: f.Seq, Y0: band.Y0,
+				Text: strings.TrimSpace(res.Text), Conf: res.Confidence, Retried: retried,
+			})
 		}
 	}
 	return out
 }
 
-func scoreRosterReads(reads []rosterBandRead, truth map[string]bool, label string) rosterCounts {
+func scoreRosterReads(reads []rosterBandRead, truth rosterTruth, label string) rosterCounts {
 	c := rosterCounts{Label: label, Bands: len(reads)}
 	for _, r := range reads {
 		switch {
 		case r.Text == "":
 			c.Empty++
-		case truth[r.Text]:
+		case truth.Names[r.Text]:
 			c.Exact++
-		case stripLeadingToken(r.Text) != r.Text && truth[stripLeadingToken(r.Text)]:
+			if r.Conf < nameSpec.MinConf {
+				c.ExactBelowMinConf++
+			}
+		case stripLeadingToken(r.Text) != r.Text && truth.Names[stripLeadingToken(r.Text)]:
 			c.JunkPrefixed++
 		default:
 			c.Unmatched++
@@ -373,7 +412,7 @@ func reportDistinctReads(t *testing.T, label string, distinct map[string]int, to
 	t.Logf("  %s reads: %s%s", label, strings.Join(parts, "  "), suffix)
 }
 
-func reportRosterDetail(t *testing.T, reads []rosterBandRead, truth map[string]bool) {
+func reportRosterDetail(t *testing.T, reads []rosterBandRead, truth rosterTruth) {
 	t.Helper()
 	t.Log("  per band:")
 	for _, r := range reads {
@@ -381,13 +420,113 @@ func reportRosterDetail(t *testing.T, reads []rosterBandRead, truth map[string]b
 		switch {
 		case r.Text == "":
 			verdict = "EMPTY"
-		case truth[r.Text]:
+		case truth.Names[r.Text]:
 			verdict = "exact"
-		case stripLeadingToken(r.Text) != r.Text && truth[stripLeadingToken(r.Text)]:
+		case stripLeadingToken(r.Text) != r.Text && truth.Names[stripLeadingToken(r.Text)]:
 			verdict = fmt.Sprintf("JUNK-PREFIXED -> %q", stripLeadingToken(r.Text))
 		}
-		t.Logf("    frame %2d y=%4d  read=%-28q %s", r.Seq, r.Y0, r.Text, verdict)
+		best := ""
+		if cands := roster.Rank(r.Text, truth.Members); len(cands) > 0 && cands[0].Score > 0 {
+			best = fmt.Sprintf(" best=%q@%d", cands[0].Name, cands[0].Score)
+		}
+		retried := ""
+		if r.Retried {
+			retried = " RETRIED"
+		}
+		t.Logf("    frame %2d y=%4d  read=%-28q conf=%.2f%s %s%s",
+			r.Seq, r.Y0, r.Text, r.Conf, retried, verdict, best)
 	}
+}
+
+// reportRosterMembers is the per-MEMBER view: one line per transcribed member,
+// naming the band that came closest to reading them and what processRow would
+// have done with it.
+//
+// It exists because the band-keyed views above cannot answer the question the
+// gate actually poses. `make gate-roster` reports members never created; a
+// per-band report reports reads that matched nothing; and pairing those two
+// aggregates is exactly the inference CLAUDE.md records this milestone getting
+// wrong twice ("two aggregates side by side are not a causal claim" -- 15
+// empty bands beside 10 non-Latin names, which were disjoint sets). This mode
+// keys on the member, so a missing member names its own best read and its own
+// refusal instead of being matched to one by hand.
+//
+// The verdict column models processRow's routing, and models it against a
+// roster that already contains every member -- which production does NOT have
+// on a first ingest, where members are created as the scan proceeds. So:
+//
+//   - MATCH means some band scores >= roster.AutoAccept against this member,
+//     so once the member exists, this row finds them. On a first ingest that
+//     is the SECOND and later sightings.
+//   - CREATABLE means the best band is both AutoAccept-worthy and above
+//     nameSpec.MinConf, so the first sighting could have minted the member.
+//   - LOW-CONF means the read is good enough to match but too weak to create
+//     from: a member reachable only if somebody else creates them first, which
+//     on a first ingest means never.
+//   - MISS means no band on any frame scores AutoAccept against this member at
+//     all, whatever the confidence.
+//
+// The distinction between CREATABLE and LOW-CONF is the whole reason the mode
+// carries confidence, and it is not visible from any band-keyed count.
+func reportRosterMembers(t *testing.T, reads []rosterBandRead, truth rosterTruth) {
+	t.Helper()
+
+	type bestRead struct {
+		read  rosterBandRead
+		score int
+		found bool
+	}
+	// Best band per member by score, and among equal scores the one with the
+	// highest confidence -- because confidence is what decides creation, and
+	// a member with one 0.72 sighting and eleven 0.20 sightings is creatable.
+	best := map[string]bestRead{}
+	for _, r := range reads {
+		if r.Text == "" {
+			continue
+		}
+		for _, m := range truth.Members {
+			s := roster.TokenSetRatio(r.Text, m.Name)
+			b := best[m.Name]
+			if !b.found || s > b.score || (s == b.score && r.Conf > b.read.Conf) {
+				best[m.Name] = bestRead{read: r, score: s, found: true}
+			}
+		}
+	}
+
+	byVerdict := map[string]int{}
+	names := make([]string, 0, len(truth.Members))
+	for _, m := range truth.Members {
+		names = append(names, m.Name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if truth.Rank[names[i]] != truth.Rank[names[j]] {
+			return truth.Rank[names[i]] > truth.Rank[names[j]]
+		}
+		return names[i] < names[j]
+	})
+
+	t.Log("  per member (best band, and what processRow would do with it):")
+	for _, name := range names {
+		b := best[name]
+		verdict := "MISS"
+		switch {
+		case !b.found || b.score < roster.AutoAccept:
+			verdict = "MISS"
+		case b.read.Conf >= nameSpec.MinConf:
+			verdict = "CREATABLE"
+		default:
+			verdict = "LOW-CONF"
+		}
+		byVerdict[verdict]++
+		if !b.found {
+			t.Logf("    %-3s %-22q no band read anything at all", truth.Rank[name], name)
+			continue
+		}
+		t.Logf("    %-3s %-22q %-9s score %3d  conf %.2f  frame %2d y=%4d read=%q",
+			truth.Rank[name], name, verdict, b.score, b.read.Conf, b.read.Seq, b.read.Y0, b.read.Text)
+	}
+	t.Logf("  per member: %d members, CREATABLE %d, LOW-CONF %d, MISS %d",
+		len(names), byVerdict["CREATABLE"], byVerdict["LOW-CONF"], byVerdict["MISS"])
 }
 
 // reportRosterInkProfile prints ink per column over the name line of every row
@@ -486,10 +625,46 @@ func absDiff(a, b uint32) uint32 {
 // loadRosterTruth reads the hand-transcribed names out of the VS gate's
 // fixture. It is the only hand-checked name set this project has; see the
 // package comment for what that borrowing costs.
-func loadRosterTruth(t *testing.T) map[string]bool {
+// rosterTruth is the hand-transcribed roster capture, as much of it as the
+// name modes need: the set of names for the exact/junk-prefixed scoring, and
+// the same names as roster.Members so a band can be scored the way processRow
+// scores it.
+//
+// It is loaded from fixtures/m4rostergate/expected.yaml, which is a
+// transcription of THIS capture, frame by frame, at full resolution. Until the
+// roster gate existed this probe had no such file and scored against
+// fixtures/m4gate/expected.yaml -- the VS ranking's 86 scorers, three days
+// later -- so `exact` was a lower bound that could never be quoted as an
+// accuracy, and every mode's headline carried that caveat. The roster gate's
+// fixture removes the caveat: 75 members, this capture, every one of them
+// expected to appear in some band. `exact` is now an accuracy, and a read that
+// matches nothing is a miss rather than possibly-a-member-the-truth-set-lacks.
+//
+// Two consequences worth stating, because they change how the numbers read:
+//
+//   - the totals move DOWN when the truth set changes, and that is not a
+//     regression. The VS set carried 86 names of which many are in this
+//     roster; the roster set carries 75, and the two disagree on five of them
+//     by hand (the fixture's own header lists them: ALBAN80 not ALBANSO,
+//     Bwiz21 not Bwiz2t, and so on). A band whose read matched the VS
+//     transcription of a name and not the roster's is now a miss, correctly.
+//   - `Rank` is available, so a band can be scored only against the members of
+//     the group its frame belongs to. Nothing does that yet -- the reads are
+//     scored against all 75 -- but the per-member report needs the rank to say
+//     which group a missing member belongs to.
+type rosterTruth struct {
+	Names   map[string]bool
+	Members []roster.Member
+	Rank    map[string]string
+	// LastActive is the transcribed status string ("Online", "3h ago") per
+	// member name -- the ground truth for -roster.lastactive.
+	LastActive map[string]string
+}
+
+func loadRosterTruth(t *testing.T) rosterTruth {
 	t.Helper()
 
-	path := filepath.Join("..", "..", "fixtures", "m4gate", "expected.yaml")
+	path := filepath.Join("..", "..", "fixtures", "m4rostergate", "expected.yaml")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		t.Skipf("no hand-checked names at %s", path)
@@ -498,19 +673,32 @@ func loadRosterTruth(t *testing.T) map[string]bool {
 		t.Fatalf("reading %s: %v", path, err)
 	}
 	var exp struct {
-		Rows []struct {
-			Name string `yaml:"name"`
-		} `yaml:"rows"`
+		Members []struct {
+			Rank       string `yaml:"rank"`
+			Name       string `yaml:"name"`
+			LastActive string `yaml:"last_active"`
+		} `yaml:"members"`
 	}
 	if err := yaml.Unmarshal(data, &exp); err != nil {
 		t.Fatalf("parsing %s: %v", path, err)
 	}
-	out := make(map[string]bool, len(exp.Rows))
-	for _, r := range exp.Rows {
-		out[r.Name] = true
+	out := rosterTruth{
+		Names:      make(map[string]bool, len(exp.Members)),
+		Members:    make([]roster.Member, 0, len(exp.Members)),
+		Rank:       make(map[string]string, len(exp.Members)),
+		LastActive: make(map[string]string, len(exp.Members)),
 	}
-	if len(out) == 0 {
-		t.Fatalf("%s carries no names", path)
+	for i, m := range exp.Members {
+		out.Names[m.Name] = true
+		// The ID is the fixture's own index, not a members-table id: this
+		// probe has no database and never writes one. It exists so
+		// roster.Rank's Candidate can be tied back to a truth row.
+		out.Members = append(out.Members, roster.Member{ID: int64(i + 1), Name: m.Name})
+		out.Rank[m.Name] = m.Rank
+		out.LastActive[m.Name] = m.LastActive
+	}
+	if len(out.Names) == 0 {
+		t.Fatalf("%s carries no members", path)
 	}
 	return out
 }

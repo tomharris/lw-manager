@@ -155,18 +155,29 @@ probe-assign:
 # / probe-assign. It asserts nothing and always passes; reading its output is
 # the point. Needs the blob store and tesseract, no database.
 #
-# It has no hand-checked transcription behind it -- there is no roster
-# equivalent of fixtures/m4gate/expected.yaml -- so it scores against the VS
-# fixture's 86 names, which are hand-transcribed but neither complete (96
-# members, 86 scorers) nor contemporaneous (three days apart). Read `exact` as
-# a LOWER bound and never as an accuracy.
+# It scores against fixtures/m4rostergate/expected.yaml -- 75 members, THIS
+# capture, transcribed frame by frame. It used to score against the VS
+# fixture's 86 ranked names, three days later and missing 11 of this roster's
+# members, which is why every number it printed carried a "lower bound, never
+# an accuracy" caveat. That caveat is retired: `exact` is an accuracy and
+# `unmatched` is an error rate.
 #
-# The column that carries the signal is `junk-prefixed`: reads that are a known
-# name plus one leading token. Those are provably-correct reads with something
-# the crop let in, and the count does not depend on the truth set being
-# complete. A crop change is read against that column first.
+# Two columns still need their own reading. `junk-prefixed` counts reads that
+# are a known name plus one leading token -- provably-correct reads with
+# something the crop let in, and the column a crop change is read against
+# first. `exact (below MinConf)` counts reads that are byte-identical to a
+# transcribed name and still below nameSpec.MinConf, which processRow refuses
+# to create a member from: an accuracy count hides those entirely.
 #
 #   -roster.detail      per-band reads and verdicts, to localize
+#   -roster.members     per-MEMBER: each member's best band and what
+#                       processRow would do with it (MATCH / CREATABLE /
+#                       LOW-CONF / MISS). This is the view the gate's
+#                       "member never created" question needs; a per-band
+#                       count cannot answer it.
+#   -roster.noretry     read at PSM 7 only, without the PSM 13 retry
+#                       production ships -- what the retry is worth. The
+#                       default is production's own read path.
 #   -roster.x0sweep     sweep nameXFrac0 across the gutter
 #   -roster.inkprofile  the column histogram the crop edges are placed from
 #
@@ -223,6 +234,7 @@ probe-assign:
 #
 #	make probe-roster
 #	make probe-roster PROBE_ARGS='-roster.detail'
+#	make probe-roster PROBE_ARGS='-roster.members'
 #	make probe-roster PROBE_ARGS='-roster.x0sweep'
 #	make probe-roster PROBE_ARGS='-roster.inkprofile -roster.maxframes=12'
 #	make probe-roster PROBE_ARGS='-roster.badge'
