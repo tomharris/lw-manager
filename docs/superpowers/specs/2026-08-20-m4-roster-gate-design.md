@@ -311,6 +311,21 @@ first run is green was fitted to the pipeline it was supposed to judge.
 
 ## 5. The fixes, in yield order
 
+> **5.1's estimate was falsified during implementation, and is left standing
+> with this note rather than rewritten.** The ink profile and the edge move
+> both landed — the crop had been running past the chevron and past the header
+> card's own right edge, exactly as predicted — but the yield is not ~32
+> members. It recovers **one frame**. R2's count is `1/11`, which tesseract
+> classifies as `VN`/`VL`/`Wu`/`U/L` through 12 geometries, 24 preprocessing
+> shapes and 40 threshold settings through each of two rectangles, PSM 8/11/13
+> and a digit whitelist, and it reproduces on `vision.Preprocess` plus the
+> tesseract binary with no `internal/ingest` code in the path. It is a
+> classifier failure on the glyphs, not a crop or contrast defect, and no
+> rectangle reaches it — see `groupHeaderRegion`'s doc comment in
+> `internal/ingest/roster.go` for the reproducer and every committed mode.
+> R2's 11 members therefore cannot be created at all, which caps this gate's
+> coverage on capture 1 at 64/75 = 85.3% against its own 0.95 condition.
+
 **5.1 The group header count — worth ~32 members.** Ink profile over the header
 band across every frame in the capture, place the right edge in a gutter inside
 the chevron, and re-measure. Whether the count needs its **own crop and its own
