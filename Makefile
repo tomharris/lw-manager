@@ -170,10 +170,42 @@ probe-assign:
 #   -roster.x0sweep     sweep nameXFrac0 across the gutter
 #   -roster.inkprofile  the column histogram the crop edges are placed from
 #
+# Four more modes measure the fields the name probe never touched. Between them
+# they cover every fact this route fails to write, and the first is the only
+# instrument in this file aimed at something that is not an OCR read:
+#
+#   -roster.badge       matchRankBadge's per-frame verdict, with the gap
+#                       distribution split by right/wrong -- a wrong verdict at
+#                       a wide gap means the templates match the wrong thing, at
+#                       a narrow gap means the threshold cannot separate them,
+#                       and those need opposite fixes. Rank comes from NCC, not
+#                       OCR, so no other mode here can see a rank defect.
+#   -roster.badgeshuffle  rotate every truth label one rank forward, so the
+#                       badge mode is wrong by construction. It must report 0
+#                       agree; run it before believing a clean badge sweep.
+#   -roster.header      the sticky group header's raw text beside
+#                       parseGroupHeader's verdict, so a refusal names its own
+#                       cause. A header that will not parse drops the WHOLE
+#                       frame before any row is read.
+#   -roster.headerink   the header's column histogram, printed at full frame
+#                       width rather than the name field's 0.10-0.45 window,
+#                       because the edge under suspicion is X2=0.97.
+#   -roster.power       the power column's reads and ParsePower's verdict,
+#                       counting refusals that are structurally one damaged
+#                       separator -- the shape the review queue is full of and
+#                       the number a crop change should move.
+#   -roster.level       the same for the level column and ParseLevel.
+#
 #	make probe-roster
 #	make probe-roster PROBE_ARGS='-roster.detail'
 #	make probe-roster PROBE_ARGS='-roster.x0sweep'
 #	make probe-roster PROBE_ARGS='-roster.inkprofile -roster.maxframes=12'
+#	make probe-roster PROBE_ARGS='-roster.badge'
+#	make probe-roster PROBE_ARGS='-roster.badge -roster.badgeshuffle'
+#	make probe-roster PROBE_ARGS='-roster.header'
+#	make probe-roster PROBE_ARGS='-roster.headerink'
+#	make probe-roster PROBE_ARGS='-roster.power'
+#	make probe-roster PROBE_ARGS='-roster.level'
 .PHONY: probe-roster
 probe-roster: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
 probe-roster:
