@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/tomharris/lw-manager/internal/blob"
@@ -239,10 +240,23 @@ func printRosterSummary(out io.Writer, captureID int64, periodKey string, res in
 		// created, so printing both under one word made "matched=90 created=3"
 		// and "group=R2 parsed=18 created=17" read as a contradiction during
 		// triage.
+		//
+		// expected=? is a group whose own header never parsed on any frame
+		// of this capture (GroupTally.ExpectedKnown). Printing the zero
+		// would claim a size nothing measured, and a triage reading
+		// "parsed=18 expected=0" would go looking for a scrolling bug
+		// instead of an unreadable header. It also says why the group
+		// created nobody: no count means no creation budget, so every
+		// unmatched row is in the queue as
+		// no_confident_match_group_count_unknown (internal/ingest/roster.go).
+		expected := "?"
+		if t.ExpectedKnown {
+			expected = strconv.Itoa(t.Expected)
+		}
 		if t.Name != "" {
-			fmt.Fprintf(out, "  group=%s name=%q parsed=%d yielded=%d expected=%d\n", k, t.Name, t.Parsed, t.MatchedOrCreated, t.Expected)
+			fmt.Fprintf(out, "  group=%s name=%q parsed=%d yielded=%d expected=%s\n", k, t.Name, t.Parsed, t.MatchedOrCreated, expected)
 		} else {
-			fmt.Fprintf(out, "  group=%s parsed=%d yielded=%d expected=%d\n", k, t.Parsed, t.MatchedOrCreated, t.Expected)
+			fmt.Fprintf(out, "  group=%s parsed=%d yielded=%d expected=%s\n", k, t.Parsed, t.MatchedOrCreated, expected)
 		}
 	}
 }

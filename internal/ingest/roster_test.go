@@ -1030,6 +1030,192 @@ func TestIngestRosterFailsRatherThanQueueingABrokenTemplateSet(t *testing.T) {
 	}
 }
 
+// TestIngestRosterQueuesEveryRowWhenTheGroupCountIsUnreadable is the ratio
+// this task exists to fix. IngestRoster used to `continue` on a header-parse
+// failure, so ONE unreadable field discarded EVERY row on the frame: capture
+// 1's 21 R2 frames left 21 unparseable_group_header rows behind and nothing
+// else, and the members on them vanished with no record that a row had been
+// seen at all. That is the silent drop this milestone exists to prevent,
+// committed by the ingest path itself -- and it would be wrong even if every
+// count in that capture read perfectly, because one smudged header on a
+// future capture loses a whole group the same way.
+//
+// The count and the rank are independent reads with independent failure
+// paths (see IngestRoster's own comment): the badge here matches at full
+// confidence, so the frame's rows have an honest rank to attach to and
+// nothing about invariant #3 is being bent. What the missing count costs is
+// the creation budget, not the frame.
+//
+// The assertion is on the PER-ROW count, not on "something was queued": one
+// row per frame and one row per member both leave a non-empty review queue,
+// and only the ratio distinguishes the defect from the fix.
+func TestIngestRosterQueuesEveryRowWhenTheGroupCountIsUnreadable(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R2")
+	h.addFrame(rosterFrame(3), 0)
+
+	// Real text: capture 1's R2 headers read as the group's name with no
+	// count-shaped token at all, on all 21 frames, at every geometry and
+	// preprocessing shape measured (task 6's report; groupHeaderRegion's doc
+	// comment). parseGroupHeader refuses it rather than guessing.
+	results := []ocr.Result{{Text: "{R2) I'm Alright", Confidence: 0.9}}
+	for _, name := range distinctRowNames[:3] {
+		results = append(results, rowResults(name)...)
+	}
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+
+	reasons := h.reviewReasons()
+	if reasons["unparseable_group_header"] != 1 {
+		t.Errorf("queued %d unparseable_group_header rows, want 1: the header failure is still worth recording",
+			reasons["unparseable_group_header"])
+	}
+	if got := reasons["no_confident_match_group_count_unknown"]; got != 3 {
+		t.Errorf("queued %d per-row reviews for a countless group, want 3 -- one per row on the frame, not one for the frame; all reasons: %v", got, reasons)
+	}
+
+	// No budget means no creations, and this is the line not to cross: the
+	// count is the structural guard against minting phantoms (design doc §4),
+	// so a group whose size is unknown has none to spend. Ending the silent
+	// drop must not become a licence to invent people.
+	if res.Created != 0 {
+		t.Errorf("created %d members for a group with no readable count, want 0: the count is what gates creation", res.Created)
+	}
+
+	tally, seen := res.PerGroup["R2"]
+	if !seen {
+		t.Fatalf("group R2 produced no tally at all; its badge matched, so the rows it carried are describable: %v", res.PerGroup)
+	}
+	if tally.Parsed != 3 {
+		t.Errorf("tally parsed=%d, want 3: every band on the frame was segmented and read", tally.Parsed)
+	}
+	if tally.ExpectedKnown {
+		t.Error("tally reports ExpectedKnown=true for a header that never parsed")
+	}
+	if tally.Expected != 0 {
+		t.Errorf("tally expected=%d for an unread count, want 0 alongside ExpectedKnown=false", tally.Expected)
+	}
+	if res.Status != "partial" {
+		t.Errorf("status = %q, want %q: a group whose size is unknown cannot be reconciled, so the capture is not complete", res.Status, "partial")
+	}
+}
+
+// A countless group is not an inert group: it still matches its rows against
+// members already known, which is the whole difference between "no creation
+// budget" and the old "discard the frame". Capture 1's R2 members do not
+// exist in `members` today, but on any later capture -- one where the header
+// read, or after review resolves them -- they will, and every subsequent
+// unreadable header must keep collecting their facts rather than re-queueing
+// them forever.
+func TestIngestRosterStillMatchesKnownMembersWhenTheGroupCountIsUnreadable(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R2")
+	h.store.nextMemberID++
+	known := h.store.nextMemberID
+	h.store.members = append(h.store.members, db.Member{
+		ID: known, AllianceID: 1, Name: "Zephyr",
+		NameNormalized: roster.Normalize("Zephyr"), Rank: "R2", Active: true,
+	})
+	h.addFrame(rosterFrame(2), 0)
+
+	results := []ocr.Result{{Text: "{R2) I'm Alright", Confidence: 0.9}}
+	results = append(results, rowResults("Zephyr")...)
+	results = append(results, rowResults("Quokka")...)
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Matched != 1 {
+		t.Errorf("matched %d rows, want 1: a missing count withholds the creation budget, not the matcher", res.Matched)
+	}
+	if res.Created != 0 {
+		t.Errorf("created %d members, want 0", res.Created)
+	}
+	if reasons := h.reviewReasons(); reasons["no_confident_match_group_count_unknown"] != 1 {
+		t.Errorf("queued %d unmatched rows, want 1 (the row that matched nobody); all reasons: %v",
+			reasons["no_confident_match_group_count_unknown"], reasons)
+	}
+	var wroteFor int64
+	for _, f := range h.store.Facts {
+		wroteFor = f.MemberID
+	}
+	if wroteFor != known {
+		t.Errorf("facts written for member %d, want the known member %d: a matched row on a countless frame still carries its numbers", wroteFor, known)
+	}
+}
+
+// A group whose count never parsed must not be reported `complete`, and the
+// case that says so is the one where it also parsed no rows -- a collapsed
+// group's frame, which carries a header and no list. Expected and Parsed are
+// then both 0, so the arithmetic half of the reconciliation rule
+// (Parsed != Expected) is satisfied and would call the capture complete: a
+// claim that a group of unknown size was fully seen. Only ExpectedKnown
+// distinguishes it, which is why the rule states the unknown case explicitly
+// rather than leaning on a zero.
+func TestIngestRosterRefusesToCallACountlessGroupComplete(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R2")
+	h.addFrame(rosterFrame(0), 0)
+	h.engine.Results = []ocr.Result{{Text: "{R2) I'm Alright", Confidence: 0.9}}
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	tally := res.PerGroup["R2"]
+	if tally.Parsed != 0 || tally.Expected != 0 {
+		t.Fatalf("tally parsed=%d expected=%d, want 0/0 -- this test is only meaningful when the arithmetic agrees", tally.Parsed, tally.Expected)
+	}
+	if res.Status != "partial" {
+		t.Errorf("status = %q for a group whose size was never read, want %q", res.Status, "partial")
+	}
+}
+
+// A count that arrives on a LATER frame of the same group is still the
+// count. groupTracker is created on the group's first frame, so a group
+// whose first header failed and whose second read cleanly would otherwise
+// stay budgetless for the rest of the capture -- the evidence for its size
+// having been seen and thrown away. Order is not something the capture
+// controls: which frame a group is first sighted on depends on where a
+// swipe happened to land.
+func TestIngestRosterAdoptsACountThatOnlyLaterFramesCouldRead(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R2")
+	h.addFrame(rosterFrame(1), 0)
+	// Two cards on the second frame, one row scripted: the list has moved
+	// within the same group, so IngestRoster discards the top band as a
+	// partial row (skipTopBand) before any OCR runs on it.
+	h.addFrame(rosterFrame(2), memberRowPitch*3)
+
+	results := []ocr.Result{{Text: "{R2) I'm Alright", Confidence: 0.9}}
+	results = append(results, rowResults("Zephyr")...)
+	results = append(results, ocr.Result{Text: "{R2) I'm Alright 2/11", Confidence: 0.9})
+	results = append(results, rowResults("Quokka")...)
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Created != 1 {
+		t.Errorf("created %d members, want 1: the second frame's header supplied the budget the first frame's did not", res.Created)
+	}
+	tally := res.PerGroup["R2"]
+	if !tally.ExpectedKnown || tally.Expected != 11 {
+		t.Errorf("tally expected=%d known=%v, want 11/true once a frame read the header", tally.Expected, tally.ExpectedKnown)
+	}
+	if reasons := h.reviewReasons(); reasons["no_confident_match_group_count_unknown"] != 1 {
+		t.Errorf("queued %d rows for the countless first frame, want 1; all reasons: %v",
+			reasons["no_confident_match_group_count_unknown"], reasons)
+	}
+}
+
 // Replay: a parser fix rerun over a capture from long ago must write the
 // same facts it would have written on capture day, not today's. startedAt
 // is set six years in the past and asserted directly against every fact's

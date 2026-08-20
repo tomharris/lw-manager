@@ -240,8 +240,17 @@ the VS route matches into a closed set and the roster route *creates*.
 
 **3. Nothing dropped silently.** Every transcribed member that was never
 created produced a `review_queue` row under a **name-class** reason —
-`unreadable_name`, `ambiguous_name_match`, `low_confidence_name` or
-`no_confident_match_group_full`.
+`unreadable_name`, `ambiguous_name_match`, `low_confidence_name`,
+`no_confident_match_group_full` or `no_confident_match_group_count_unknown`.
+
+The last of those was added by task 6b. A group whose own header count never
+parsed gets **no creation budget** — the count is the structural guard §4
+describes, so a group of unknown size has nothing to spend — but its rows are
+still read, still attributed to the rank the badge supplies, and still matched
+against members already known. What does not match is queued one row per row.
+Before that, a header failure discarded the whole frame: capture 1's 21 R2
+frames left 21 `unparseable_group_header` rows and no trace of the members on
+them.
 
 Both halves of that sentence are load-bearing and the first draft got both
 wrong. It counted **every** pending review for the capture, and `IngestRoster`

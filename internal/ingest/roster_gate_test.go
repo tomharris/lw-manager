@@ -690,6 +690,14 @@ func TestM4RosterGate(t *testing.T) {
 		"ambiguous_name_match":          true,
 		"low_confidence_name":           true,
 		"no_confident_match_group_full": true,
+		// A group whose own header count never parsed has no creation budget
+		// to spend (roster.go), so every row of it that matches nobody lands
+		// here instead. It is a name-class reason by the definition this set
+		// uses -- a row that was read and did not become a member -- and
+		// leaving it out would count capture 1's R2 rows as dropped silently
+		// when they are the opposite: individually queued, which is the
+		// change task 6b made.
+		"no_confident_match_group_count_unknown": true,
 	}
 	queued, nameQueued := 0, 0
 	for _, item := range pending {
@@ -757,7 +765,18 @@ func TestM4RosterGate(t *testing.T) {
 			lies = append(lies, fmt.Sprintf("group %s (%q, %d members) produced no tally at all; reconciliation describes this capture without it", g.Rank, g.Name, g.Total))
 			continue
 		}
-		if tally.Expected != g.Total {
+		// Still a lie when the count was never read, and deliberately so:
+		// this condition asserts that the size a group is described with is
+		// the size its own header states, and "unknown" is not that size. The
+		// message names the unread count rather than printing expected=0,
+		// which would send a reader looking for a reconciliation bug instead
+		// of an unreadable header (see GroupTally.ExpectedKnown). What must
+		// not happen is this quietly passing because ingest reported no
+		// number at all.
+		switch {
+		case !tally.ExpectedKnown:
+			lies = append(lies, fmt.Sprintf("group %s: reported no readable header count at all (expected unknown), transcribed total is %d", g.Rank, g.Total))
+		case tally.Expected != g.Total:
 			lies = append(lies, fmt.Sprintf("group %s: reported expected=%d, transcribed total is %d", g.Rank, tally.Expected, g.Total))
 		}
 	}
@@ -783,7 +802,12 @@ func TestM4RosterGate(t *testing.T) {
 	groupShortfall, sumParsed := false, 0
 	for _, tally := range res.PerGroup {
 		sumParsed += tally.Parsed
-		if tally.Parsed != tally.Expected {
+		// Both halves of IngestRoster's rule, including the unknown-count one.
+		// Modelling only `Parsed != Expected` would agree by accident on this
+		// capture (R2 parses rows, so 0 != N) and disagree on a collapsed
+		// group whose header failed -- Parsed and Expected both 0, production
+		// correctly `partial`, and the gate would report a lie that is not one.
+		if !tally.ExpectedKnown || tally.Parsed != tally.Expected {
 			groupShortfall = true
 		}
 	}
@@ -806,6 +830,46 @@ func TestM4RosterGate(t *testing.T) {
 	// queued is what makes condition 3's verdict readable: queued is every
 	// reason, name_queued is the only part of it that can answer for a member
 	// that never appeared.
+	// Every group's tally, sorted -- the same three numbers `control ingest`
+	// prints, and the only place a gate run says what a group actually
+	// yielded. Condition 4 above reports only the groups it can call a lie,
+	// so a group that is described truthfully and badly (R2: rows parsed, no
+	// count, nobody created) leaves no trace in the failure output at all.
+	tallyKeys := make([]string, 0, len(res.PerGroup))
+	for k := range res.PerGroup {
+		tallyKeys = append(tallyKeys, k)
+	}
+	sort.Strings(tallyKeys)
+	for _, k := range tallyKeys {
+		tally := res.PerGroup[k]
+		expected := "?"
+		if tally.ExpectedKnown {
+			expected = fmt.Sprintf("%d", tally.Expected)
+		}
+		t.Logf("roster gate tally: group=%s name=%q parsed=%d yielded=%d expected=%s", k, tally.Name, tally.Parsed, tally.MatchedOrCreated, expected)
+	}
+
+	// The review queue by reason, sorted. The headline's `queued` is one
+	// number over a queue whose reasons need different fixes -- a field-level
+	// unparseable_power and a whole group with no creation budget are not the
+	// same finding -- and this breakdown is how task 6b's own number (the R2
+	// rows now individually queued, no_confident_match_group_count_unknown)
+	// is read off a gate run at all.
+	byReason := map[string]int{}
+	for _, item := range pending {
+		if item.CaptureID == captureID {
+			byReason[item.Reason]++
+		}
+	}
+	reasonKeys := make([]string, 0, len(byReason))
+	for r := range byReason {
+		reasonKeys = append(reasonKeys, r)
+	}
+	sort.Strings(reasonKeys)
+	for _, r := range reasonKeys {
+		t.Logf("roster gate review queue: %-40s %d", r, byReason[r])
+	}
+
 	t.Logf("roster gate: %d/%d members covered (never_created=%d wrong_group=%d), orphans=%d splits=%d matched=%d created=%d queued=%d name_queued=%d status=%s (game version %s)",
 		covered, len(exp.Members), len(neverCreated), len(wrongGroup), len(orphans), len(splits),
 		res.Matched, res.Created, res.Queued, nameQueued, res.Status, exp.GameVersion)
