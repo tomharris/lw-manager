@@ -311,6 +311,34 @@ func TestIngestVSInfersNoZeroesWhileAnyRowIsUnidentified(t *testing.T) {
 	}
 }
 
+// A capture that parsed no rows has not proved anyone absent either, and the
+// Unidentified == 0 half of the zero-inference guard is no protection here:
+// with nothing parsed, nothing could fail to be identified, so the condition
+// holds VACUOUSLY and every member on the roster is zeroed at 0.90 on the
+// strength of no read at all. That is the same 0.90-on-a-failed-read defect
+// the test above exists for, reached from the other side, and it is worse in
+// one respect: UpsertFact only overwrites on strictly higher confidence, so
+// these zeroes outrank the real values a later ingest produces.
+//
+// A capture can reach ingest in this state — status is set at capture time by
+// the route that proved it reached the list bottom, and a route can prove that
+// on a screen whose rows then fail to segment.
+func TestIngestVSInfersNoZeroesWhenNothingWasParsed(t *testing.T) {
+	h := newVSIngestHarness(t, vsFixture{
+		captureComplete: true,
+		rosterSize:      3,
+		rankedRows:      0,
+	})
+
+	res, err := h.IngestVS(context.Background(), 1, "2026-W33")
+	if err != nil {
+		t.Fatalf("IngestVS: %v", err)
+	}
+	if res.Zeroed != 0 {
+		t.Errorf("zeroed %d members from a capture that parsed no rows, want 0", res.Zeroed)
+	}
+}
+
 // The complement: with every row attributed, the inference is sound again and
 // the absent member is zeroed. Without this, the test above would pass just as
 // well against an implementation that never infers a zero at all.
