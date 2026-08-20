@@ -275,7 +275,8 @@ const (
 // to catch it, and a bad read does not lose a number, it mints a *member*.
 // processRow therefore enforces nameSpec.MinConf on the member-creation branch
 // specifically (see the comment there for why creation and not matching, and
-// for the measurement that says the floor costs nothing at 0.4).
+// for what the floor costs -- three members on capture 1, re-measured, not
+// the zero the first measurement recorded).
 // powerSpec carries no Charset, deliberately -- see task 23's report and
 // parse.go's powerRe doc comment. It used to carry "0123456789.KMB", and
 // that whitelist is exactly what Finding 7 (docs/superpowers/specs/evidence/
@@ -640,6 +641,28 @@ type groupTracker struct {
 // twice -- while a sighting of a row that has not resolved is read again.
 // The cost is bounded by the capture: a row nothing can read is re-read once
 // per photograph of it, which is OCR time and review rows, not wrong facts.
+//
+// WHAT THIS COST AND WHAT THE LIST COST, separated, because they are two
+// changes in one place and the group tallies distinguish them exactly. A
+// re-read does not increment Parsed (see the call site) and a newly collected
+// row does, so Parsed moves only for the list and yielded moves for both:
+//
+//	group  parsed          yielded         expected
+//	R2     33 ->  33       2  ->  18       ?          (unreadable header count)
+//	R3     96 ->  98       83 ->  90       64
+//	R4      5 ->   5       4  ->   4       9
+//	R1     no tally on either run -- collapsed, never a sticky header
+//
+// Parsed +2, both in R3: that is the ENTIRE effect of replacing the monotonic
+// cursor with this list. The cursor skipped any band at or before it,
+// including bands well above it, and capture 1 scrolls backwards past its own
+// cursor from seq 26 on (offset_px 0, the same stretch re-photographed); two
+// such bands are now collected. Yielded +23 against created +2 is matched +21,
+// and at most two of those 21 sit on the two new bands -- the other nineteen
+// are re-reads of rows already collected, sixteen of them in R2, where not one
+// new band was collected at all. The commit that introduced this attributed
+// the +21 to the cursor change; the tallies say otherwise, and they were
+// printed in the same run.
 type collectedRow struct {
 	y        int
 	resolved bool
@@ -654,8 +677,18 @@ type collectedRow struct {
 	// One row per collected row, not per reason: the alternative (suppress
 	// only a REPEAT of the same reason) keeps a second row whenever a later
 	// sighting fails differently, which is more rows describing one piece of
-	// work, which is the thing being avoided. The reason kept is the first
-	// sighting's.
+	// work, which is the thing being avoided.
+	//
+	// The row kept is the FIRST sighting's, not the highest-confidence one,
+	// and that is a choice against the reviewer's convenience. The queued row
+	// carries a reason, a raw text and a screenshot id, and those three
+	// describe one photograph: swapping in a later read's text would show a
+	// reviewer a string that the recorded reason was not derived from and that
+	// the recorded screenshot does not contain. Keeping the best text would
+	// also mean rewriting a queue row already written, which nothing in the
+	// review path does today. If a reviewer wants the clearest photograph, the
+	// answer is a queue row that can name several screenshots, not one whose
+	// three fields come from different frames.
 	reviewed bool
 }
 
@@ -694,6 +727,20 @@ func (gt *groupTracker) seenRow(y int) (int, bool) {
 // unread group a non-zero default, and the flag is load-bearing on its own at
 // two other sites: the review reason processRow queues, and reconciliation's
 // refusal to call such a group complete.
+//
+// ONE ORDERING PROPERTY THIS RELIES ON, and it is the capture's, not the
+// code's. Every MATCH charges the budget too (processRow), so a group whose
+// rows are re-observed enough times exhausts `expected` on re-matches alone:
+// R3 reports yielded=90 against expected=64 on capture 1 and still creates
+// every member it can, only because its first sightings all happen in the
+// forward scan and the duplicates pile up behind them. A capture whose repeat
+// observations interleave with first sightings would spend the budget on
+// re-matches and refuse a real creation as `no_confident_match_group_full`.
+// The empirical check that this is not happening today is that the reason
+// appears zero times in capture 1's review queue -- which is evidence about
+// this capture, not a property of this method. If it ever starts firing on a
+// group that is demonstrably not full, the fix is to charge the budget on
+// DISTINCT members rather than on row events, not to raise `expected`.
 func (gt *groupTracker) canCreate() bool {
 	return gt.countKnown && gt.matchedOrCreated < gt.expected
 }
@@ -1296,14 +1343,39 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 		// seven rows scored below 0.4 and still auto-matched a real member, and
 		// refusing those would lose good data to no purpose.
 		//
-		// Measured before it was enforced: across capture 1's 96 rows, no
-		// non-empty name below this floor reached the creation branch at all
-		// (every sub-0.4 read either matched at 92+ or was empty), so turning
-		// this on costs zero legitimate creations on the only real roster
-		// capture there is. That makes it a guard against a class rather than
-		// a threshold tuned to trim a distribution -- if a future capture
-		// starts losing real members here, the answer is to re-measure the
-		// field's OCR, not to lower this.
+		// WHAT IT COSTS, re-measured, because the first measurement is no
+		// longer true and a stale measured claim in a comment is how this
+		// project's last two defects survived (CLAUDE.md, "A crop verified by
+		// eye is not measured" -- the roster name crop's own comment recorded
+		// an eye-check as authoritative for a milestone).
+		//
+		// The original claim: across capture 1's 96 rows, no non-empty name
+		// below this floor reached the creation branch at all -- every sub-0.4
+		// read either matched at 92+ or was empty -- so enforcement cost zero
+		// legitimate creations. That was accurate when it was made.
+		//
+		// Two things changed underneath it. nameXFrac0 moved out of the status
+		// icon, and the PSM 13 retry landed on this field: empty reads went
+		// from 87 of 331 bands to 0, and a raw-line read that recovers a name
+		// PSM 7 could not see arrives with a confidence PSM 7 never reported.
+		// So reads that used to be empty now reach this branch carrying a low
+		// score. Measured on the same capture with
+		// `make probe-roster PROBE_ARGS=-roster.members`, the floor now costs
+		// THREE members, all of them read correctly:
+		//
+		//   AnthraxVIII     "AnthraxVill"    score 96   confidence 0.24
+		//   Recon13Bravo    "Recon13Bravo"   score 100  confidence 0.26
+		//   IamIronman2025  "lamironman2025" score  98  confidence 0.00
+		//
+		// The floor stays. Admitting a 0.00-confidence read as grounds to MINT
+		// a member is exactly what it exists to prevent, and the three above
+		// are queued rather than lost -- a queued row is recoverable, a member
+		// minted from noise is not (the asymmetry CLAUDE.md states for
+		// AutoAccept applies here for the same reason). What the number
+		// obliges is a measurement of the whole confidence distribution on
+		// this field, not a nudge to clear these three: 0.24 and 0.26 are not
+		// near-misses of 0.40, and a floor moved far enough to admit them
+		// admits a great deal else.
 		if !nameRes.Accepted(nameSpec) {
 			return run.queueNameReview(ctx, i, screenshotID, band, nameRes.Text, candidates, "low_confidence_name", row.NameConf, alreadyReviewed)
 		}

@@ -478,6 +478,15 @@ func reportRosterDetail(t *testing.T, reads []rosterBandRead, truth rosterTruth)
 //
 // The distinction between CREATABLE and LOW-CONF is the whole reason the mode
 // carries confidence, and it is not visible from any band-keyed count.
+//
+// One way it OVER-counts, stated because CREATABLE is the number a handover
+// leans on: each member is given its best band independently, so one band can
+// be the best read for two members and both are credited with it. Production
+// cannot do that -- a band resolves to at most one member -- so CREATABLE is
+// an upper bound on what the name field could deliver, not a forecast. It is
+// still the right shape for the question this mode answers ("could ANY
+// photograph of this member have produced them?"), and the over-count is
+// visible in the per-member lines: two members naming the same frame and y.
 func reportRosterMembers(t *testing.T, reads []rosterBandRead, truth rosterTruth) {
 	t.Helper()
 
@@ -1734,6 +1743,10 @@ func reportRosterHeaderThreshold(ctx context.Context, t *testing.T, engine ocr.O
 // so vision.Preprocess's own Grayscale step becomes a no-op and the rest of
 // the chain runs on that channel instead of on luma.
 //
+// Only red and blue are read through it: the green shape uses the shipped
+// vision.GreenChannel, so the mode measures production rather than a parallel
+// implementation of the same idea.
+//
 // It exists for one measured question. The status column renders two states:
 // a grey elapsed time and a green "Online", and lastActiveOptions' own comment
 // records every "Online" row reading as garbage ("oo", "ae") under every shape
@@ -1778,6 +1791,21 @@ type lastActiveCounts struct {
 	// last_active only advances while a capture runs, so a lower value cannot
 	// be the clock moving and is a confident wrong number -- the outcome this
 	// field's retry has to be measured against, not merely its parse rate.
+	//
+	// IT IS STRUCTURALLY UNREACHABLE FOR THE ONLINE CLASS, which is the class
+	// the retry exists to serve. An Online row's transcribed value is 0 hours,
+	// the minimum, so `got < wantHours` can never hold -- a retry reading
+	// "3m ago" on a row that says Online would be counted as parsed and not as
+	// wrong. So `wrong 0` on the online line is a tautology and must never be
+	// quoted as evidence about the retry.
+	//
+	// The online class's guard is EXACT against PARSED on the same line: an
+	// Online row's only correct read is 0 hours, so exact == parsed means every
+	// parse was "Online" and nothing was manufactured. It is not folded into
+	// Wrong because the two are not the same claim -- a member online at seq 1
+	// can genuinely be "5m ago" by seq 60, so a non-zero read of an Online row
+	// is not by itself wrong, only unverifiable. reportRosterLastActive prints
+	// the comparison explicitly rather than leaving it to be spotted.
 	Wrong int
 }
 
@@ -1811,7 +1839,12 @@ func reportRosterLastActive(ctx context.Context, t *testing.T, engine ocr.OCREng
 	t.Helper()
 
 	ing := &Ingester{engine: engine}
-	green := func(i image.Image) image.Image { return channelImage{i, 1} }
+	// vision.GreenChannel, not channelImage{i, 1}: the mode must measure the
+	// implementation that ships, or a drift between the two turns this
+	// instrument into a report about a parallel green channel nobody runs.
+	// channelImage still exists below because red and blue have no shipped
+	// counterpart and the sweep needs all three.
+	green := vision.GreenChannel
 	// The default four are the shipped shape and the three shapes
 	// -roster.lasweep put at the top of its grid over the online bands. They
 	// are re-measured here over BOTH classes, because the sweep skips the
@@ -1987,11 +2020,18 @@ func reportRosterLastActive(ctx context.Context, t *testing.T, engine ocr.OCREng
 	}
 
 	t.Log("  last_active, by what the transcription says the row shows:")
+	t.Log("  NOTE: `wrong` is an ELAPSED-class measure. An online row's transcribed value is 0")
+	t.Log("  hours, the minimum, so `wrong` cannot fire for it however badly a shape reads it.")
+	t.Log("  The online class's guard is exact == parsed on its own line.")
 	for _, sh := range reportOrder {
 		for _, class := range []string{"online", "elapsed"} {
 			c := byShape[sh.label][class]
 			t.Logf("    %-22s %-8s bands %3d  parsed %3d  exact %3d  wrong %3d  empty %3d",
 				sh.label, class, c.Bands, c.Parsed, c.Exact, c.Wrong, c.Empty)
+		}
+		if c := byShape[sh.label]["online"]; c.Parsed != c.Exact {
+			t.Logf("    %-22s ONLINE GUARD FAILED: %d parsed but only %d exact -- %d online rows parsed to something other than 0 hours",
+				sh.label, c.Parsed, c.Exact, c.Parsed-c.Exact)
 		}
 	}
 	if *rosterDetail {
@@ -2011,7 +2051,7 @@ func reportRosterLastActive(ctx context.Context, t *testing.T, engine ocr.OCREng
 // believed to be grey text, and "Online" is not grey text. Options fitted for
 // one condition are not evidence about another.
 func lastActiveSweepShapes() []lastActiveShape {
-	greenCh := func(i image.Image) image.Image { return channelImage{i, 1} }
+	greenCh := vision.GreenChannel
 	var out []lastActiveShape
 	for _, wrap := range []struct {
 		label string
