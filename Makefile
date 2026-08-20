@@ -74,6 +74,14 @@ gate-m4:
 # `go test` runs each package binary in its own source directory, so the fs
 # backend's relative ./data/blobs would resolve under internal/ingest and find
 # nothing. ?= so an explicitly configured store still wins.
+#
+# It does not pass, and is committed failing on purpose: 47/75 covered
+# (never_created 19, wrong_group 9), orphans 5, splits 0 as of 2026-08-20.
+# R2's group header count is unread on this capture at any geometry,
+# preprocessing shape, threshold or page-segmentation mode measured, and the
+# count is what gates member creation, so R2's 11 members cannot be created
+# at all — coverage caps at 64/75 = 85.3% against the 0.95 condition. See
+# CLAUDE.md and README.md for the full reasoning.
 .PHONY: gate-roster
 gate-roster: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
 gate-roster:
