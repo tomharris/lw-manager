@@ -238,30 +238,58 @@ hard zero rather than a percentage.
 `gate-m4` has no analogue for this condition because it cannot happen there:
 the VS route matches into a closed set and the roster route *creates*.
 
-**3. Nothing dropped silently.** Every transcribed member not created produced a
-`review_queue` row naming them. This is `gate-m4`'s condition 2 unchanged, and
-it is what makes this a gate rather than an accuracy score — a pipeline that
-quietly drops the rows it finds hard scores well on condition 1 alone.
+**3. Nothing dropped silently.** Every transcribed member that was never
+created produced a `review_queue` row under a **name-class** reason —
+`unreadable_name`, `ambiguous_name_match`, `low_confidence_name` or
+`no_confident_match_group_full`.
+
+Both halves of that sentence are load-bearing and the first draft got both
+wrong. It counted **every** pending review for the capture, and `IngestRoster`
+queues up to three *field-level* reviews (`unparseable_power`,
+`low_confidence_level`, …) for each row that matched **successfully** — so 224
+reviews against ~120 rows was almost entirely traffic with no relationship to a
+missing member, and the condition could not fail. And it counted wrong-group
+members among the missing, which is unaccountable in the other direction: a
+misattributed row writes its facts and queues no name review at all, by
+construction.
+
+Scoped correctly, the condition went red on the first capture it was pointed
+at: 25 members never created against 13 name-class reviews, so **12 members
+were lost with nothing queued for them under any name reason**. That is the
+silent drop this milestone exists to prevent, and it read green until the
+counting rule was fixed.
 
 **4. Reconciliation reports truthfully.** Not "the capture reaches `complete`",
-but, concretely, all three of:
+but, concretely:
 
 - for every group in the fixture, `RosterResult.PerGroup[rank].Expected` equals
-  the group's transcribed total, or that group is absent from `PerGroup`
-  entirely and a `review_queue` row explains why;
-- `PerGroup[rank]`'s matched-or-created count equals the number of that group's
-  transcribed members actually present in `members`; and
-- `Status` is `complete` if and only if every group's tally is whole.
+  the group's transcribed header total;
+- a group that produced **no tally at all** is reported, unconditionally;
+- `Status` is `partial` if either a group fell short of its own expected count
+  **or** the alliance-total check failed — both halves of `IngestRoster`'s real
+  rule, not just the first.
 
 So a `partial` capture that correctly reports `R2: 0 of 11` **passes**; one
 claiming `complete` while a group is missing **fails**, and so does one whose
 `Expected` disagrees with the transcribed header.
 
-This inverts `gate-m4`'s condition 3 on purpose. Reconciliation marks any
-group-count mismatch `partial`, so a roster gate demanding `complete` cannot go
-green until the route is perfect, and a gate that cannot go green is not a
-ratchet. Reconciliation is a *reporting* mechanism; the useful thing to assert
-is that its report is honest.
+**What this condition deliberately does not assert, and why.** The first draft
+also compared each group's `MatchedOrCreated` against the number of that
+group's transcribed members found in `members`. It looked like a reconciliation
+check and was not one. `MatchedOrCreated` counts **row events** — including a
+row that re-matched a member created earlier in the same run, and a row that
+minted an orphan — while the fixture knows only **members**. On the first
+baseline R3 reported 83 against 45 transcribed members found, and the 38-row
+gap decomposed exactly as 26 duplicate re-matches + 7 orphans + 5 R2 members
+created under R3. Reconciliation had told the truth; the gate printed
+`reconciliation does not describe what was parsed` and named the wrong culprit.
+
+That is this repo's own "two aggregates side by side are not a causal claim",
+committed by the gate built to enforce it. The check was deleted rather than
+rescoped, because the gate has no independent row count to compare against and
+a check that can only be green once conditions 1 and 2 already are adds no
+signal. The attribution failure it was groping for is reported by condition 1,
+which names the group a member was actually created in.
 
 ### What the gate will do on its first run
 
