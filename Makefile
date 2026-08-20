@@ -198,8 +198,10 @@ probe-assign:
 #                       believing a clean badge sweep. Implies -roster.badge.
 #   -roster.header      the sticky group header's raw text beside
 #                       parseGroupHeader's verdict, so a refusal names its own
-#                       cause. A header that will not parse drops the WHOLE
-#                       frame before any row is read.
+#                       cause. A header that will not parse no longer drops the
+#                       frame (task 6b): its rows are still attributed from the
+#                       rank badge, so a refusal costs the creation budget, not
+#                       the frame.
 #   -roster.headerink   the header's column histogram, printed at full frame
 #                       width rather than the name field's 0.10-0.45 window,
 #                       because the edge under suspicion was X2=0.97. Read the

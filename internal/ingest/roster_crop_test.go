@@ -162,9 +162,10 @@ func loadRosterBandFixture(t *testing.T) image.Image {
 // The defect this pins: groupHeaderRegion.X2 was 0.97 (x=698 of a 720px
 // frame), which is past the chevron button AND past the header card's own
 // right edge, so every header read ended in a fragment of the button --
-// "10/64 yi]", "2/9)", "1/11 VN iy]". A header that will not parse makes
-// IngestRoster drop the whole frame before SegmentRows is ever called, so this
-// edge costs frames rather than rows.
+// "10/64 yi]", "2/9)", "1/11 VN iy]". A header that will not parse no longer
+// drops the frame (task 6b changed that): its rows are still read and
+// attributed from the rank badge, so this edge costs the creation budget, not
+// the frame.
 //
 // Measured with `make probe-roster PROBE_ARGS=-roster.headerink`, an ink
 // histogram over 61 frames x 42 scanlines, and re-measured at four sensitivity

@@ -1095,8 +1095,9 @@ var headerRankToken = regexp.MustCompile(`R\d`)
 // reportRosterHeader reads groupHeaderRegion on every frame and reports the
 // raw text, what parseGroupHeader made of it, and why it refused.
 //
-// A header that will not parse makes IngestRoster `continue` before
-// SegmentRows is ever called, so the whole frame is dropped. That is how the
+// A header that will not parse no longer makes IngestRoster `continue` before
+// SegmentRows is called (task 6b): its rows are still read and attributed
+// from the rank badge, with no creation budget to spend. That is how the
 // chevron-in-the-crop defect was found: the review queue's raw text named it,
 // "R2) I'm Alright VN iy]" keeping the group name and losing the N/M count
 // while X2 sat at 0.97, past the collapse chevron. Moving the edge into the
