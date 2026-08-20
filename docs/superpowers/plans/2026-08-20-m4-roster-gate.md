@@ -440,8 +440,9 @@ game_version: "0.0.0"
 alliance:
   tag: "TEST"
   name: "Shape Fixture"
-  # 3 grouped members + 1 leader in the banner = 4.
-  member_count: 4
+  # Alpha 2 + Beta 1 + Gamma 2 = 5 grouped, + 1 leader in the banner = 6.
+  # Only 3 are transcribed as members: Gamma was never expanded.
+  member_count: 6
   leader: "TheLeader"
 
 frames:
@@ -459,11 +460,13 @@ groups:
     name: "Beta"
     total: 1
     expanded: true
-  # A collapsed group: its header is transcribed, its members are not, because
-  # the capture holds no rows for them. This is R1 Danger Zone's shape.
+  # A collapsed group: its header is transcribed and states a real size, its
+  # members are not transcribed, because the capture holds no rows for them.
+  # This is R1 Danger Zone's shape exactly -- R1's header reads "0/12", where
+  # the 0 is how many are online and the 12 is the group's size.
   - rank: "R2"
     name: "Gamma"
-    total: 0
+    total: 2
     expanded: false
 
 members:
@@ -499,7 +502,7 @@ Change Beta's `total: 1` to `total: 2` and re-run. Expected: FAIL naming the sum
 
 Then set Gamma's `expanded: false` to `true` and add a member under `R2`; re-run and confirm it PASSES, then set it back to `false` and confirm the same fixture now FAILS with `which this capture never expanded`. Both guards are the transcription's only self-checks, and a guard that cannot fail is worse than no guard.
 
-Note the collapsed group carries `total: 0` here only to keep the shape fixture's arithmetic simple. **In the real fixture R1 carries its true total of 12** — a collapsed group's header is legible and its count is ground truth; what it lacks is rows.
+The collapsed group carries a real `total`, exactly as R1 does. A group header states its size whether or not the group is open — R1's reads `0/12`, where the 0 is the online count and the 12 is the size — so `total` stays strictly positive for every group and the guard is `<= 0`. What a collapsed group lacks is rows, not a count.
 
 - [ ] **Step 6: Write the fixture README**
 
