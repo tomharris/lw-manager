@@ -20,6 +20,13 @@ func TestConfusableReadsAutoAccept(t *testing.T) {
 		{"digit-eight and S across a space", "Mar 89", "Mars9", 80},
 		{"digit-six and G, digit-eight and S", "19GENERALS68", "19GENERALSGS", 83},
 		{"roman numerals against lowercase L", "AnthraxVIII", "AnthraxVIIl", 90},
+		// Capture 1, the roster route: two members whose names end in the
+		// digit 1, read as a lowercase t on four separate row bands.
+		// fixtures/m4rostergate/expected.yaml calls both out by name --
+		// "Bwiz21 and Delio1 end in the digit 1" -- because the transcriber
+		// checked them at 8x against the engine's disagreement.
+		{"digit-one and lowercase T at the end of a short name", "Bwiz21", "Bwiz2t", 83},
+		{"the same, on a six-character name", "Delio1", "Deliot", 83},
 		{"a short name where one edit is fatal", "JPA9", "JPAS", 75},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -44,6 +51,11 @@ func TestConfusableScoringStillSeparatesDifferentNames(t *testing.T) {
 		{"Beangraff", "Bujangann"},   // both real members of this alliance
 		{"Recon13Bravo", "ZeroOrca"}, // ditto
 		{"MICHELL", "Nichoj"},        // ditto: differ by more than a glyph
+		// The 1/t pair's own separation check: "Delio1" and "Deliot" are the
+		// same member, but a name that differs from another by a t/1 AND
+		// anything else must still be refused.
+		{"Delio1", "Deliot2"},
+		{"Bwiz21", "Bwiz23"},
 	} {
 		if got := TokenSetRatio(tc.a, tc.b); got >= AutoAccept {
 			t.Errorf("TokenSetRatio(%q, %q) = %d, want < %d — distinct members must never auto-accept",
