@@ -310,3 +310,44 @@ func TestParseGroupHeaderAcceptsEveryRealHeader(t *testing.T) {
 		}
 	}
 }
+
+// TestParseGroupHeaderRefusesChevronBleed is the chevron-bleed corpus: every
+// distinct string groupHeaderRegion actually handed parseGroupHeader on the 22
+// frames of capture 1 that it dropped, taken verbatim from
+// `make probe-roster PROBE_ARGS=-roster.header` (and from the review_queue rows
+// the same reads produced on the 2026-08-19 re-ingest). Every one keeps the
+// group name and loses the N/M count, because the region's right edge used to
+// sit at X2=0.97 -- x=698 of a 720px frame -- with the collapse chevron
+// (x=651..683) entirely inside it.
+//
+// They are pinned as REFUSALS, not as things to be parsed, and this test must
+// go on passing now that the crop has moved: the strings are what a chevron
+// inside the crop produces, and the fix is that the crop no longer contains
+// one. Relaxing the parser to accept them would be the wrong fix and an
+// actively dangerous one -- task 24's review showed a fabricated count of 6
+// against a real 64-member group stops the other 58 members being created at
+// all (see parseGroupHeader's doc comment on N <= M).
+//
+// It is untagged deliberately, so real chevron bleed survives in `make test`
+// with no device, no Docker, no blob store and no tesseract.
+// TestParseGroupHeaderToleratesBadgeAndChevronNoise above is the other half of
+// the same rule -- a header that does carry its count parses despite the same
+// noise -- so what is pinned here is the absence of a count rather than a
+// blanket refusal of anything the chevron touched.
+func TestParseGroupHeaderRefusesChevronBleed(t *testing.T) {
+	for _, raw := range []string{
+		"R2) I'm Alright VN iy]",  // x8 of the 22
+		"iR2) I'm Alright VN iy]", // x4
+		"iR2) I'm Alright Vn WY",  // x3
+		"R2) I'm Alright VN iv]",  // x2
+		"R2) I'm Alright VN iy}",
+		"R2) I'm Alright VW iv]",
+		"R2) I'm Alright Vn WY",
+		"R2) I'm Alright Vu iy]",
+		"[R4) This Is It ap", // the one R4 frame; "2/9" gone entirely
+	} {
+		if _, _, err := parseGroupHeader(raw); !errors.Is(err, ErrUnparseable) {
+			t.Errorf("parseGroupHeader(%q) accepted a header with no count; want ErrUnparseable", raw)
+		}
+	}
+}

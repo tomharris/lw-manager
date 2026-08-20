@@ -155,3 +155,115 @@ func loadRosterBandFixture(t *testing.T) image.Image {
 	}
 	return img
 }
+
+// The sticky group header's crop has the mirror-image problem one field over:
+// its RIGHT edge, and a collapse chevron instead of a status icon.
+//
+// The defect this pins: groupHeaderRegion.X2 was 0.97 (x=698 of a 720px
+// frame), which is past the chevron button AND past the header card's own
+// right edge, so every header read ended in a fragment of the button --
+// "10/64 yi]", "2/9)", "1/11 VN iy]". A header that will not parse makes
+// IngestRoster drop the whole frame before SegmentRows is ever called, so this
+// edge costs frames rather than rows.
+//
+// Measured with `make probe-roster PROBE_ARGS=-roster.headerink`, an ink
+// histogram over 61 frames x 42 scanlines, and re-measured at four sensitivity
+// thresholds before the edge was placed:
+//
+//	x=565..634  the N/M count
+//	x=635       antialiasing tail  ink 0 at threshold 90, 199 at threshold 5
+//	x=636..650  GUTTER, 15 columns, ink 0 at every threshold down to 5
+//	x=651..683  the collapse chevron button
+//
+// Fifteen columns of literally-background pixels is a plateau rather than a
+// spike, which is what CLAUDE.md asks for before an edge is placed on a
+// histogram.
+const (
+	// groupHeaderChevronX0/X1 bound the chevron button, and are used only by
+	// the guard that stops this test passing vacuously on a header that has no
+	// chevron in it -- a collapsed group, a future UI without the button, or a
+	// fixture cropped short.
+	groupHeaderChevronX0, groupHeaderChevronX1 = 651, 684
+
+	// groupHeaderCountX0/X1 bound the N/M count, for the other guard: an edge
+	// that clears the chevron proves nothing on a header whose count is
+	// missing, because there would be nothing left for it to clip.
+	groupHeaderCountX0, groupHeaderCountX1 = 565, 635
+
+	// groupHeaderEdgeColumns is how many columns either side of the crop's
+	// right edge must look like gutter. Four, against a measured plateau of
+	// fifteen: enough to catch an edge that has drifted onto either neighbour,
+	// with room for the edge to sit anywhere sane inside the plateau.
+	groupHeaderEdgeColumns = 4
+)
+
+func TestGroupHeaderCropEndsInTheGutterLeftOfTheChevron(t *testing.T) {
+	img := loadRosterGroupHeaderFixture(t)
+	b := img.Bounds()
+	y0, y1 := b.Min.Y, b.Max.Y
+
+	// Guards first, both of them, for the reason the name crop's guard exists:
+	// a test that cannot fail is worse than no test, and this one would pass
+	// on a header band holding neither of the two things the edge sits
+	// between.
+	if got := rosterBandInk(img, groupHeaderChevronX0, groupHeaderChevronX1, y0, y1); got <= maxGutterInk {
+		t.Fatalf("fixture guard: expected the collapse chevron to carry ink in x=%d..%d, got %d;"+
+			" this fixture no longer exercises the defect and the assertion below proves nothing",
+			groupHeaderChevronX0, groupHeaderChevronX1, got)
+	}
+	if got := rosterBandInk(img, groupHeaderCountX0, groupHeaderCountX1, y0, y1); got <= maxGutterInk {
+		t.Fatalf("fixture guard: expected the N/M count to carry ink in x=%d..%d, got %d;"+
+			" an edge that clears the chevron says nothing on a header with no count to clip",
+			groupHeaderCountX0, groupHeaderCountX1, got)
+	}
+
+	x2 := int(groupHeaderRegion.X2 * float64(b.Dx()))
+	// Both sides of the edge, which is what makes this one assertion catch
+	// both failure directions: ink to the left means the edge is cutting the
+	// count's last digit, ink to the right means the chevron (or, at the old
+	// 0.97, the page background beyond the card) is inside the crop.
+	if got := rosterBandInk(img, x2-groupHeaderEdgeColumns, x2+groupHeaderEdgeColumns, y0, y1); got > maxGutterInk {
+		t.Errorf("group header crop ends at x=%d (X2=%.4f) carrying %d ink in the %d columns either side, want <= %d:"+
+			" the right edge is on the count or on the collapse chevron, not in the gutter between them."+
+			" Re-measure with `make probe-roster PROBE_ARGS=-roster.headerink` before moving it.",
+			x2, groupHeaderRegion.X2, got, groupHeaderEdgeColumns, maxGutterInk)
+	}
+	// And the containment the ink check cannot state on its own: an edge far
+	// enough right to clear the chevron entirely would also sit in flat page
+	// background beyond the card, which is ink-free against that scanline's
+	// median only if the card no longer dominates the row.
+	if x2 >= groupHeaderChevronX0 {
+		t.Errorf("group header crop ends at x=%d (X2=%.4f), at or past the chevron's first column x=%d",
+			x2, groupHeaderRegion.X2, groupHeaderChevronX0)
+	}
+}
+
+// loadRosterGroupHeaderFixture returns one real sticky group header band of
+// capture 1 (frame seq 2, sha256 6f07eb91...) -- full frame width, exactly the
+// rows groupHeaderRegion's Y fractions select on a 1600px frame, carrying
+// "(R3) Footloose", the count "10/64" and the collapse chevron.
+func loadRosterGroupHeaderFixture(t *testing.T) image.Image {
+	t.Helper()
+
+	f, err := os.Open("testdata/roster_group_header.png")
+	if err != nil {
+		t.Fatalf("opening the group-header fixture: %v", err)
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		t.Fatalf("decoding the group-header fixture: %v", err)
+	}
+	// The X fractions are fractions of the FULL FRAME width, so a fixture of
+	// another width would put every column boundary somewhere else.
+	if got := img.Bounds().Dx(); got != 720 {
+		t.Fatalf("fixture is %dpx wide, want the capture's 720; the crop fractions are"+
+			" fractions of the frame width and mean nothing against another one", got)
+	}
+	wantH := int(groupHeaderRegion.Y2*1600) - int(groupHeaderRegion.Y1*1600)
+	if got := img.Bounds().Dy(); got != wantH {
+		t.Fatalf("fixture is %dpx tall, want the %dpx groupHeaderRegion selects on a 1600px frame;"+
+			" a taller band would drag rows of the member list into the ink counts", got, wantH)
+	}
+	return img
+}

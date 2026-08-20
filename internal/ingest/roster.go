@@ -72,7 +72,50 @@ const memberRowPitch = 112
 // The two constants are consistent by measurement, not by assumption:
 // memberListRegion.Y1=0.44 is y=704, which clears this band's bottom edge
 // (697) by 7px. Whoever moves either one next should keep that clearance.
-var groupHeaderRegion = transport.Rect{X1: 0.03, Y1: 0.409, X2: 0.97, Y2: 0.435}
+//
+// X2 was 0.97 -- x=698 of a 720px frame -- which is past the collapse chevron
+// (x=651..683) AND past the header card's own right edge (x=691), so every
+// header read ended in a fragment of the chevron button: "10/64 yi]", "2/9)",
+// "10/64) y]". It is the third crop in this milestone placed where a human
+// reading the rectangle still sees the right answer, after the roster name
+// crop's status icon and the VS name crop's avatar, and like both of those it
+// is now placed off an ink profile (`make probe-roster
+// PROBE_ARGS=-roster.headerink`, 61 frames x 42 scanlines = 2562 scanlines):
+//
+//	x=565..634  the N/M count               ink 117..1257
+//	x=634       the count's last column      ink 640
+//	x=635       antialiasing tail            ink 0 at threshold 90, 199 at threshold 5
+//	x=636..650  GUTTER, 15 columns           ink 0 at EVERY threshold down to 5
+//	x=642       where X2 sits now (0.8917)
+//	x=651..683  the collapse chevron button  ink 1829..2155
+//
+// A plateau, not a spike: 15 columns carrying literally no deviation from the
+// card's own colour on any of the 2562 scanlines, which is the shape CLAUDE.md
+// requires before an edge is placed. Every value inside it measures identically
+// (`-roster.headersweep`: 0.8819, 0.8917 and 0.9028 all read 40 frames with 40
+// correct totals and no wrong one), so 0.8917 is the plateau's midpoint rather
+// than a fitted number -- the margin is 8px from the count and 9px from the
+// chevron either way.
+//
+// WHAT THIS DID NOT FIX, recorded because the obvious reading of the change is
+// wrong. It was expected to recover 22 dropped frames; it recovers ONE. The
+// chevron was never why R2's 21 frames failed. Their count is "1/11", and
+// tesseract classifies that token as "VN", "VL", "Wu" or "U/L" -- a token of
+// near-identical vertical bars -- through every rectangle, preprocessing shape,
+// threshold setting, page-segmentation mode and character whitelist measured
+// (`-roster.headersweep`, `-roster.headeropts`, `-roster.headerthresh`: 12
+// geometries, 48 shapes, 80 threshold settings, 3 PSMs; and the same failure
+// reproduces calling tesseract directly on the crop, outside this pipeline).
+// That is a classifier failure on the glyphs themselves, not a crop defect and
+// not a contrast defect, and no move of this rectangle can reach it.
+//
+// The one frame it does recover is capture 1's seq 1, and recovering it made
+// the roster gate's coverage WORSE, 45/75 to 43/75. Not a defect in this
+// constant: seq 1's sticky header is R4 "This Is It 2/9" COLLAPSED, with R3's
+// own header and R3's rows directly beneath it, so the frame's rows belong to
+// a different group than its sticky header names. See the groupKey assignment
+// in IngestRoster for what that costs and why it is not fixed here.
+var groupHeaderRegion = transport.Rect{X1: 0.03, Y1: 0.409, X2: 0.8917, Y2: 0.435}
 
 // groupHeaderOptions is the preprocessing task 21's harness measured for
 // groupHeaderRegion: grayscale and upscale(3), nothing else. Across the same
@@ -83,6 +126,26 @@ var groupHeaderRegion = transport.Rect{X1: 0.03, Y1: 0.409, X2: 0.97, Y2: 0.435}
 // alone tied for the best score measured (14/18) without depending on that
 // interaction, so it is the one used here rather than a threshold variant
 // that happened to tie on this sample.
+//
+// Re-measured through the MOVED rectangle above rather than re-reasoned about,
+// because CLAUDE.md is explicit that options measured through the wrong
+// rectangle are not evidence about the right one -- and the sentence above was
+// measured with the chevron still in the crop. `make probe-roster
+// PROBE_ARGS=-roster.headeropts`, the same eight-shape x three-upscale grid
+// every other field in this package is fitted on, over 61 real frames scored
+// against the transcribed group totals:
+//
+//	gray x3        40 parsed, 40 correct, 0 wrong   <- this setting
+//	gray+inv x3    40 parsed, 40 correct, 0 wrong
+//	gray x4        40 parsed, 39 correct, 1 WRONG
+//	gray+thr x3    37 parsed, 37 correct, 0 wrong
+//	gray+eq x3      0 parsed
+//
+// So the shape is unchanged and the equalize finding still holds through the
+// new rectangle. gray+inv x3 ties on every column; gray x3 is kept because it
+// is what shipped and a tie is not a reason to move. `-roster.headerthresh`
+// sweeps AdaptiveThreshold's block size and C, the two knobs that grid never
+// varies, across 80 settings: none beats 40 either.
 var groupHeaderOptions = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 3}
 
 // Field sub-rects, as fractions of the full frame width (X) and of one row
@@ -658,6 +721,28 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 			}
 			continue
 		}
+		// Every row on this frame is attributed to the rank its STICKY HEADER
+		// names, and that is wrong on a frame whose sticky group is collapsed.
+		// Capture 1's seq 1 is the case: the sticky band reads R4 "This Is It
+		// 2/9" with the UP chevron, R3's own header sits immediately below it
+		// inside memberListRegion, and R3's rows follow. Four transcribed R3
+		// members (Kain445, K4RAZOR1, KIRCHO, ΔKΔŽΔ) are created under R4 by
+		// this line, two of which the later R3 frames used to create
+		// correctly -- creation is first-writer-wins, so a wrong first frame
+		// is not repaired by a right later one.
+		//
+		// It went unseen while groupHeaderRegion swallowed the collapse
+		// chevron, because seq 1's header did not parse and the frame was
+		// dropped whole before reaching here. Fixing the crop did not cause
+		// this; it stopped hiding it.
+		//
+		// The fix is a chevron-polarity read, not a change here: a collapsed
+		// sticky group has no rows on its own frame, so such a frame should
+		// contribute its tally and no members at all. That needs a template
+		// and a measurement of its own (the chevron button is at x=651..683 of
+		// the header band, already measured by
+		// `make probe-roster PROBE_ARGS=-roster.headerink`), and guessing
+		// without one would be the blind tap CLAUDE.md's invariant #3 forbids.
 		groupKey := rankRes.Rank
 		// Rank is not OCR-derived, so invariant #5's confidence-on-every-fact
 		// rule does not literally reach it and members.Rank has nowhere to
