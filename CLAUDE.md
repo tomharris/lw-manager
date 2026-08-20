@@ -619,6 +619,71 @@ Three consequences worth keeping:
 - `internal/ocr/testdata/psm7_layout_blind.png` is the whole defect in 2KB,
   and its test is a canary: if PSM 7 ever reads it, the retry can be revisited.
 
+### Sometimes it is the classifier, not the layout — and then PSM cannot help
+
+The section above has an obvious sibling that is a different defect and needs
+a different response. There, layout analysis fails before recognition runs,
+and a PSM that bypasses it recovers the crop. Here recognition itself fails on
+the glyphs, and no page-segmentation mode is the stage at fault.
+
+The instance: capture 1's R2 group header reads `1/11`, and tesseract
+classifies that token as `VN`, `VL`, `Wu`, `U/L`, `{i` or `fit` — a run of
+near-identical vertical strokes with a slash in it. It survives 12 geometries,
+24 preprocessing shapes through **each** of two rectangles, 40
+AdaptiveThreshold block/C settings through each, PSM 8/11/13, and a digit
+whitelist. 21 of that capture's 61 frames are affected, and it **reproduces
+outside `internal/ingest`'s read path entirely**, on `vision.Preprocess` plus
+the tesseract binary with none of this package involved — the reproducer
+invocation is in `groupHeaderRegion`'s doc comment in
+`internal/ingest/roster.go`, and every mode named above is committed
+(`make probe-roster PROBE_ARGS=-roster.headeropts`, `-roster.headersweep`,
+`-roster.headerthresh`) because a claim that closes off a line of work has to
+be contestable.
+
+Two things follow. First, **a run of vertical strokes may need a non-OCR
+read.** That is why rank comes from `matchRankBadge`'s NCC against embedded
+badge templates (`internal/ingest/rankbadge.go`) and not from OCR of the same
+pixels. Second, before spending another session on preprocessing, establish
+which stage is failing: a crop that reads under *some* PSM is a layout
+problem, and a crop that reads under none of them, at any threshold, through
+two rectangles, is not going to be fixed by a thirteenth setting.
+
+### A charset whitelist can fabricate a value, not just fail to read one
+
+A character whitelist is the obvious reach on a numeric field. It is rejected
+on three of this project's fields, each time on measurement rather than on
+argument, with an assertion each in `internal/ingest/charset_test.go` so it
+stays rejected:
+
+- `powerSpec` — a charset was measured laundering **33 of 53** real rows into
+  a wrong value.
+- `vsPointsSpec` — `"0123456789,"` turned 6 of 11 real bands into a parseable
+  number out of text that was not a number.
+- `groupHeaderSpec` — `"0123456789/"` turned four unreadable R2 headers into a
+  count-shaped token, `"2 1/1"` on three frames and `"82 1/1"` on a fourth,
+  each parsing to a total of **1** for a real group of 11.
+
+The rule that makes this predictable rather than a run of bad luck: **a
+whitelist is safe only where every character it removes would also have been
+absent from a correct read.** Strip a character a correct read never contains
+and there is nothing legitimate to launder; strip one it can contain and the
+whitelist has to put that ink somewhere, so it reclassifies it as an allowed
+character. `levelSpec` and `lastActiveSpec` keep their whitelists on exactly
+that basis.
+
+The superset property is necessary and **not sufficient**, which is the part
+that caught `vsPointsSpec`: it reasons about the text a correct read produces
+and not about what else the *crop* can contain. `"0123456789,"` is a superset
+of every character `101,286,241` is built from, and it still laundered,
+because that crop sits against the alliance-name line and can catch it.
+
+The group header case is the worst of the three and is worth keeping
+specifically, because the fabricated value was **coherent**: `1/1` passes
+`N <= M`, and `total` feeds `groupTracker.expected`, which gates member
+creation — so a fabricated 1 silently stops the other ten members of the group
+being created. There is no downstream check that can catch it. Failing to read
+is recoverable through the review queue; fabricating is not.
+
 ### OCR reads the glyph, not the codepoint
 
 Two consequences that look alike and need opposite fixes.
@@ -740,12 +805,17 @@ fixtures/       recorded screenshots for device-free tests
   so nothing about a group is safe to key on. `roster_capture` therefore
   never asks which group it is looking at: it opens whichever
   `chevron_collapsed` anchor `Match` finds next and stops once none remain,
-  and rank attribution happens at ingest, from OCR of each frame's own
-  sticky header, rather than a label the task would otherwise have to
-  assert. This is the clearest case in the project of something a single
-  capture session cannot reveal — one session shows a self-consistent world,
-  and only two sessions weeks apart show what actually moves, which is the
-  entire reason this project exists.
+  and rank attribution happens at ingest, from each frame's own rank badge,
+  rather than a label the task would otherwise have to assert. The badge is
+  read by NCC against embedded templates (`internal/ingest/rankbadge.go`),
+  **not** by OCR — its outlined glyphs were ruled out for OCR under every PSM
+  and charset tried, and `groupKey` is `matchRankBadge`'s rank. The sticky
+  header is still OCR'd, but for the group's name and `N/M` count, which is a
+  separate field with its own failure mode (see "Sometimes it is the
+  classifier, not the layout"). This is the clearest case in the project of
+  something a single capture session cannot reveal — one session shows a
+  self-consistent world, and only two sessions weeks apart show what actually
+  moves, which is the entire reason this project exists.
 
 ## Operational reality
 
