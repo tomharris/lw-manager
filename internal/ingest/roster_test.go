@@ -1177,6 +1177,117 @@ func TestIngestRosterRefusesToCallACountlessGroupComplete(t *testing.T) {
 	}
 }
 
+// The budget is the GROUP's, not the frame's: once any frame of a group has
+// read its count, a later frame whose header fails still creates. Capture 1
+// cannot tell the two readings apart -- all 21 of its R2 headers fail, so
+// "this frame has no count" and "this group has no count" coincide exactly on
+// the only real capture there is, which is the condition under which the
+// wrong one ships.
+func TestIngestRosterKeepsTheBudgetAFrameOfItsGroupAlreadyRead(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R2")
+	h.addFrame(rosterFrame(1), 0)
+	// Two cards, one row scripted: the list moved within the group, so the
+	// bisected top band is discarded before OCR (skipTopBand).
+	h.addFrame(rosterFrame(2), memberRowPitch*3)
+
+	results := []ocr.Result{{Text: "{R2) I'm Alright 2/11", Confidence: 0.9}}
+	results = append(results, rowResults("Zephyr")...)
+	results = append(results, ocr.Result{Text: "{R2) I'm Alright", Confidence: 0.9})
+	results = append(results, rowResults("Quokka")...)
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Created != 2 {
+		t.Errorf("created %d members, want 2: a header that failed on the SECOND frame cannot take away a budget the first frame read", res.Created)
+	}
+	reasons := h.reviewReasons()
+	if reasons["unparseable_group_header"] != 1 {
+		t.Errorf("queued %d unparseable_group_header rows, want 1", reasons["unparseable_group_header"])
+	}
+	if reasons["no_confident_match_group_count_unknown"] != 0 {
+		t.Errorf("queued %d rows as countless, want 0: this group's count was read; all reasons: %v",
+			reasons["no_confident_match_group_count_unknown"], reasons)
+	}
+	if tally := res.PerGroup["R2"]; !tally.ExpectedKnown || tally.Expected != 11 {
+		t.Errorf("tally expected=%d known=%v, want 11/true", tally.Expected, tally.ExpectedKnown)
+	}
+}
+
+// A failed-header frame is no longer invisible to the FRAME-ADJACENCY chain,
+// and that is a consequence of removing the `continue` rather than a thing
+// this task set out to change. The skipped branch sat ahead of gt.advance and
+// of the prevGroupKey bookkeeping, so a dropped frame used to leave the frame
+// AFTER it looking consecutive with the last frame actually processed. It no
+// longer does: a group-A frame between two group-B frames now breaks B's
+// chain, exactly as a readable group-A frame between them always has.
+//
+// The new behaviour is the one advance's own doc argues for -- the pixels
+// moved across a group boundary are not evidence about either group's list,
+// so contentY stays where the tracker left it and the top band is not
+// skipped. What that costs is stated here rather than left to be
+// rediscovered: rows the resumed cursor cannot distinguish from ones already
+// collected are DEDUPED AWAY, which is an under-collection, and
+// under-collection is a silent drop. The alternative is worse in a way this
+// route cannot recover from -- attributing a cross-group scroll to B's list
+// makes rows look new that are not, and creation is first-writer-wins -- so
+// the trade is deliberate.
+//
+// On capture 1 it cost nothing (the yield arithmetic across the change is
+// unchanged), because its group boundaries happen to fall where the frames
+// either side are the same group. This test is the case that capture does
+// not contain.
+func TestIngestRosterBreaksTheFrameChainAcrossAFailedHeaderFrame(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankSequence([]string{"R3", "R2", "R3"})
+	h.addFrame(rosterFrame(2), 0)
+	h.addFrame(rosterFrame(1), memberRowPitch)
+	h.addFrame(rosterFrame(2), memberRowPitch)
+
+	results := []ocr.Result{{Text: "[R3) Footloose 10/64", Confidence: 0.9}}
+	results = append(results, rowResults(distinctRowNames[0])...)
+	results = append(results, rowResults(distinctRowNames[1])...)
+	results = append(results, ocr.Result{Text: "{R2) I'm Alright", Confidence: 0.9})
+	results = append(results, rowResults(distinctRowNames[2])...)
+	results = append(results, ocr.Result{Text: "[R3) Footloose 10/64", Confidence: 0.9})
+	// Scripted but expected to go unread. If a future change restores the old
+	// chain semantics, R3's third frame collects a row and these results are
+	// consumed -- which the tally assertion below names, rather than letting
+	// the engine run out somewhere unrelated.
+	results = append(results, rowResults(distinctRowNames[3])...)
+	results = append(results, rowResults(distinctRowNames[4])...)
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if got := res.PerGroup["R3"].Parsed; got != 2 {
+		t.Errorf("R3 parsed %d rows across two frames, want 2: the R2 frame between them breaks R3's chain, so R3's cursor does not advance and its second frame's bands read as already collected", got)
+	}
+	if res.Created != 2 {
+		t.Errorf("created %d members, want 2: R3's two rows, and none for the countless R2 frame", res.Created)
+	}
+	// The under-collection must never become a DUPLICATION: the same member
+	// minted twice is the roster route's unrecoverable failure (design §4,
+	// condition 2), and it is what advancing a resumed group's cursor by a
+	// cross-group offset would risk.
+	names := map[string]int{}
+	for _, m := range h.store.members {
+		names[m.Name]++
+		if names[m.Name] > 1 {
+			t.Errorf("member %q was created twice across the interleaved frames", m.Name)
+		}
+	}
+	if reasons := h.reviewReasons(); reasons["no_confident_match_group_count_unknown"] != 1 {
+		t.Errorf("queued %d countless rows, want 1 (the R2 frame's own row); all reasons: %v",
+			reasons["no_confident_match_group_count_unknown"], reasons)
+	}
+}
+
 // A count that arrives on a LATER frame of the same group is still the
 // count. groupTracker is created on the group's first frame, so a group
 // whose first header failed and whose second read cleanly would otherwise

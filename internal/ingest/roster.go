@@ -155,11 +155,18 @@ const memberRowPitch = 112
 // nothing to do with OCR: IngestRoster no longer discards a frame because this
 // field failed on it (task 6b). R2's rows are now read, attributed to the rank
 // its badge supplies, matched against known members and queued one row per row
-// -- 33 rows parsed, 2 matched, 31 name-class review rows, against 21
+// -- 33 parsed and 2 matched (the gate's own per-group tally), against 21
 // unparseable_group_header rows and nothing else before. They still create
 // nobody, because the count is what gates creation and this count is still
-// unread. 22 of those queued rows are the measured cost of leaving the count
-// unread, and the number to weigh a per-digit NCC classifier against.
+// unread.
+//
+// 22 of those rows are queued as no_confident_match_group_count_unknown, read
+// straight off the gate's review-queue breakdown, and that is the measured
+// cost of leaving the count unread -- the number to weigh a per-digit NCC
+// classifier against. R2 also accounts for roughly 9 more rows under
+// low_confidence_name, which is INFERRED from a capture-wide 14 -> 23 delta
+// rather than measured per group; the queue does not record which group a row
+// came from, so do not quote 31 as if it were counted.
 //
 // The one frame it does recover is capture 1's seq 1, and recovering it made
 // the roster gate's coverage WORSE, 45/75 to 43/75. Not a defect in this
@@ -549,6 +556,24 @@ type GroupTally struct {
 	MatchedOrCreated int
 }
 
+// ExpectedLabel renders Expected for a human: the number, or "?" when no
+// frame of this group ever read its count. It exists so the rule stated on
+// ExpectedKnown above -- every reader of Expected must consult it first -- is
+// structural rather than advisory at the two places that print the pair
+// (`control ingest`, and the roster gate's per-group tally line), which had
+// the same four-line formatting twice and would have drifted apart at the
+// first change.
+//
+// Printing the raw 0 is the failure this prevents: "parsed=33 expected=0"
+// sends a triage looking for a scrolling bug, when what happened is an
+// unreadable header and, in consequence, no creation budget at all.
+func (t GroupTally) ExpectedLabel() string {
+	if !t.ExpectedKnown {
+		return "?"
+	}
+	return strconv.Itoa(t.Expected)
+}
+
 // RosterResult summarizes one IngestRoster run.
 type RosterResult struct {
 	Matched, Created, Queued int
@@ -592,6 +617,27 @@ type groupTracker struct {
 	matchedOrCreated int
 	contentY         int
 	lastRowY         int // content-Y of the last collected row; -1 = none yet
+}
+
+// canCreate reports whether this group may mint a new member for one more
+// row: it has a count of its own, and has not yet resolved that many rows to
+// a member. An accessor rather than the expression inline, because those are
+// two different refusals and only one of them is arithmetic -- reading
+// gt.expected without consulting gt.countKnown is the mistake this method
+// exists to make unwritable at the one site where it matters.
+//
+// The countKnown half changes nothing TODAY, and that was measured rather
+// than assumed: parseGroupHeader returns total 0 on every one of its three
+// error paths, so a countless tracker carries expected 0 and `0 < 0` already
+// refuses. Deleting the conjunct leaves the whole suite green. The mutation
+// that does go red is `!gt.countKnown || ...` -- "unknown means unlimited" --
+// which mints 3 phantom members against a group of unknown size. So this
+// conjunct is a claim about intent that survives the day someone gives an
+// unread group a non-zero default, and the flag is load-bearing on its own at
+// two other sites: the review reason processRow queues, and reconciliation's
+// refusal to call such a group complete.
+func (gt *groupTracker) canCreate() bool {
+	return gt.countKnown && gt.matchedOrCreated < gt.expected
 }
 
 // advance decides this frame's contentY and whether its topmost detected
@@ -754,18 +800,27 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		// its own failure path to its own review reason rather than one
 		// collapsing into the other's error message.
 		//
-		// A count that does not parse costs this frame its CREATION BUDGET
-		// and nothing else. It used to cost the whole frame: this branch
-		// `continue`d, so one unreadable field discarded every row on the
-		// screen and left a single review row where a reader would expect
-		// one per member. Capture 1's 21 R2 frames are the measured case --
-		// 21 header rows in the queue and not one word about the members on
-		// them -- and the defect is independent of that capture, since one
-		// smudged header on any future capture loses a whole group the same
-		// way. The rows below are read, attributed to the rank the badge
-		// supplies (an independent read, measured correct at 61/61), and
-		// matched against members already known; what they cannot do is
-		// create anybody, which processRow enforces off gt.countKnown.
+		// A count that does not parse costs no frame its rows. It used to
+		// cost the whole frame: this branch `continue`d, so one unreadable
+		// field discarded every row on the screen and left a single review
+		// row where a reader would expect one per member. Capture 1's 21 R2
+		// frames are the measured case -- 21 header rows in the queue and not
+		// one word about the members on them -- and the defect is independent
+		// of that capture, since one smudged header on any future capture
+		// loses a whole group the same way. The rows below are read,
+		// attributed to the rank the badge supplies (an independent read,
+		// measured correct at 61/61), and matched against members already
+		// known.
+		//
+		// What a failed count withholds is the CREATION BUDGET, and it
+		// withholds it from the GROUP, not from this frame: the budget lives
+		// on groupTracker, so a group is countless only while NO frame of it
+		// has read a count, and one good header anywhere in the capture
+		// (before or after — see the tracker upgrade below) restores it for
+		// every frame of that group. On capture 1 the two readings coincide
+		// exactly, because all 21 R2 headers fail, which is precisely the
+		// condition under which a comment saying "this frame" would survive
+		// review and ship wrong.
 		groupName, headerTotal, herr := parseGroupHeader(headerRes.Text)
 		countKnown := herr == nil
 		if herr != nil {
@@ -1114,17 +1169,7 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 			return run.queueReview(ctx, i, screenshotID, band, nameRes.Text, candidates, "low_confidence_name", row.NameConf)
 		}
 		gt := run.groups[groupKey]
-		// gt.countKnown is stated rather than left to the arithmetic. Dropping
-		// it changes nothing TODAY -- a failed header leaves expected at 0 and
-		// `0 < 0` already refuses -- and that was measured, not assumed: the
-		// mutation check for this guard had to be sharpened to
-		// `!gt.countKnown || ...` ("unknown means unlimited") before any test
-		// went red, at which point the countless group minted 3 phantom
-		// members. So the conjunct is a claim about intent that survives the
-		// day someone gives an unread group a non-zero default, and the flag
-		// is load-bearing on its own two rows below: the review reason, and
-		// reconciliation's refusal to call such a group complete.
-		if gt.countKnown && gt.matchedOrCreated < gt.expected {
+		if gt.canCreate() {
 			memberID, err := i.store.CreateMember(ctx, db.Member{
 				AllianceID:     run.allianceID,
 				Name:           row.Name,

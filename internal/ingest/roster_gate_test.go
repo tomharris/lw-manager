@@ -842,11 +842,7 @@ func TestM4RosterGate(t *testing.T) {
 	sort.Strings(tallyKeys)
 	for _, k := range tallyKeys {
 		tally := res.PerGroup[k]
-		expected := "?"
-		if tally.ExpectedKnown {
-			expected = fmt.Sprintf("%d", tally.Expected)
-		}
-		t.Logf("roster gate tally: group=%s name=%q parsed=%d yielded=%d expected=%s", k, tally.Name, tally.Parsed, tally.MatchedOrCreated, expected)
+		t.Logf("roster gate tally: group=%s name=%q parsed=%d yielded=%d expected=%s", k, tally.Name, tally.Parsed, tally.MatchedOrCreated, tally.ExpectedLabel())
 	}
 
 	// The review queue by reason, sorted. The headline's `queued` is one
