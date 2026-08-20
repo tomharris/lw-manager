@@ -13,7 +13,7 @@
 //	make probe-roster PROBE_ARGS='-roster.x0sweep'        # sweep nameXFrac0
 //	make probe-roster PROBE_ARGS='-roster.inkprofile'     # the column histogram
 //
-// It grew four more instruments once the roster gate started failing, because
+// It grew five more instruments once the roster gate started failing, because
 // the name column was the only field on this route that had one and the name
 // column turned out not to be where the damage was:
 //
@@ -22,6 +22,10 @@
 //	make probe-roster PROBE_ARGS='-roster.headerink'      # the header histogram
 //	make probe-roster PROBE_ARGS='-roster.power'          # the power column
 //	make probe-roster PROBE_ARGS='-roster.level'          # the level column
+//
+// -roster.badgeshuffle is not a sixth instrument: it rotates -roster.badge's
+// own truth table so every verdict is wrong by construction, which validates
+// that mode rather than measuring anything new. It implies -roster.badge.
 //
 // Only -roster.badge measures something that is not an OCR read: rank comes
 // from hand-rolled NCC against embedded badge crops (rankbadge.go), never from
@@ -117,7 +121,7 @@ var (
 	rosterLevel = flag.Bool("roster.level", false,
 		"report what the level field reads per band, and whether ParseLevel accepts it")
 	rosterBadgeShuffle = flag.Bool("roster.badgeshuffle", false,
-		"rotate every truth label one rank forward, so the badge mode's verdicts are wrong by construction; it must report ~0 agree")
+		"rotate every truth label one rank forward, so the badge mode's verdicts are wrong by construction; it must report ~0 agree. Implies -roster.badge")
 )
 
 // leadingToken matches one short token followed by whitespace at the start of
@@ -194,7 +198,7 @@ func TestRosterNameProbe(t *testing.T) {
 		reportRosterHeaderInkProfile(t, frames)
 		return
 	}
-	if *rosterBadge {
+	if *rosterBadge || *rosterBadgeShuffle {
 		truthRanks := rosterFrameRanks()
 		if *rosterBadgeShuffle {
 			// The validation pass, modelled on -probe.assignshuffle. See
@@ -301,6 +305,44 @@ func stripLeadingToken(s string) string {
 		return m[2]
 	}
 	return s
+}
+
+// reportDistinctReads prints the most common raw reads and their counts, most
+// frequent first. Every mode in this file that reports "N distinct reads" used
+// to discard the distribution behind that count -- the most actionable numbers
+// in the whole probe (which reads are common, which are one-offs) were only
+// ever hand-derived from the per-band log lines, and were not reproducible
+// from the committed instrument itself. topN <= 0 prints all of them, which is
+// appropriate for a field whose distinct count is already small (the header).
+func reportDistinctReads(t *testing.T, label string, distinct map[string]int, topN int) {
+	t.Helper()
+	type kv struct {
+		Text  string
+		Count int
+	}
+	kvs := make([]kv, 0, len(distinct))
+	for text, n := range distinct {
+		kvs = append(kvs, kv{text, n})
+	}
+	sort.Slice(kvs, func(i, j int) bool {
+		if kvs[i].Count != kvs[j].Count {
+			return kvs[i].Count > kvs[j].Count
+		}
+		return kvs[i].Text < kvs[j].Text
+	})
+	shown := kvs
+	if topN > 0 && len(shown) > topN {
+		shown = shown[:topN]
+	}
+	parts := make([]string, 0, len(shown))
+	for _, e := range shown {
+		parts = append(parts, fmt.Sprintf("%d %q", e.Count, e.Text))
+	}
+	suffix := ""
+	if len(shown) < len(kvs) {
+		suffix = fmt.Sprintf("  (top %d of %d distinct)", len(shown), len(kvs))
+	}
+	t.Logf("  %s reads: %s%s", label, strings.Join(parts, "  "), suffix)
 }
 
 func reportRosterDetail(t *testing.T, reads []rosterBandRead, truth map[string]bool) {
@@ -629,6 +671,7 @@ func reportRosterBadge(ctx context.Context, t *testing.T, frames []rosterLoadedF
 	colourDisagree := 0
 	matrix := map[string]map[string]int{}
 	var agreeGaps, disagreeGaps []float64
+	distinctScores := map[string]int{}
 
 	for _, f := range frames {
 		want := truth[f.Seq]
@@ -655,6 +698,7 @@ func reportRosterBadge(ctx context.Context, t *testing.T, frames []rosterLoadedF
 			continue
 		}
 		gap := best.score - runnerUp.score
+		distinctScores[fmt.Sprintf("%.3f/%.3f", best.score, runnerUp.score)]++
 		accepted := gap >= rankBadgeMinGap
 		if !accepted {
 			refusedByGap++
@@ -687,6 +731,10 @@ func reportRosterBadge(ctx context.Context, t *testing.T, frames []rosterLoadedF
 		refusedByGap, rankBadgeMinGap, acceptedWrong)
 	t.Logf("  truth cross-check (header background colour vs the seq->rank table): %d disagreements",
 		colourDisagree)
+	t.Logf("  badge: %d distinct (best,runner-up) score pairs over %d frames -- the badge sprite is a",
+		len(distinctScores), len(frames))
+	t.Log("         static asset at a fixed screen position, so a small number here is expected " +
+		"NCC finding the same placement repeatedly, not the instrument returning a constant")
 
 	t.Log("  want x got:")
 	for _, want := range rankBadgeOrder {
@@ -796,6 +844,14 @@ func rosterHeaderIsGreen(img image.Image) bool {
 // The group header: the field whose refusal drops a whole group.
 // ---------------------------------------------------------------------------
 
+// headerRankToken pulls the first rank-shaped token ("R1".."R4") out of a raw
+// header read, so the read can be cross-checked against rosterFrameRanks on a
+// signal that is already sitting in the text -- the header carries its own
+// rank ("(R3)", "[R4)") even on reads whose N/M count is destroyed. That turns
+// rosterFrameRanks from a hand-built table validated only by eye and by the
+// colour cross-check into one corroborated by the OCR engine on every run.
+var headerRankToken = regexp.MustCompile(`R\d`)
+
 // reportRosterHeader reads groupHeaderRegion on every frame and reports the
 // raw text, what parseGroupHeader made of it, and why it refused.
 //
@@ -805,11 +861,13 @@ func rosterHeaderIsGreen(img image.Image) bool {
 // name and loses the N/M count, and the chevron sits inside
 // groupHeaderRegion's right edge at X2=0.97.
 //
-// It groups identical reads at the end rather than only listing them, because
-// this file's own warning applies here more than anywhere: a header mode that
-// reported one string for every frame would be measuring a constant, not a
-// crop. The frames show three different groups, so the distinct-read count is
-// the tell (CLAUDE.md, "A broken instrument reports agreement, not noise").
+// It counts identical reads and prints the most common ones at the end,
+// because this file's own warning applies here more than anywhere: a header
+// mode that reported one string for every frame would be measuring a
+// constant, not a crop. The frames show three different groups, so the
+// printed reads are the tell (CLAUDE.md, "A broken instrument reports
+// agreement, not noise") and are reproducible from this instrument's own
+// output rather than hand-derived from the per-frame lines above them.
 func reportRosterHeader(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame) {
 	t.Helper()
 	ing := New(nil, nil, engine)
@@ -819,10 +877,12 @@ func reportRosterHeader(ctx context.Context, t *testing.T, engine ocr.OCREngine,
 	lowConf := 0
 	distinct := map[string]int{}
 	byReason := map[string]int{}
+	rankAgree, rankDisagree, rankAbsent := 0, 0, 0
 	for _, f := range frames {
+		want := truth[f.Seq]
 		res, err := ing.readField(ctx, f.Img, groupHeaderRegion, groupHeaderSpec, groupHeaderOptions)
 		if err != nil {
-			t.Logf("  seq %2d  want %-3s  READ ERROR %v", f.Seq, truth[f.Seq], err)
+			t.Logf("  seq %2d  want %-3s  READ ERROR %v", f.Seq, want, err)
 			bad++
 			continue
 		}
@@ -830,20 +890,31 @@ func reportRosterHeader(ctx context.Context, t *testing.T, engine ocr.OCREngine,
 		if !res.Accepted(groupHeaderSpec) {
 			lowConf++
 		}
+		if tok := headerRankToken.FindString(res.Text); tok == "" {
+			rankAbsent++
+		} else if tok == want {
+			rankAgree++
+		} else {
+			rankDisagree++
+			t.Logf("  seq %2d  want %-3s  RANK TOKEN DISAGREES: raw text carries %q", f.Seq, want, tok)
+		}
 		name, total, perr := parseGroupHeader(res.Text)
 		if perr != nil {
 			bad++
 			byReason[rosterHeaderRefusalReason(perr)]++
-			t.Logf("  seq %2d  want %-3s  conf %.2f  %-44q  REFUSED: %v", f.Seq, truth[f.Seq], res.Confidence, res.Text, perr)
+			t.Logf("  seq %2d  want %-3s  conf %.2f  %-44q  REFUSED: %v", f.Seq, want, res.Confidence, res.Text, perr)
 			continue
 		}
 		ok++
-		t.Logf("  seq %2d  want %-3s  conf %.2f  %-44q  -> %q total=%d", f.Seq, truth[f.Seq], res.Confidence, res.Text, name, total)
+		t.Logf("  seq %2d  want %-3s  conf %.2f  %-44q  -> %q total=%d", f.Seq, want, res.Confidence, res.Text, name, total)
 	}
+	t.Logf("  header raw-text rank token cross-check: %d agree, %d disagree, %d carried no R-token, of %d frames",
+		rankAgree, rankDisagree, rankAbsent, len(frames))
 	t.Logf("  header: %d parsed, %d refused, of %d frames (%d read below groupHeaderSpec.MinConf=%.2f)",
 		ok, bad, len(frames), lowConf, groupHeaderSpec.MinConf)
 	t.Logf("  distinct raw reads: %d over %d frames -- one or two would mean this mode is measuring a constant, not a crop",
 		len(distinct), len(frames))
+	reportDistinctReads(t, "header", distinct, 0)
 	for reason, n := range byReason {
 		t.Logf("    refusal shape %-28s %d", reason, n)
 	}
@@ -981,7 +1052,15 @@ var rosterLevelField = rosterFieldProbe{
 // The same argument applies -- it is the shape a crop change should move, and
 // counting it separately keeps it from being averaged into refusals no crop
 // can help.
-var levelLostLeadingL = regexp.MustCompile(`^[vV]\.?\s*\d`)
+//
+// Two digits are required after the "v", not one: this alliance's levels run
+// 30-35, so "v35" is a read with an intact value and only the "L" missing,
+// while "v2" or "v3" are missing digits too and would come back as level 2 or
+// 3 in an alliance where nothing is below 30 -- restoring the "L" on those
+// would launder a wrong value into a well-formed one, which is the opposite
+// of what this shape is supposed to identify. A single-digit read like that
+// falls into the "other" bucket instead.
+var levelLostLeadingL = regexp.MustCompile(`^[vV]\.?\s*\d\d`)
 
 // powerOneBadSeparator matches a power read that is structurally correct
 // except for the separator between the label and the number: "Power:}175'1M"
@@ -1060,12 +1139,18 @@ func reportRosterField(ctx context.Context, t *testing.T, engine ocr.OCREngine, 
 		fp.Name, bands, accepted, refused, empty)
 	t.Logf("  %s: %d reads scored below %sSpec.MinConf=%.2f (factConfidenceGate is %.2f, and a fact needs both)",
 		fp.Name, lowConf, fp.Name, fp.Spec.MinConf, factConfidenceGate)
+	// Each shape's own regex is printed alongside its count rather than a fixed
+	// sentence describing what the shape means: a shape whose regex has drifted
+	// (or was too loose to begin with -- see levelLostLeadingL's history) is
+	// still visible from this line, where a hardcoded narrative would keep
+	// asserting the old claim after the code no longer measured it.
 	for _, sh := range fp.Shapes {
-		t.Logf("  %s: %d of the %d refusals are structurally %s (%s) -- the digits were read and",
-			fp.Name, byShape[sh.Name], refused, sh.Name, sh.Re)
-		t.Logf("         one character around them was not. That is the count a crop change should")
-		t.Logf("         move; the %d refusals shaped \"other\" are a different problem.", byShape["other"])
+		t.Logf("  %s: %d of the %d refusals match shape %s %s", fp.Name, byShape[sh.Name], refused, sh.Name, sh.Re)
+	}
+	if len(fp.Shapes) > 0 {
+		t.Logf("  %s: %d refusals match none of the shapes above (\"other\")", fp.Name, byShape["other"])
 	}
 	t.Logf("  %s: %d distinct reads over %d bands -- near-uniformity here would mean this mode is measuring a constant",
 		fp.Name, len(distinct), bands)
+	reportDistinctReads(t, fp.Name, distinct, 25)
 }

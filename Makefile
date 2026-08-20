@@ -170,9 +170,10 @@ probe-assign:
 #   -roster.x0sweep     sweep nameXFrac0 across the gutter
 #   -roster.inkprofile  the column histogram the crop edges are placed from
 #
-# Four more modes measure the fields the name probe never touched. Between them
-# they cover every fact this route fails to write, and the first is the only
-# instrument in this file aimed at something that is not an OCR read:
+# Five more instruments measure the fields the name probe never touched.
+# Between them they cover every fact this route fails to write, and the first
+# is the only instrument in this file aimed at something that is not an OCR
+# read:
 #
 #   -roster.badge       matchRankBadge's per-frame verdict, with the gap
 #                       distribution split by right/wrong -- a wrong verdict at
@@ -180,9 +181,10 @@ probe-assign:
 #                       a narrow gap means the threshold cannot separate them,
 #                       and those need opposite fixes. Rank comes from NCC, not
 #                       OCR, so no other mode here can see a rank defect.
-#   -roster.badgeshuffle  rotate every truth label one rank forward, so the
-#                       badge mode is wrong by construction. It must report 0
-#                       agree; run it before believing a clean badge sweep.
+#   -roster.badgeshuffle  not a sixth instrument -- rotates -roster.badge's own
+#                       truth table one rank forward so the mode is wrong by
+#                       construction. It must report 0 agree; run it before
+#                       believing a clean badge sweep. Implies -roster.badge.
 #   -roster.header      the sticky group header's raw text beside
 #                       parseGroupHeader's verdict, so a refusal names its own
 #                       cause. A header that will not parse drops the WHOLE
