@@ -54,7 +54,10 @@ make build                    # bin/agent, bin/control
 ./bin/agent score --json                          # + per-frame predictions, to localize a failure
 make gate                                         # the same gate, as a test
 
-make gate-m4                                      # the M4 gate: ingest vs a hand-checked capture
+make gate-m4                                      # the M4 VS gate: ingest vs a hand-checked capture
+make gate-roster                                  # the M4 roster gate; does not pass yet, deliberately
+# never run those two at once — they truncate each other; see Testing
+
 make probe-m4                                     # measure the name field; not a gate, read the output
 make probe-m4 PROBE_ARGS='-probe.detail'          # per-member, to localize
 make probe-points                                 # measure the points field; also not a gate
@@ -166,6 +169,26 @@ instead of creating a duplicate account.
   explicit `-timeout` because it costs frames × anchors and both keep
   growing; a panic with a goroutine dump at exactly 600s is Go's default
   timeout, not a gate failure.
+- `make gate-m4` — the M4 VS phase gate: `IngestVS` against the 86 rows of
+  `fixtures/m4gate/expected.yaml`, at ≥95% of rows within ±1% of the
+  hand-checked points. Tagged `m4gate`; needs Postgres, the blob store and
+  tesseract. **What its pass does not say** is in its own output and in "A
+  passing aggregate hides everything its tolerance is wider than" below: at
+  1% a row can carry a wrong low-order digit and still count. The bar stays
+  at 1% — see `gateTolerance`'s comment for the ruling — so the caveat is
+  permanent, not a bug waiting to be fixed.
+- `make gate-roster` — the M4 roster phase gate: `IngestRoster` against the
+  75 hand-transcribed members of capture 1
+  (`fixtures/m4rostergate/expected.yaml`), at ≥95% member coverage with zero
+  splits and zero orphans. Tagged `m4rostergate`; same three dependencies as
+  `gate-m4`. **It does not pass, and is committed failing on purpose**:
+  47/75 covered (never_created 19, wrong_group 9), orphans 5, splits 0 as of
+  2026-08-20. Read that number knowing its ceiling: R2's group header count
+  is unread on this capture (see "Sometimes it is the classifier, not the
+  layout" below), the count is what gates member creation, so R2's 11 members
+  cannot be created at all and coverage caps at **64/75 = 85.3% against a
+  0.95 condition**. The bar is a claim about the route, not about capture 1,
+  and a run here measures progress toward a ceiling below its own bar.
 - New packages get a fake or a replay path before they get a real
   implementation. `ReplayTransport` was written before `ADBTransport` was
   trusted, and that ordering is the pattern to follow.
@@ -536,6 +559,15 @@ anomaly to explain and nothing prompts anyone to look, so the per-item view is
 what establishes that a failure exists at all. A green number is the hardest
 aggregate to interrogate, and interrogating it means a full readout against
 ground truth, not a re-run.
+
+**The bar was questioned and stays at 1%.** A tighter one would have caught
+rank 7; it would also start failing rows for transcription ambiguity in
+`expected.yaml` itself, which is 86 numbers read by eye off screenshots and is
+not regenerable. An absolute tolerance, or one scaled to digit position rather
+than to magnitude, are both plausible and neither has been measured. Changing
+it is a decision about what the gate is for, not a fix to make the current
+number better — so what changed instead is that the gate now says all of this
+in its own output, where the number is actually read.
 
 ### Tesseract's layout analysis is blind to some perfectly legible crops
 
