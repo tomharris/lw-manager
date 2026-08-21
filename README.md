@@ -145,6 +145,8 @@ make gate-m4           # M4 VS ingest against a hand-checked 86-row capture
 make gate-roster       # M4 roster ingest against a hand-checked 75-member capture
 ```
 
+All three pass: **99.53%** (M1), **85/86** (M4 VS) and **73/75** (M4 roster).
+
 **Never run `gate-m4` and `gate-roster` concurrently.** They are two `go test`
 invocations of the same package under different build tags, both seeding and
 truncating `lw_manager_test`, so in parallel they truncate each other's
@@ -160,6 +162,20 @@ make probe-points      # the points field: exact, within 1%, unparseable, retrie
 make probe-assign      # closed-set matching, with a shuffled-truth canary and decoys
 make probe-roster      # the roster name field, scored against 75 hand-transcribed names
 ```
+
+**A probe can measure the wrong question and look healthy doing it**, and
+`probe-roster` is where that cost the most. Its default per-member view reports
+each member's *best* band. The gate is decided by the **first** sighting of a
+row that clears the confidence floor, because creating a member is
+first-writer-wins and the geometric dedupe stops re-reading a row the moment it
+resolves. Those gave different answers on the member that decided a phase gate:
+Nichoj scored a perfect 100 on the best-band view and was an **orphan** in the
+gate, because sighting one read `Nicho` at confidence 0.41 — one hundredth over
+the floor — and the eleven sightings after it all read `Nichoj`, eight of them
+above 0.90, none of them ever read.
+`make probe-roster PROBE_ARGS=-roster.firstwins` models the real ordering and
+reproduces the gate exactly; it is the mode a headline should be read against.
+
 
 `probe-roster` scores against `fixtures/m4rostergate/expected.yaml` — 75
 members, this capture, transcribed frame by frame off capture 1 — so `exact`
