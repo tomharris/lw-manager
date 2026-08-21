@@ -131,3 +131,29 @@ func TestDecorationStrippingRunsAfterHomoglyphFolding(t *testing.T) {
 		t.Errorf("ΔKΔŽΔ normalized+stripped = %q, want %q", got, "akaza")
 	}
 }
+
+// TestArchFoldsToN pins the stylised-substitution fold and, more importantly,
+// pins BOTH codepoints. The roster fixture's note is explicit that it cannot
+// settle which one the glyph is, so a fold covering only one of them would
+// work or not work depending on a reading the transcriber flagged as
+// uncertain.
+func TestArchFoldsToN(t *testing.T) {
+	for _, name := range []string{"TYRIO∩", "TYRIOՈ"} {
+		if got := Normalize(name); got != "tyrion" {
+			t.Errorf("Normalize(%q) = %q, want %q", name, got, "tyrion")
+		}
+		if got := TokenSetRatio("TYRION", name); got < AutoAccept {
+			t.Errorf("TokenSetRatio(%q, %q) = %d, want >= AutoAccept %d", "TYRION", name, got, AutoAccept)
+		}
+	}
+}
+
+// TestArchFoldDoesNotCollapseUnrelatedNames is the other half: the fold is a
+// licence for two members to score alike, so it has to be shown NOT to reach
+// past the one glyph it is for.
+func TestArchFoldDoesNotCollapseUnrelatedNames(t *testing.T) {
+	if got := TokenSetRatio("TYRIO∩", "TYRIOU"); got >= AutoAccept {
+		t.Errorf("TokenSetRatio(%q, %q) = %d, which is at or above AutoAccept %d: the arch fold reaches too far",
+			"TYRIO∩", "TYRIOU", got, AutoAccept)
+	}
+}

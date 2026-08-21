@@ -93,6 +93,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -143,6 +144,48 @@ var (
 		"sweep the status crop's preprocessing over the bands whose transcribed value is the green \"Online\": 8 skip-flag shapes x 3 upscales x luma/green-channel, plus PSM 8 and 13. Implies -roster.lastactive")
 	rosterMembers = flag.Bool("roster.members", false,
 		"per-MEMBER view: each transcribed member's best band, and whether processRow would match it, create from it, or refuse it for confidence")
+	rosterCount = flag.Bool("roster.count", false,
+		"report readGroupCountTotal -- the colour-mask retry -- per frame: its ink runs, the total it read, and the transcribed total beside it")
+	rosterCountSweep = flag.Bool("roster.countsweep", false,
+		"sweep the mask's luma and saturation thresholds across every real header, so the plateau countMaskMinLuma/countMaskMaxSat sit on is visible rather than asserted. Implies -roster.count")
+	rosterSatWeakOnly = flag.Bool("roster.satweakonly", false,
+		"take the saturation read only where the luma read came back below nameSpec.MinConf, instead of on every band. A cheaper pipeline, and a DIFFERENT one -- so it has to earn the same number rather than inherit it")
+	rosterSatUp = flag.Int("roster.satup", 3,
+		"the upscale factor for -roster.satunion's saturation read; a mask is binary, so upscale is the only preprocessing step that is not actively wrong on it, and it is the only one worth fitting")
+	rosterSats = flag.String("roster.sats", "",
+		"comma-separated saturation thresholds for the extra name reads, overriding the shipped nameSatMinSats (e.g. 60,75,120). Empty means the shipped list, so this probe models what ships")
+	rosterFirstWins = flag.Bool("roster.firstwins", false,
+		"model production's ORDERING: the earliest sighting of a row that clears the creation confidence floor is the one that mints the member, and its read is the name that gets stored. -roster.members reports the BEST band instead, which is a different and more flattering question")
+	rosterNoInkTrim = flag.Bool("roster.noinktrim", false,
+		"do not trim the name crop's right edge to its ink. This is what the field looked like before trimNameRectToInk, and it is a comparison rather than a configuration")
+	rosterCorrConf = flag.Float64("roster.corrconf", 0,
+		"the confidence floor a CORROBORATED read must clear, for -roster.firstwins. The rule modelled is: mint from a single read that clears -roster.createconf, OR from a weaker read that has come back identical -roster.corroborate times and clears this")
+	rosterCorroborate = flag.Int("roster.corroborate", 0,
+		"for -roster.firstwins: mint from the first read a row produces N times rather than from the first read that clears a confidence floor. 0 = off (floor only). A row photographed 3-17 times has evidence the engine's per-read confidence does not carry")
+	rosterCreateConf = flag.Float64("roster.createconf", nameSpec.MinConf,
+		"the confidence floor a read must clear to mint a member, for -roster.firstwins. Sweeping it is how the shipped floor is read against its neighbours")
+	rosterAgree = flag.Bool("roster.agree", false,
+		"per band, whether the luma and saturation reads AGREE after normalization, and what it would be worth to allow creation from an agreed read that is below nameSpec.MinConf")
+	rosterNoSat = flag.Bool("roster.nosat", false,
+		"drop the saturation-mask name read entirely. This is what the field looked like before it existed, and it is a comparison, not a configuration -- production always takes both reads")
+	rosterRetrySat = flag.Int("roster.retrysat", 0,
+		"override nameRetry to read a SATURATION mask at this minimum saturation instead of luma (0 = leave it alone). Names are drawn in saturated orange on a desaturated card, which is an axis no luma sweep can reach")
+	rosterSatSweep = flag.Bool("roster.satsweep", false,
+		"sweep the saturation-mask retry: minimum saturation x upscale x PSM, scored at MEMBER level, which is the number the gate counts")
+	rosterRetryShape = flag.String("roster.retryshape", "",
+		"override nameRetry's preprocessing with a label from the shape grid (e.g. \"gray+thr x2\"), so -roster.members can be re-run under a candidate the sweep liked. The sweep scores BANDS; the gate counts MEMBERS, and they are not the same number")
+	rosterRetryPSM = flag.Int("roster.retrypsm", 0,
+		"override nameRetry's page-segmentation mode (0 = leave it alone)")
+	rosterFBSweep = flag.Bool("roster.fbsweep", false,
+		"sweep the RETRY's preprocessing over the bands the primary read returns nothing for -- the measurement nameRetry's own doc comment says has never been made")
+	rosterFBPSM = flag.Bool("roster.fbpsm", false,
+		"the same sweep at PSM 8 as well as PSM 13, since a name crop the layout analysis refuses is the shape both modes exist to rescue. Implies -roster.fbsweep")
+	rosterCountLuma = flag.Int("roster.countluma", countMaskMinLuma,
+		"override the count mask's minimum luma for -roster.count, so a setting the sweep reports badly can be inspected per frame rather than only as a total")
+	rosterCountSat = flag.Int("roster.countsat", countMaskMaxSat,
+		"override the count mask's maximum saturation for -roster.count")
+	rosterCountShift = flag.Bool("roster.countshift", false,
+		"run the count reader on bands shifted off the header, where there is no count to read; it must refuse every one. Implies -roster.count")
 )
 
 // leadingToken matches one short token followed by whitespace at the start of
@@ -255,6 +298,51 @@ func TestRosterNameProbe(t *testing.T) {
 
 	engine := ocr.NewTesseractEngine()
 
+	// nameRetry is a package var, and overriding it here is the same seam
+	// matchRankBadge and visionPreprocess already use for tests. It is applied
+	// before any mode runs so -roster.members, -roster.detail and the gate-
+	// shaped counts all see the candidate, not the shipped value.
+	if *rosterRetryShape != "" || *rosterRetryPSM != 0 || *rosterRetrySat != 0 {
+		orig := nameRetry
+		if *rosterRetrySat != 0 {
+			minSat := *rosterRetrySat
+			nameRetry.wrap = func(img image.Image) image.Image { return vision.SaturatedInkMask(img, minSat) }
+			// A mask is already binary: equalize, threshold and invert are all
+			// wrong on it (see countDigitOptions for the same argument), so the
+			// upscale is kept and everything else is skipped unless
+			// -roster.retryshape says otherwise.
+			nameRetry.opts = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: nameRetry.opts.UpscaleFactor}
+		}
+		if *rosterRetryShape != "" {
+			// Matched with spaces and underscores removed, because the grid's
+			// labels contain a space ("gray+thr x2") and PROBE_ARGS is
+			// word-split by the shell before the Makefile ever sees it -- so
+			// the label cannot be passed verbatim. "gray+thr_x2" works.
+			squash := func(v string) string {
+				return strings.NewReplacer(" ", "", "_", "").Replace(strings.ToLower(v))
+			}
+			found := false
+			var labels []string
+			for _, cfg := range probeShapeGrid() {
+				labels = append(labels, cfg.label)
+				if squash(cfg.label) == squash(*rosterRetryShape) {
+					nameRetry.opts, found = cfg.opts, true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("-roster.retryshape=%q matches no shape in the grid; the labels are %v"+
+					" (spaces and underscores are ignored, so pass gray+thr_x2)", *rosterRetryShape, labels)
+			}
+		}
+		if *rosterRetryPSM != 0 {
+			nameRetry.spec.PSM = *rosterRetryPSM
+		}
+		t.Logf("  nameRetry OVERRIDDEN for this run: opts %+v psm %d (shipped: opts %+v psm %d)",
+			nameRetry.opts, nameRetry.spec.PSM, orig.opts, orig.spec.PSM)
+		defer func() { nameRetry = orig }()
+	}
+
 	if *rosterHeaderSweep || *rosterHeaderOptions || *rosterHeaderThresh {
 		if *rosterHeaderSweep {
 			reportRosterHeaderSweep(ctx, t, engine, frames)
@@ -270,6 +358,31 @@ func TestRosterNameProbe(t *testing.T) {
 
 	if *rosterLastActive || *rosterLASweep {
 		reportRosterLastActive(ctx, t, engine, frames, truth)
+		return
+	}
+
+	if *rosterFirstWins {
+		reportRosterFirstWins(ctx, t, engine, frames, truth)
+		return
+	}
+
+	if *rosterAgree {
+		reportRosterAgreement(ctx, t, engine, frames, truth)
+		return
+	}
+
+	if *rosterSatSweep {
+		reportRosterSatSweep(ctx, t, engine, frames, truth)
+		return
+	}
+
+	if *rosterFBSweep || *rosterFBPSM {
+		reportRosterRetrySweep(ctx, t, engine, frames, truth)
+		return
+	}
+
+	if *rosterCount || *rosterCountSweep || *rosterCountShift {
+		reportRosterCount(ctx, t, engine, frames)
 		return
 	}
 
@@ -336,6 +449,9 @@ func readRosterNames(ctx context.Context, t *testing.T, engine ocr.OCREngine, fr
 		}
 		for _, band := range bands {
 			rect := fieldRect(band, f.Img, x0, nameXFrac1, topRowYFrac0, topRowYFrac1)
+			if !*rosterNoInkTrim {
+				rect = trimNameRectToInk(f.Img, rect)
+			}
 			var res ocr.Result
 			var retried bool
 			var err error
@@ -347,6 +463,25 @@ func readRosterNames(ctx context.Context, t *testing.T, engine ocr.OCREngine, fr
 			}
 			if err != nil {
 				t.Fatalf("reading frame %d band %d: %v", f.Seq, band.Y0, err)
+			}
+			if !*rosterNoSat {
+				// The same extra reads production takes: one saturation mask
+				// per threshold, most-confident-wins. Names are drawn in
+				// saturated orange on a cream card, which is an axis no luma
+				// setting can reach; see nameSatMinSats.
+				for _, minSat := range probeSatThresholds(t) {
+					if *rosterSatWeakOnly && res.Confidence >= nameSpec.MinConf {
+						break
+					}
+					satRes, serr := ing.readField(ctx, vision.SaturatedInkMask(f.Img, minSat), rect,
+						nameSpec, vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: *rosterSatUp})
+					if serr != nil {
+						t.Fatalf("saturation read frame %d band %d: %v", f.Seq, band.Y0, serr)
+					}
+					if strings.TrimSpace(satRes.Text) != "" && satRes.Confidence > res.Confidence {
+						res = satRes
+					}
+				}
 			}
 			out = append(out, rosterBandRead{
 				Seq: f.Seq, Y0: band.Y0,
@@ -487,18 +622,22 @@ func reportRosterDetail(t *testing.T, reads []rosterBandRead, truth rosterTruth)
 // still the right shape for the question this mode answers ("could ANY
 // photograph of this member have produced them?"), and the over-count is
 // visible in the per-member lines: two members naming the same frame and y.
-func reportRosterMembers(t *testing.T, reads []rosterBandRead, truth rosterTruth) {
-	t.Helper()
+// rosterBestRead is one member's best sighting: the band, its score against
+// that member, and whether any band scored at all.
+type rosterBestRead struct {
+	read  rosterBandRead
+	score int
+	found bool
+}
 
-	type bestRead struct {
-		read  rosterBandRead
-		score int
-		found bool
-	}
-	// Best band per member by score, and among equal scores the one with the
-	// highest confidence -- because confidence is what decides creation, and
-	// a member with one 0.72 sighting and eleven 0.20 sightings is creatable.
-	best := map[string]bestRead{}
+// rosterBestBands picks each transcribed member's best band by score, breaking
+// ties on confidence -- because confidence is what decides creation, and a
+// member with one 0.72 sighting and eleven 0.20 sightings is creatable.
+//
+// Shared by -roster.members and every sweep that reports member-level counts,
+// so a sweep cannot drift from the mode it is sweeping.
+func rosterBestBands(reads []rosterBandRead, truth rosterTruth) map[string]rosterBestRead {
+	best := map[string]rosterBestRead{}
 	for _, r := range reads {
 		if r.Text == "" {
 			continue
@@ -507,10 +646,17 @@ func reportRosterMembers(t *testing.T, reads []rosterBandRead, truth rosterTruth
 			s := roster.TokenSetRatio(r.Text, m.Name)
 			b := best[m.Name]
 			if !b.found || s > b.score || (s == b.score && r.Conf > b.read.Conf) {
-				best[m.Name] = bestRead{read: r, score: s, found: true}
+				best[m.Name] = rosterBestRead{read: r, score: s, found: true}
 			}
 		}
 	}
+	return best
+}
+
+func reportRosterMembers(t *testing.T, reads []rosterBandRead, truth rosterTruth) {
+	t.Helper()
+
+	best := rosterBestBands(reads, truth)
 
 	byVerdict := map[string]int{}
 	names := make([]string, 0, len(truth.Members))
@@ -2078,4 +2224,634 @@ func lastActiveSweepShapes() []lastActiveShape {
 		}
 	}
 	return out
+}
+
+// reportRosterCount measures readGroupCountTotal -- the colour-mask retry
+// behind parseGroupHeader -- against the transcribed group totals.
+//
+// It is the instrument the mask's thresholds and the run-width bounds are set
+// from, and CLAUDE.md's reason for it existing as a committed mode rather than
+// an ad-hoc run is exact here: an ad-hoc one-liner measured this field once
+// before, reported that a digit whitelist "returns empty on every R2 frame",
+// and that claim turned out to be true only of the one rectangle its author
+// happened to have loaded. Enumerating the axes is what finds the second one.
+//
+// THREE COLUMNS, and they are not interchangeable. `correct` is a total that
+// matches the transcription. `refused` is the reader declining, which is the
+// safe outcome and the one R4's "9"-as-"q" produces. `WRONG` is a total that
+// parsed and disagrees, and it is the only number here that can stop a
+// change: total gates member creation, so a wrong one silently withholds a
+// group's members and nothing downstream can catch it (CLAUDE.md's charset
+// section, where a fabricated "1/1" against a real group of 11 is the worked
+// case). A run whose `correct` rises and whose `WRONG` rises with it is not an
+// improvement.
+//
+// -roster.countshift is the validation pass, and no headline from this mode
+// should be believed before it has been run: it moves the band off the header
+// entirely, where there is no count in the pixels at all, and every frame must
+// refuse. CLAUDE.md, "A clean measurement is not a validated one" -- the
+// assignment probe's perfect result came from an instrument nothing had shown
+// could report a wrong answer.
+func reportRosterCount(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame) {
+	t.Helper()
+	ing := New(nil, nil, engine)
+	ranks := rosterFrameRanks()
+	totals := rosterGroupTotals(t)
+
+	if *rosterCountSweep {
+		reportRosterCountSweep(ctx, t, engine, frames, ranks, totals)
+		return
+	}
+
+	// The shifts are DOWNWARD, into the member list, and that direction is the
+	// whole point. Shifting up leaves the band on the search bar, where there
+	// is no ink of any kind and every frame refuses with "0 ink runs" -- which
+	// proves only that the reader declines a blank rectangle. A member row is
+	// the adversarial place to look for a count that is not there: it carries
+	// white "Manage" text and a saturated avatar, i.e. real instances of BOTH
+	// populations this reader's guards key on, arranged in the same left-to-
+	// right order (colour, then white) that the guard treats as proof the
+	// first white run is a slash.
+	//
+	// Three offsets rather than one, because a single offset can land in a
+	// gutter by luck. memberListRegion.Y1 is 0.44 and the header band sits at
+	// 0.409..0.435, so +1, +1.5 and +2 pitches put the band on the first row's
+	// name line, the second row's mid-card, and the second row's name line.
+	shifts := []float64{0}
+	if *rosterCountShift {
+		shifts = []float64{
+			float64(memberRowPitch) / 1600.0,
+			1.5 * float64(memberRowPitch) / 1600.0,
+			2 * float64(memberRowPitch) / 1600.0,
+		}
+		t.Log("  -roster.countshift: every band moved DOWN onto the member rows, where")
+		t.Log("  there is no count but there is white text and saturated colour. Anything")
+		t.Log("  but 100% refused means this mode cannot report a wrong total.")
+	}
+
+	correct, wrong, refused := 0, 0, 0
+	byRefusal := map[string]int{}
+	for _, shift := range shifts {
+		for _, f := range frames {
+			rank := ranks[f.Seq]
+			want := totals[rank]
+			band := transport.Rect{
+				X1: groupHeaderRegion.X1, Y1: groupHeaderRegion.Y1 + shift,
+				X2: groupHeaderRegion.X2, Y2: groupHeaderRegion.Y2 + shift,
+			}
+			runs := countDigitRunsAt(f.Img, band, *rosterCountLuma, *rosterCountSat)
+			widths := make([]string, 0, len(runs))
+			for _, r := range runs {
+				widths = append(widths, fmt.Sprintf("[%d,%d)w%d", r.X0, r.X1, r.Width()))
+			}
+			got, err := ing.readGroupCountTotalAt(ctx, f.Img, band, *rosterCountLuma, *rosterCountSat)
+			switch {
+			case err != nil:
+				refused++
+				byRefusal[rosterCountRefusalShape(err)]++
+				t.Logf("  seq %2d  %-3s want %2d  runs %-40s REFUSED: %v", f.Seq, rank, want, strings.Join(widths, " "), err)
+			case got == want:
+				correct++
+				t.Logf("  seq %2d  %-3s want %2d  runs %-40s -> %d", f.Seq, rank, want, strings.Join(widths, " "), got)
+			default:
+				wrong++
+				t.Logf("  seq %2d  %-3s want %2d  runs %-40s -> %d  WRONG", f.Seq, rank, want, strings.Join(widths, " "), got)
+			}
+		}
+	}
+	// The caveat the headline needs, on the model of the header mode's
+	// "distinct raw reads" line. This capture holds four rank groups and
+	// photographs each of them many times, so 61 frames are nothing like 61
+	// independent trials of the reader: the count strip is pixel-identical
+	// across every frame of a group that did not scroll, and the whole run
+	// exercises about as many distinct crops as there are groups. A number
+	// that reads "61 correct" and is really five is exactly the aggregate
+	// CLAUDE.md warns is hardest to interrogate, because it is green.
+	distinctBands := map[string]bool{}
+	for _, shift := range shifts {
+		for _, f := range frames {
+			band := transport.Rect{
+				X1: groupHeaderRegion.X1, Y1: groupHeaderRegion.Y1 + shift,
+				X2: groupHeaderRegion.X2, Y2: groupHeaderRegion.Y2 + shift,
+			}
+			key := fmt.Sprintf("%v", countDigitRunsAt(f.Img, band, *rosterCountLuma, *rosterCountSat))
+			distinctBands[key] = true
+		}
+	}
+	t.Logf("  distinct count-strip segmentations: %d over %d bands -- the headline below counts bands, and"+
+		" a group photographed 21 times contributes 21 of them from one crop", len(distinctBands), len(frames)*len(shifts))
+	t.Logf("  count mask: %d correct, %d WRONG, %d refused, of %d bands (%d frames x %d band positions, minLuma=%d maxSat=%d)",
+		correct, wrong, refused, len(frames)*len(shifts), len(frames), len(shifts), *rosterCountLuma, *rosterCountSat)
+	for shape, n := range byRefusal {
+		t.Logf("    refusal shape %-48s %d", shape, n)
+	}
+	// Per rank, because the whole point of this reader is the groups the
+	// whole-field path cannot read, and a capture-wide total hides which ones
+	// they were: R3 and R4 already parse without it.
+	perRank := map[string][3]int{}
+	for _, shift := range shifts {
+		for _, f := range frames {
+			rank := ranks[f.Seq]
+			band := transport.Rect{
+				X1: groupHeaderRegion.X1, Y1: groupHeaderRegion.Y1 + shift,
+				X2: groupHeaderRegion.X2, Y2: groupHeaderRegion.Y2 + shift,
+			}
+			got, err := ing.readGroupCountTotalAt(ctx, f.Img, band, *rosterCountLuma, *rosterCountSat)
+			c := perRank[rank]
+			switch {
+			case err != nil:
+				c[2]++
+			case got == totals[rank]:
+				c[0]++
+			default:
+				c[1]++
+			}
+			perRank[rank] = c
+		}
+	}
+	for _, rank := range rankBadgeOrder {
+		if c, ok := perRank[rank]; ok {
+			t.Logf("    %s (transcribed total %2d): %2d correct, %d WRONG, %2d refused", rank, totals[rank], c[0], c[1], c[2])
+		}
+	}
+}
+
+// rosterCountRefusalShape collapses readGroupCountTotal's error text to which
+// guard fired, so the summary says WHY a frame refused rather than only how
+// often one did. Same shape, and same reason, as rosterHeaderRefusalReason.
+func rosterCountRefusalShape(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "ink runs, want a slash"):
+		return "too few ink runs"
+	case strings.Contains(msg, "nothing saturated left of"):
+		return "no colour proving run 0 is the slash"
+	case strings.Contains(msg, "short of the strip's right edge"):
+		return "count not right-aligned"
+	case strings.Contains(msg, "digit runs, want at most"):
+		return "too many digit runs"
+	case strings.Contains(msg, "outside the"):
+		return "ink run width outside a glyph's"
+	case strings.Contains(msg, "want exactly one digit"):
+		return "engine did not return one digit"
+	case strings.Contains(msg, "disagree"):
+		return "the two read paths disagree"
+	default:
+		return "other"
+	}
+}
+
+// reportRosterCountSweep varies the two mask thresholds across every real
+// header, so the shipped setting can be read against its neighbours rather
+// than asserted. The luma axis spans the grey header card (204) up to flat
+// white; the saturation axis spans well below the green card's own tint up to
+// well above it.
+func reportRosterCountSweep(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame, ranks map[int]string, totals map[string]int) {
+	t.Helper()
+	ing := New(nil, nil, engine)
+	t.Logf("  %8s %7s %9s %7s %9s", "minLuma", "maxSat", "correct", "WRONG", "refused")
+	for _, lum := range []int{230, 234, 236, 238, 240, 242, 244, 246, 250} {
+		for _, sat := range []int{10, 20, 40, 90, 130, 160, 200} {
+			correct, wrong, refused := 0, 0, 0
+			for _, f := range frames {
+				got, err := ing.readGroupCountTotalAt(ctx, f.Img, groupHeaderRegion, lum, sat)
+				switch {
+				case err != nil:
+					refused++
+				case got == totals[ranks[f.Seq]]:
+					correct++
+				default:
+					wrong++
+				}
+			}
+			mark := ""
+			if lum == countMaskMinLuma && sat == countMaskMaxSat {
+				mark = "   <- shipped"
+			}
+			t.Logf("  %8d %7d %9d %7d %9d%s", lum, sat, correct, wrong, refused, mark)
+		}
+	}
+}
+
+// reportRosterRetrySweep sweeps nameRetry's preprocessing over exactly the
+// bands the primary read returns nothing for.
+//
+// nameRetry's own doc comment asks for this in as many words -- "this one has
+// NOT been swept. Measure it before defending these values" -- and it is
+// overdue: the roster gate's remaining misses are almost entirely RETRIED
+// reads. `make probe-roster PROBE_ARGS=-roster.detail` shows Nichoj read as
+// "Nichop" on eight frames, 2Rule as "aeule ts" on two, B52RN10 as
+// "B52RNI0 ts", Bubs1000 as "Bubst000" -- every one of them a raw-line read
+// standing in for a primary that came back empty, and every one of them
+// carrying a confidence near zero. The retry's options were mirrored from the
+// VS route rather than fitted here, and CLAUDE.md is explicit that options
+// measured through one field are not evidence about another.
+//
+// IT SWEEPS ONLY THE RETRIED BANDS, and that is the point rather than an
+// optimisation. Scoring the whole capture would let a shape's effect on the
+// 244 bands the primary already reads swamp its effect on the 87 it does not,
+// and those 87 are the entire population this constant governs. The primary
+// pass runs once, up front, at the shipped nameOptions, to decide which bands
+// those are -- so every row of the table below is scored over the same band
+// set and the columns are comparable.
+func reportRosterRetrySweep(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame, truth rosterTruth) {
+	t.Helper()
+	ing := &Ingester{engine: engine}
+
+	// Pass one: the shipped primary, to find the bands that need a retry at
+	// all. Recorded as (frame, rect) so each sweep row re-reads the same
+	// pixels.
+	type emptyBand struct {
+		seq  int
+		y0   int
+		img  image.Image
+		rect transport.Rect
+	}
+	var pending []emptyBand
+	totalBands := 0
+	for _, f := range frames {
+		bands, err := SegmentRows(f.Img, memberListRegion, memberRowPitch)
+		if err != nil {
+			t.Logf("  frame %d: segmenting: %v", f.Seq, err)
+			continue
+		}
+		for _, band := range bands {
+			totalBands++
+			rect := fieldRect(band, f.Img, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1)
+			res, err := ing.readField(ctx, f.Img, rect, nameSpec, nameOptions)
+			if err != nil {
+				t.Fatalf("reading frame %d band %d: %v", f.Seq, band.Y0, err)
+			}
+			if strings.TrimSpace(res.Text) == "" {
+				pending = append(pending, emptyBand{seq: f.Seq, y0: band.Y0, img: f.Img, rect: rect})
+			}
+		}
+	}
+	t.Logf("  the primary read (shipped nameOptions, PSM 7) returns nothing on %d of %d bands;"+
+		" every row below is scored over those %d and no others", len(pending), totalBands, len(pending))
+	if len(pending) == 0 {
+		t.Log("  nothing to retry: this mode has no population to measure")
+		return
+	}
+
+	psms := []int{ocr.PSMRawLine}
+	if *rosterFBPSM {
+		psms = []int{ocr.PSMRawLine, ocr.PSMSingleWord}
+	}
+	t.Logf("  %-16s %-6s %7s %9s %9s %7s", "shape", "psm", "exact", "unmatched", "empty", "below")
+	for _, psm := range psms {
+		for _, cfg := range probeShapeGrid() {
+			plan := readPlan{
+				spec: ocr.Spec{MinConf: nameSpec.MinConf, PSM: psm},
+				opts: cfg.opts,
+			}
+			exact, unmatched, empty, below := 0, 0, 0, 0
+			for _, b := range pending {
+				res, err := ing.readField(ctx, b.img, b.rect, plan.spec, plan.opts)
+				if err != nil {
+					t.Fatalf("retry read frame %d band %d: %v", b.seq, b.y0, err)
+				}
+				text := strings.TrimSpace(res.Text)
+				switch {
+				case text == "":
+					empty++
+				case truth.Names[text]:
+					exact++
+					if res.Confidence < nameSpec.MinConf {
+						below++
+					}
+				default:
+					unmatched++
+				}
+			}
+			mark := ""
+			if psm == nameRetry.spec.PSM && cfg.opts == nameRetry.opts {
+				mark = "   <- shipped"
+			}
+			t.Logf("  %-16s %-6d %7d %9d %9d %7d%s", cfg.label, psm, exact, unmatched, empty, below, mark)
+		}
+	}
+	t.Log("  `below` is exact reads whose confidence is under nameSpec.MinConf -- correct, and refused")
+	t.Log("  for confidence at the creation branch, so a shape that moves `exact` without moving")
+	t.Log("  `below` has not necessarily moved the gate.")
+}
+
+// reportRosterSatSweep sweeps the SATURATION-mask retry for the name field,
+// scored at member level.
+//
+// The axis. Names are drawn in saturated orange (green for the capturing
+// account) on a cream card. Every preprocessing shape ever fitted for this
+// field is a luma operation, so the 24-shape grid that set nameOptions and the
+// 24 that -roster.fbsweep runs over nameRetry are 48 samples of ONE axis --
+// the same blind spot that left the group header count unread for a milestone
+// (vision.WhiteInkMask). vision.SaturatedInkMask is the other axis.
+//
+// WHY MEMBER LEVEL AND NOT BAND LEVEL, stated because the two disagree on this
+// field and the cheaper number is the misleading one. -roster.fbsweep's best
+// shapes gain five exact BANDS over the shipped retry and lose a MEMBER, which
+// is CLAUDE.md's "two aggregates side by side are not a causal claim" in its
+// most concrete form: a band-keyed count and a member-keyed loss are different
+// aggregates, and the gate counts members. So this mode reports what
+// -roster.members reports, once per setting.
+//
+// The verdict split is the point rather than the total: CREATABLE is a member
+// whose best band both scores AutoAccept-or-better AND clears nameSpec.MinConf,
+// LOW-CONF is one that scores but cannot be created from, MISS is neither. A
+// setting that converts MISS into LOW-CONF has moved a real member into reach
+// of a corroboration rule without moving this headline at all, so all three
+// columns have to be read together.
+func reportRosterSatSweep(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame, truth rosterTruth) {
+	t.Helper()
+	orig := nameRetry
+	defer func() { nameRetry = orig }()
+
+	t.Logf("  shipped retry (luma, %s): the baseline every row below is read against", "gray+inv x4")
+	t.Logf("  %-8s %-8s %-6s %10s %9s %6s", "minSat", "upscale", "psm", "CREATABLE", "LOW-CONF", "MISS")
+
+	score := func(label string) {
+		reads := readRosterNames(ctx, t, engine, frames, nameXFrac0)
+		creatable, lowConf, miss := rosterMemberVerdicts(reads, truth)
+		t.Logf("  %s %10d %9d %6d", label, creatable, lowConf, miss)
+	}
+
+	nameRetry = orig
+	score(fmt.Sprintf("%-8s %-8s %-6d", "-", "x4", orig.spec.PSM))
+
+	for _, minSat := range []int{30, 40, 50, 60, 75, 90, 110} {
+		for _, up := range []int{2, 3, 4} {
+			for _, psm := range []int{ocr.PSMSingleLine, ocr.PSMRawLine, ocr.PSMSingleWord} {
+				ms := minSat
+				nameRetry = readPlan{
+					spec: ocr.Spec{MinConf: nameSpec.MinConf, PSM: psm},
+					opts: vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: up},
+					wrap: func(img image.Image) image.Image { return vision.SaturatedInkMask(img, ms) },
+				}
+				score(fmt.Sprintf("%-8d %-8s %-6d", minSat, fmt.Sprintf("x%d", up), psm))
+			}
+		}
+	}
+}
+
+// rosterMemberVerdicts is reportRosterMembers' classification without the
+// per-member log, so a sweep can report the three counts once per setting.
+// Shared rather than duplicated: a sweep whose verdict rule drifted from the
+// mode it is meant to be sweeping would report progress that -roster.members
+// does not agree with.
+func rosterMemberVerdicts(reads []rosterBandRead, truth rosterTruth) (creatable, lowConf, miss int) {
+	best := rosterBestBands(reads, truth)
+	for _, m := range truth.Members {
+		b := best[m.Name]
+		switch {
+		case !b.found || b.score < roster.AutoAccept:
+			miss++
+		case b.read.Conf >= nameSpec.MinConf:
+			creatable++
+		default:
+			lowConf++
+		}
+	}
+	return creatable, lowConf, miss
+}
+
+// reportRosterAgreement asks whether the LUMA and SATURATION reads of a name
+// band agreeing is a safe enough signal to create a member from, when the
+// engine's own confidence says no.
+//
+// The question this exists to answer. Two of the roster gate's remaining
+// misses are reads that are exactly right and are refused at the creation
+// branch for confidence alone -- Bubs1000 reads "Bubs1000" at 0.19,
+// IamIronman2025 reads "lamironman2025" at 0.00. nameSpec.MinConf is what
+// stops a member being minted from noise and CLAUDE.md is explicit that
+// lowering it is the wrong move, so the question is whether some OTHER
+// evidence is strong enough to stand in for confidence on this field.
+//
+// Agreement between two independent reads is the candidate, and it is the
+// same instrument readGroupCountTotal already uses on the group count: a
+// saturation mask and a luma pass are different IMAGES of the same glyphs, so
+// a threshold or a preprocessing quirk that pushes one onto a wrong string
+// does not push the other onto the same wrong string.
+//
+// WHAT WOULD MAKE IT UNSAFE, and why this mode reports it rather than a
+// headline. The roster gate scores orphans -- members minted from a read that
+// matches nobody -- at a hard zero, so a rule that recovers two real members
+// and mints one person who does not exist is a net LOSS, not a trade. So the
+// table below counts agreed-below-MinConf bands in two columns: those whose
+// agreed text scores AutoAccept-or-better against some transcribed member,
+// and those that agree on something matching nobody. The second column is the
+// one that decides this.
+func reportRosterAgreement(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame, truth rosterTruth) {
+	t.Helper()
+	ing := &Ingester{engine: engine}
+
+	satOpts := vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: *rosterSatUp}
+	agreeGood, agreeOrphan, disagree, bothWeak := 0, 0, 0, 0
+	recovered := map[string]string{}
+	var orphanExamples []string
+
+	for _, f := range frames {
+		bands, err := SegmentRows(f.Img, memberListRegion, memberRowPitch)
+		if err != nil {
+			continue
+		}
+		for _, band := range bands {
+			rect := fieldRect(band, f.Img, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1)
+			luma, _, err := ing.readFieldWithRetry(ctx, f.Img, rect,
+				readPlan{spec: nameSpec, opts: nameOptions}, nameRetry)
+			if err != nil {
+				t.Fatalf("luma read frame %d band %d: %v", f.Seq, band.Y0, err)
+			}
+			sat, err := ing.readField(ctx, vision.SaturatedInkMask(f.Img, probeSatThresholds(t)[0]), rect, nameSpec, satOpts)
+			if err != nil {
+				t.Fatalf("saturation read frame %d band %d: %v", f.Seq, band.Y0, err)
+			}
+			lt, st := strings.TrimSpace(luma.Text), strings.TrimSpace(sat.Text)
+			if lt == "" || st == "" {
+				continue
+			}
+			// Only the bands the confidence gate currently refuses are in
+			// scope: a band either read already clears MinConf on needs no
+			// help and cannot be made worse by this rule.
+			if luma.Confidence >= nameSpec.MinConf || sat.Confidence >= nameSpec.MinConf {
+				continue
+			}
+			bothWeak++
+			if roster.Normalize(lt) != roster.Normalize(st) {
+				disagree++
+				continue
+			}
+			// They agree. Would the agreed text name somebody real?
+			bestName, bestScore := "", 0
+			for _, m := range truth.Members {
+				if s := roster.TokenSetRatio(lt, m.Name); s > bestScore {
+					bestName, bestScore = m.Name, s
+				}
+			}
+			if bestScore >= roster.AutoAccept {
+				agreeGood++
+				recovered[bestName] = lt
+			} else {
+				agreeOrphan++
+				if len(orphanExamples) < 12 {
+					orphanExamples = append(orphanExamples, fmt.Sprintf("%q (best %q at %d)", lt, bestName, bestScore))
+				}
+			}
+		}
+	}
+
+	t.Logf("  bands where BOTH reads are below nameSpec.MinConf=%.2f: %d", nameSpec.MinConf, bothWeak)
+	t.Logf("    the two reads agree and name a real member:  %d", agreeGood)
+	t.Logf("    the two reads agree and name NOBODY:         %d   <- each of these is an orphan", agreeOrphan)
+	t.Logf("    the two reads disagree (no creation either way): %d", disagree)
+	for _, e := range orphanExamples {
+		t.Logf("      would mint: %s", e)
+	}
+	names := make([]string, 0, len(recovered))
+	for n := range recovered {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		t.Logf("      would recover %-22q from an agreed read of %q", n, recovered[n])
+	}
+	t.Log("  A rule is worth shipping only if the NOBODY column is zero: the roster gate scores")
+	t.Log("  orphans at a hard zero, so recovering two real members and minting one person who")
+	t.Log("  does not exist is a net loss rather than a trade.")
+}
+
+// probeSatThresholds is the saturation thresholds this run reads names at:
+// -roster.sats when given, otherwise the shipped nameSatMinSats.
+//
+// Defaulting to the shipped list rather than to a probe-chosen one is the
+// point. CLAUDE.md records a measurement that stopped a good change because
+// the probe's default modelled a WEAKER pipeline than production -- one PSM
+// where IngestVS reads two -- and reported a misattribution that the shipped
+// path does not make. A probe whose default is not what ships is an instrument
+// that is honest about what it measured and silent about what you assumed.
+func probeSatThresholds(t *testing.T) []int {
+	t.Helper()
+	if strings.TrimSpace(*rosterSats) == "" {
+		return nameSatMinSats
+	}
+	var out []int
+	for _, f := range strings.Split(*rosterSats, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		v, err := strconv.Atoi(f)
+		if err != nil {
+			t.Fatalf("-roster.sats=%q: %q is not a number", *rosterSats, f)
+		}
+		out = append(out, v)
+	}
+	if len(out) == 0 {
+		t.Fatalf("-roster.sats=%q named no thresholds", *rosterSats)
+	}
+	return out
+}
+
+// reportRosterFirstWins models the thing -roster.members does not: production
+// creates a member from the FIRST sighting of a row that clears the confidence
+// floor, not from the best sighting.
+//
+// WHY THE DISTINCTION IS NOT ACADEMIC. Creation is first-writer-wins and
+// irreversible, and once a row resolves the geometric dedupe stops re-reading
+// it, so every later photograph of that row is discarded however much better
+// it is. Capture 1's Nichoj is the worked case: sighting one reads "Nicho" at
+// confidence 0.41, one hundredth above nameSpec.MinConf, and mints a member
+// nobody transcribed; the eleven sightings after it all read "Nichoj", eight
+// of them above 0.90, and none of them is ever read. -roster.members scores
+// that member CREATABLE at 100, because it asks what the best band says. The
+// gate scores it as an orphan.
+//
+// So this mode answers the gate's question and -roster.members answers a
+// friendlier one. Both are kept: the best-band view is what says whether a
+// read exists AT ALL for a member, which is the ceiling any ordering rule has
+// to work inside, and this one says how much of that ceiling the ordering
+// actually reaches.
+//
+// The model is an approximation in one direction, stated so nobody quotes it
+// as production: it groups bands by which transcribed member they best match,
+// where production groups them by geometric position. A band that matches
+// nobody is invisible here and would be a creation in production.
+func reportRosterFirstWins(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame, truth rosterTruth) {
+	t.Helper()
+	reads := readRosterNames(ctx, t, engine, frames, nameXFrac0)
+	sort.SliceStable(reads, func(i, j int) bool {
+		if reads[i].Seq != reads[j].Seq {
+			return reads[i].Seq < reads[j].Seq
+		}
+		return reads[i].Y0 < reads[j].Y0
+	})
+
+	// The earliest read, in capture order, that both names this member and
+	// clears the floor -- which is the read production would store.
+	first := map[string]rosterBandRead{}
+	seenText := map[string]map[string]int{} // member -> normalized read -> times
+	lowFloor := *rosterCreateConf
+	if *rosterCorroborate > 1 && *rosterCorrConf < lowFloor {
+		lowFloor = *rosterCorrConf
+	}
+	for _, r := range reads {
+		if r.Text == "" || r.Conf < lowFloor {
+			continue
+		}
+		best, bestScore := "", 0
+		for _, m := range truth.Members {
+			if s := roster.TokenSetRatio(r.Text, m.Name); s > bestScore {
+				best, bestScore = m.Name, s
+			}
+		}
+		if best == "" {
+			continue
+		}
+		if _, done := first[best]; done {
+			continue
+		}
+		_ = bestScore
+		// The rule: a single read confident enough to stand alone, OR a weaker
+		// one that has come back identical from another photograph of the row.
+		// The normalized form is what has to repeat, not the raw text, because
+		// two sightings differing only in spacing are the same evidence.
+		confidentAlone := r.Conf >= *rosterCreateConf
+		corroborated := false
+		if *rosterCorroborate > 1 {
+			if seenText[best] == nil {
+				seenText[best] = map[string]int{}
+			}
+			k := roster.Normalize(r.Text)
+			seenText[best][k]++
+			corroborated = seenText[best][k] >= *rosterCorroborate
+		}
+		if !confidentAlone && !corroborated {
+			continue
+		}
+		first[best] = r
+	}
+
+	covered, orphaned, uncreated := 0, 0, 0
+	var lines []string
+	for _, m := range truth.Members {
+		r, ok := first[m.Name]
+		switch {
+		case !ok:
+			uncreated++
+			lines = append(lines, fmt.Sprintf("    %-22q NEVER CREATED: no sighting clears conf %.2f", m.Name, *rosterCreateConf))
+		case roster.TokenSetRatio(r.Text, m.Name) >= roster.AutoAccept:
+			covered++
+		default:
+			orphaned++
+			lines = append(lines, fmt.Sprintf("    %-22q ORPHANED as %q (frame %d, conf %.2f, scores %d)",
+				m.Name, r.Text, r.Seq, r.Conf, roster.TokenSetRatio(r.Text, m.Name)))
+		}
+	}
+	sort.Strings(lines)
+	for _, l := range lines {
+		t.Log(l)
+	}
+	t.Logf("  first-sighting-wins at conf floor %.2f, corroboration %d: covered %d, ORPHANED %d, never created %d, of %d",
+		*rosterCreateConf, *rosterCorroborate, covered, orphaned, uncreated, len(truth.Members))
+	t.Log("  ORPHANED is the column that decides a change: the roster gate scores an invented")
+	t.Log("  member at a hard zero, so a floor that covers one more member and invents one is")
+	t.Log("  a loss. `never created` is recoverable through the review queue.")
 }

@@ -318,7 +318,7 @@ func ParsePoints(s string) (int64, error) {
 // inflated expected leaves the group short of its own header, which
 // IngestRoster reports as status "partial". An under-count is the one that does
 // silent damage, because expected also gates member creation
-// (gt.matchedOrCreated < gt.expected in roster.go): a fabricated 6 against a
+// (groupTracker.canCreate in roster.go): a fabricated 6 against a
 // real 64-member group stops the other 58 from being created at all and queues
 // them as no_confident_match_group_full. N <= M is precisely the rule that
 // closes the under-counting half.

@@ -347,6 +347,80 @@ var (
 // works. That inheritance is its own unmeasured assumption — fitting the VS
 // retry separately was worth two members — and this one has NOT been swept.
 // Measure it before defending these values.
+// nameSatMinSats and nameSatOptions are the extra reads every name band takes,
+// taken off a saturation mask rather than off luma.
+//
+// THE AXIS. Member names are drawn in saturated orange -- green for the
+// account running the capture -- on a cream card. vision.Options is entirely
+// luma operations, so the 24-shape grid that set nameOptions and the 24
+// -roster.fbsweep runs over nameRetry are 48 samples of one axis, and the
+// colour one had never been tried. vision.SaturatedInkMask is the other.
+//
+// A UNION, NOT A REPLACEMENT, and that is measured rather than cautious. As a
+// replacement for nameRetry the mask is worse than what ships: `make
+// probe-roster PROBE_ARGS=-roster.satsweep` puts it at 50-59 CREATABLE members
+// against the luma retry's 60 across every threshold, upscale and PSM tried.
+// The two fail on DIFFERENT members, which is the property that makes a union
+// worth having and a replacement pointless. Measured with `-roster.satunion`,
+// at member level because that is what the gate counts:
+//
+//	shipped luma only        CREATABLE 61  LOW-CONF 4  MISS 10
+//	union, minSat 70         CREATABLE 63  LOW-CONF 2  MISS 10
+//	union, minSat 75         CREATABLE 66  LOW-CONF 2  MISS  7   <- this
+//	union, minSat 80         CREATABLE 66  LOW-CONF 1  MISS  8
+//	union, minSat 85         CREATABLE 66  LOW-CONF 1  MISS  8
+//	union, minSat 90         CREATABLE 63  LOW-CONF 2  MISS 10
+//
+// 75-85 is a plateau rather than a spike, which is worth saying explicitly
+// because the group-count mask's own threshold is a single point (see
+// countMaskMinLuma) and the two must not be read as the same kind of constant.
+// The upscale is fitted on the same measurement: x2 and x3 tie at 66, x4 gives
+// 65. Nothing else is applied, because a mask is already binary and threshold
+// and invert would both re-decide from luma what colour has already decided.
+//
+// WHY CONFIDENCE ARBITRATES. At the creation branch there is no roster to
+// score a read against -- an unknown member has nothing to rank against -- so
+// the closed-set argument IngestVS uses to take "the better of two" reads is
+// unavailable here, and the engine's own confidence is the only signal both
+// reads carry. Whether it actually discriminates was the open question, and on
+// this capture it does: Smileypwns reads "Suileypons" at 0.00 through luma and
+// "Smileypwns" at 0.74 through the mask, Nichoj reads "Nichop" at 0.10 and
+// "Nichoj" at 0.49. Those two are the mechanism, not an illustration of it.
+//
+// Retrying a NAME this way is safe for the reason nameRetry's comment gives
+// and points still has no equivalent: a name has a known roster behind it, so
+// a bad second read fails to match and queues. A second read of a NUMBER can
+// manufacture a plausible value, which is why the group count's own second
+// read has to agree with the first rather than beat it (readGroupCountTotal).
+// THREE thresholds, not one, and each was earned. The saturation that
+// separates an orange name from a cream card is not the one that separates a
+// green name from it, and it is not the one that keeps a thin descender
+// either -- the settings recover DIFFERENT members, which is the same "they
+// fail on different members" shape that makes the union worth having at all.
+// Measured at member level with `-roster.sats`, which is the number the gate
+// counts:
+//
+//	75            CREATABLE 66  LOW-CONF 2  MISS 7
+//	110           CREATABLE 68  LOW-CONF 1  MISS 6
+//	60, 75        CREATABLE 67  LOW-CONF 2  MISS 6
+//	60, 120       CREATABLE 71  LOW-CONF 0  MISS 4
+//	75, 120       CREATABLE 72  LOW-CONF 1  MISS 2
+//	55, 75, 120   CREATABLE 73  LOW-CONF 0  MISS 2
+//	60, 75, 120   CREATABLE 73  LOW-CONF 0  MISS 2   <- this
+//
+// The third threshold is not padding: at 75 and 120 alone, Nichoj reads
+// "Nicho" -- the descender of the final "j" does not survive either mask --
+// and the roster gate creates a member nobody transcribed, which it scores at
+// a hard zero. 60 keeps the descender and reads the name exactly. That one
+// member is the difference between 71/75 and 72/75 against a 0.95 bar, and it
+// is also the difference between one orphan and none.
+//
+// 55,75,120 ties and is not taken: a tie is not a reason to move, and 60 is
+// the value the per-member effect was first observed at.
+var nameSatMinSats = []int{60, 75, 120}
+
+var nameSatOptions = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 3}
+
 var nameRetry = readPlan{
 	spec: ocr.Spec{MinConf: nameSpec.MinConf, PSM: ocr.PSMRawLine},
 	opts: vision.Options{SkipEqualize: true, SkipThreshold: true, UpscaleFactor: 4},
@@ -613,11 +687,24 @@ type rosterRun struct {
 // "group full" is checked against, per the recon's structural guard), and
 // the geometric dedupe cursor.
 type groupTracker struct {
-	expected         int
-	countKnown       bool
-	matchedOrCreated int
-	contentY         int
-	rows             []collectedRow
+	expected   int
+	countKnown bool
+	// resolved is the set of members this group's rows have resolved TO, not
+	// the number of rows that resolved. The distinction is the creation
+	// budget's whole correctness argument -- see canCreate.
+	resolved map[int64]bool
+	contentY int
+	rows     []collectedRow
+}
+
+// noteResolved records that one of this group's rows resolved to a member.
+// Idempotent by construction: a row re-observed on a later frame names the
+// same member and does not spend the budget a second time.
+func (gt *groupTracker) noteResolved(memberID int64) {
+	if gt.resolved == nil {
+		gt.resolved = map[int64]bool{}
+	}
+	gt.resolved[memberID] = true
 }
 
 // collectedRow is one row band this group has already been photographed
@@ -736,21 +823,36 @@ func (gt *groupTracker) seenRow(y int) (int, bool) {
 // two other sites: the review reason processRow queues, and reconciliation's
 // refusal to call such a group complete.
 //
-// ONE ORDERING PROPERTY THIS RELIES ON, and it is the capture's, not the
-// code's. Every MATCH charges the budget too (processRow), so a group whose
-// rows are re-observed enough times exhausts `expected` on re-matches alone:
-// R3 reports yielded=90 against expected=64 on capture 1 and still creates
-// every member it can, only because its first sightings all happen in the
-// forward scan and the duplicates pile up behind them. A capture whose repeat
-// observations interleave with first sightings would spend the budget on
-// re-matches and refuse a real creation as `no_confident_match_group_full`.
-// The empirical check that this is not happening today is that the reason
-// appears zero times in capture 1's review queue -- which is evidence about
-// this capture, not a property of this method. If it ever starts firing on a
-// group that is demonstrably not full, the fix is to charge the budget on
-// DISTINCT members rather than on row events, not to raise `expected`.
+// THE BUDGET IS SPENT ON DISTINCT MEMBERS, NOT ON ROW EVENTS, and that is a
+// correction rather than a refinement. It used to be a counter incremented on
+// every resolution, match or creation alike, so a group whose rows are
+// re-observed often enough exhausted `expected` on re-matches of members it
+// had already counted. An earlier version of this comment argued the exposure
+// was theoretical, on the evidence that `no_confident_match_group_full`
+// appeared zero times in capture 1's review queue -- while noting that this
+// was evidence about the capture and not a property of the method, and that
+// the fix, if it ever fired, was to charge distinct members.
+//
+// It fired. Attributing rows to in-list header cards (headercard.go) means R2
+// is now tracked on every frame that shows its header rather than only the
+// frames where it is sticky, and the capture re-photographs that stretch of
+// list repeatedly: R2 resolved 60 row events against a real 11 members, spent
+// its budget on re-matches, and refused two members that were read perfectly
+// well -- Bubs1000 and Nichoj, both queued as `no_confident_match_group_full`
+// on a group with nine of its eleven members still uncreated.
+//
+// A set makes the budget mean what `expected` means. A row re-observed on a
+// later frame names a member already in the set and cannot spend anything, so
+// the arithmetic no longer depends on first sightings happening to come before
+// duplicates -- which was never a property the capture guaranteed, only one it
+// happened to have.
+//
+// GroupTally.MatchedOrCreated is deliberately NOT changed to match: it counts
+// row events, that is what "yielded" means in the gate's report, and a tally
+// that silently became a distinct-member count would make `yielded` and
+// `parsed` incomparable.
 func (gt *groupTracker) canCreate() bool {
-	return gt.countKnown && gt.matchedOrCreated < gt.expected
+	return gt.countKnown && len(gt.resolved) < gt.expected
 }
 
 // advance decides this frame's contentY: where in this group's own scroll
@@ -887,8 +989,7 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		}
 	}
 
-	var prevGroupKey string
-	havePrev := false
+	prevFrameRanks := map[string]bool{}
 	var totalParsed int
 
 	for _, frame := range listFrames {
@@ -938,7 +1039,33 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		groupName, headerTotal, herr := parseGroupHeader(headerRes.Text)
 		countKnown := herr == nil
 		if herr != nil {
-			if err := run.queueReview(ctx, i, frame.ScreenshotID, RowBand{Y0: hy0, Y1: hy1}, headerRes.Text, nil, "unparseable_group_header", 0); err != nil {
+			// The colour-mask retry. Whole-field OCR of this header cannot
+			// read a count whose digits touch -- capture 1's R2 "1/11" comes
+			// back "VN" on all 21 of its frames -- and every preprocessing
+			// axis anyone swept starts from luma, which is the axis that
+			// cannot see the field. readGroupCountTotal masks on colour
+			// instead, which separates the white total from the saturated
+			// online count AND leaves each digit's own black outline outside
+			// the mask, so the digits come apart into addressable column runs.
+			// Its own doc comment carries the acceptance rules and
+			// vision.WhiteInkMask's carries the measurement.
+			//
+			// It is a retry and not a replacement, on the same rule
+			// readFieldWithRetry states: it runs only where the primary
+			// refused. Measured over this capture's 61 frames it reads all 61
+			// correctly, and moved off the header onto the member rows -- 183
+			// bands where there is no count at all -- it refuses every one
+			// (`make probe-roster PROBE_ARGS=-roster.countshift`).
+			//
+			// Only the TOTAL is recovered. The name is not: parseGroupHeader
+			// derives it from the text preceding the count token, and there is
+			// no such token in a read like "R2) I'm Alright VN". The raw text
+			// stands in, which is honest about what was seen and costs
+			// nothing, because the name is triage-only and never a key (see
+			// parseGroupHeader's own doc comment).
+			if total, merr := i.readGroupCountTotal(ctx, img, groupHeaderRegion); merr == nil {
+				groupName, headerTotal, countKnown = strings.TrimSpace(headerRes.Text), total, true
+			} else if err := run.queueReview(ctx, i, frame.ScreenshotID, RowBand{Y0: hy0, Y1: hy1}, headerRes.Text, nil, "unparseable_group_header", 0); err != nil {
 				return RosterResult{}, err
 			}
 		}
@@ -991,7 +1118,6 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		// the header band, already measured by
 		// `make probe-roster PROBE_ARGS=-roster.headerink`), and guessing
 		// without one would be the blind tap CLAUDE.md's invariant #3 forbids.
-		groupKey := rankRes.Rank
 		// Rank is not OCR-derived, so invariant #5's confidence-on-every-fact
 		// rule does not literally reach it and members.Rank has nowhere to
 		// carry a score. Its provenance is still worth having when a capture
@@ -1003,31 +1129,6 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		slog.DebugContext(ctx, "ingest: frame rank matched",
 			"capture_id", captureID, "frame_seq", frame.Seq, "screenshot_id", frame.ScreenshotID,
 			"rank", rankRes.Rank, "score", rankRes.Score, "gap", rankRes.Gap)
-
-		gt, exists := run.groups[groupKey]
-		if !exists {
-			gt = &groupTracker{expected: headerTotal, countKnown: countKnown}
-			run.groups[groupKey] = gt
-			run.res.PerGroup[groupKey] = GroupTally{Expected: headerTotal, ExpectedKnown: countKnown, Name: groupName}
-		} else if !gt.countKnown && countKnown {
-			// A count read on a LATER frame of the same group is still the
-			// count, and a tracker is created on whichever frame sighted the
-			// group first -- which is wherever a swipe happened to land, not
-			// something the capture chooses. Without this, a group whose
-			// first header failed would stay budgetless for the rest of the
-			// run with the evidence for its size sitting in a frame already
-			// read. The upgrade only ever goes one way: a header that parsed
-			// is never overwritten by a later one that did not, so noise on
-			// one frame cannot take a budget away.
-			gt.expected, gt.countKnown = headerTotal, true
-			tally := run.res.PerGroup[groupKey]
-			tally.Expected, tally.ExpectedKnown, tally.Name = headerTotal, true, groupName
-			run.res.PerGroup[groupKey] = tally
-		}
-
-		sameGroupAsPrevFrame := havePrev && groupKey == prevGroupKey
-		gt.advance(frame.OffsetPx, sameGroupAsPrevFrame)
-		prevGroupKey, havePrev = groupKey, true
 
 		// Every band SegmentRows returns is a whole row. There used to be a
 		// drop here of each continuing frame's topmost band, on the theory
@@ -1056,8 +1157,78 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 			return RosterResult{}, fmt.Errorf("ingest: segmenting screenshot %d: %w", frame.ScreenshotID, err)
 		}
 
+		// Every header on this frame, sticky first, then any group header CARD
+		// standing inside the member list. The sticky one is prepended rather
+		// than searched for: it has already been read above, it always sits
+		// above every band, and it is the owner of any row a card does not
+		// claim. headercard.go's own doc comment carries the nine members
+		// capture 1 loses without this and why SegmentRows cannot surface a
+		// card on its own.
+		headers := []headerCard{{Rank: rankRes.Rank, Band: groupHeaderRegion, Y0: hy0, Score: rankRes.Score, Gap: rankRes.Gap}}
+		cards, err := findHeaderCards(img, bands)
+		if err != nil {
+			return RosterResult{}, fmt.Errorf("ingest: capture %d frame seq %d: finding group header cards: %w", captureID, frame.Seq, err)
+		}
+		headers = append(headers, cards...)
+
+		// The sticky header's own tally, from the reads above.
+		run.noteHeader(rankRes.Rank, groupName, headerTotal, countKnown)
+
+		// Each in-list card is read the same way the sticky header was, through
+		// its OWN band: same crop fractions in X, this card's Y. A card states
+		// its group's size exactly as the sticky header does, and on this
+		// capture R1 "Danger Zone 0/12" is stated on no other kind of frame --
+		// it is never sticky, so without this read R1 has no tally at all and
+		// the roster gate's condition 4 reports a four-group capture described
+		// with three groups.
+		for _, card := range cards {
+			cardRes, err := i.readField(ctx, img, card.Band, groupHeaderSpec, groupHeaderOptions)
+			if err != nil {
+				return RosterResult{}, fmt.Errorf("ingest: reading group header card on screenshot %d: %w", frame.ScreenshotID, err)
+			}
+			cardName, cardTotal, cerr := parseGroupHeader(cardRes.Text)
+			cardKnown := cerr == nil
+			if cerr != nil {
+				if total, merr := i.readGroupCountTotal(ctx, img, card.Band); merr == nil {
+					cardName, cardTotal, cardKnown = strings.TrimSpace(cardRes.Text), total, true
+				} else {
+					cy0 := int(card.Band.Y1 * float64(img.Bounds().Dy()))
+					cy1 := int(card.Band.Y2 * float64(img.Bounds().Dy()))
+					if err := run.queueReview(ctx, i, frame.ScreenshotID, RowBand{Y0: cy0, Y1: cy1}, cardRes.Text, nil, "unparseable_group_header", 0); err != nil {
+						return RosterResult{}, err
+					}
+				}
+			}
+			run.noteHeader(card.Rank, cardName, cardTotal, cardKnown)
+			slog.DebugContext(ctx, "ingest: in-list group header card",
+				"capture_id", captureID, "frame_seq", frame.Seq, "screenshot_id", frame.ScreenshotID,
+				"rank", card.Rank, "score", card.Score, "gap", card.Gap, "band_y0", card.Y0)
+		}
+
+		// Advance each group on this frame ONCE, and only if the previous
+		// frame also carried it. frame.OffsetPx is the scroll between two
+		// consecutive frames, so it is this group's own travel exactly when
+		// this group was on screen for both of them -- which, now that a frame
+		// can carry two groups, is a per-group question rather than the single
+		// prevGroupKey comparison it used to be. A group returned to after an
+		// absence keeps the contentY it had; see groupTracker.advance for why
+		// that is the only assumption the frame pair supports.
+		thisFrameRanks := map[string]bool{}
+		for _, hc := range headers {
+			thisFrameRanks[hc.Rank] = true
+		}
+		for rank := range thisFrameRanks {
+			run.groups[rank].advance(frame.OffsetPx, prevFrameRanks[rank])
+		}
+		prevFrameRanks = thisFrameRanks
+
 		regionTop := int(memberListRegion.Y1 * float64(img.Bounds().Dy()))
 		for _, band := range bands {
+			// Which group's row this is: the last header at or above the
+			// band's top, which is the sticky header unless a card stands
+			// between them.
+			groupKey := ownerOf(headers, band)
+			gt := run.groups[groupKey]
 			rowY := gt.contentY + (band.Y0 - regionTop)
 			// The design doc also specifies an identity-based cross-check
 			// alongside this geometric dedupe, flagging a disagreement
@@ -1192,10 +1363,44 @@ func (run *rosterRun) readAllianceMemberCount(ctx context.Context, i *Ingester, 
 
 // noteMemberFor records on the group's public tally that one of its rows
 // ended as a member. It exists as a helper rather than inline at each site
-// because the private groupTracker.matchedOrCreated -- the group's creation
+// because the private groupTracker.resolved set -- the group's creation
 // budget -- and the exported GroupTally.MatchedOrCreated count the same event
 // and must move together, or `control ingest` prints a yielded= column that
 // nothing maintains. Both call sites bump the tracker and then call this.
+// noteHeader records one header sighting of a group: it creates the group's
+// tracker on first sight and upgrades an unread count when a later header
+// supplies one.
+//
+// Extracted from IngestRoster's frame loop when a frame stopped carrying
+// exactly one header. It is called for the sticky header and once for each
+// in-list card, and the two must behave identically -- a card is the same
+// element drawn further down the screen, and a version of this that upgraded
+// counts from one and not the other would depend on where a swipe happened to
+// stop.
+//
+// THE UPGRADE ONLY EVER GOES ONE WAY. A tracker is created on whichever frame
+// sighted the group first, which is wherever the capture happened to land, so
+// a group whose first header failed would otherwise stay budgetless for the
+// rest of the run with the evidence for its size sitting in a frame already
+// read. A header that parsed is never overwritten by a later one that did
+// not, so noise on one frame cannot take a budget away.
+func (run *rosterRun) noteHeader(rank, name string, total int, countKnown bool) *groupTracker {
+	gt, exists := run.groups[rank]
+	if !exists {
+		gt = &groupTracker{expected: total, countKnown: countKnown}
+		run.groups[rank] = gt
+		run.res.PerGroup[rank] = GroupTally{Expected: total, ExpectedKnown: countKnown, Name: name}
+		return gt
+	}
+	if !gt.countKnown && countKnown {
+		gt.expected, gt.countKnown = total, true
+		tally := run.res.PerGroup[rank]
+		tally.Expected, tally.ExpectedKnown, tally.Name = total, true, name
+		run.res.PerGroup[rank] = tally
+	}
+	return gt
+}
+
 func (run *rosterRun) noteMemberFor(groupKey string) {
 	tally := run.res.PerGroup[groupKey]
 	tally.MatchedOrCreated++
@@ -1233,11 +1438,29 @@ func (run *rosterRun) noteMemberFor(groupKey string) {
 // The second return value reports whether this call queued a name-class row,
 // which is what the caller latches.
 func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Image, band RowBand, screenshotID int64, groupKey string, alreadyReviewed bool) (resolved, reviewed bool, err error) {
-	nameRes, _, err := i.readFieldWithRetry(ctx, img,
-		fieldRect(band, img, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1),
+	nameRect := trimNameRectToInk(img, fieldRect(band, img, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1))
+	nameRes, _, err := i.readFieldWithRetry(ctx, img, nameRect,
 		readPlan{spec: nameSpec, opts: nameOptions}, nameRetry)
 	if err != nil {
 		return false, false, err
+	}
+	// The colour read, on every band rather than as a retry.
+	//
+	// Firing it only where the luma read came back below nameSpec.MinConf is
+	// the obvious economy and it was measured rather than assumed: it costs a
+	// member, 65 CREATABLE against 66 (`make probe-roster
+	// PROBE_ARGS='-roster.members -roster.satunion=75 -roster.satweakonly'`).
+	// A gate that needs every member does not get to spend one on an OCR call
+	// per row, and running it always is also what makes the call count per row
+	// FIXED, which is what the scripted tests in this package depend on.
+	for _, minSat := range nameSatMinSats {
+		satRes, err := i.readField(ctx, vision.SaturatedInkMask(img, minSat), nameRect, nameSpec, nameSatOptions)
+		if err != nil {
+			return false, false, err
+		}
+		if strings.TrimSpace(satRes.Text) != "" && satRes.Confidence > nameRes.Confidence {
+			nameRes = satRes
+		}
 	}
 	powerRes, err := i.readField(ctx, img, fieldRect(band, img, powerXFrac0, powerXFrac1, bottomRowYFrac0, bottomRowYFrac1), powerSpec, powerOptions)
 	if err != nil {
@@ -1310,7 +1533,7 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 	// roster.Rank("") scores 0 against every member, so without this the row
 	// falls through to the creation branch below and mints a member named "".
 	// That is not a cosmetic defect -- each one consumes a slot of the group's
-	// creation budget (gt.matchedOrCreated below), displacing a real member
+	// creation budget (groupTracker.canCreate below), displacing a real member
 	// into no_confident_match_group_full, and it accumulates on every re-run
 	// because an empty name does not match the empty-named member the last run
 	// created. Capture 1 produced 20 such rows per run and 122 ghost members
@@ -1329,7 +1552,7 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 	switch {
 	case len(candidates) > 0 && candidates[0].Score >= roster.AutoAccept:
 		gt := run.groups[groupKey]
-		gt.matchedOrCreated++
+		gt.noteResolved(candidates[0].MemberID)
 		run.noteMemberFor(groupKey)
 		run.res.Matched++
 		matchNorm := float64(candidates[0].Score) / 100.0
@@ -1399,7 +1622,7 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 				return false, false, fmt.Errorf("ingest: creating member %q: %w", row.Name, err)
 			}
 			run.members = append(run.members, roster.Member{ID: memberID, Name: row.Name})
-			gt.matchedOrCreated++
+			gt.noteResolved(memberID)
 			run.noteMemberFor(groupKey)
 			run.res.Created++
 			// A newly created member has no candidate to score against, so
@@ -1604,6 +1827,24 @@ func (i *Ingester) readField(ctx context.Context, img image.Image, rect transpor
 type readPlan struct {
 	spec ocr.Spec
 	opts vision.Options
+	// wrap presents the frame differently before any of opts runs -- a colour
+	// channel or a colour mask rather than luma. It is nil for every plan that
+	// reads the frame as the engine would.
+	//
+	// It belongs on the plan rather than at the call site because a wrapped
+	// image is a different IMAGE, not a different option, and pairing it with
+	// the wrong opts is the mistake this type exists to make unwritable: a
+	// mask is already binary, so the threshold and invert steps fitted for
+	// luma are actively wrong on it.
+	wrap func(image.Image) image.Image
+}
+
+// prepare applies the plan's wrap, if it has one.
+func (p readPlan) prepare(img image.Image) image.Image {
+	if p.wrap == nil {
+		return img
+	}
+	return p.wrap(img)
 }
 
 // readFieldWithRetry reads a field, and on an EMPTY read only, reads it a
@@ -1644,11 +1885,11 @@ type readPlan struct {
 // about a name read needs it, since a bad name read simply fails to match a
 // known roster on its own.
 func (i *Ingester) readFieldWithRetry(ctx context.Context, img image.Image, rect transport.Rect, primary, retry readPlan) (ocr.Result, bool, error) {
-	res, err := i.readField(ctx, img, rect, primary.spec, primary.opts)
+	res, err := i.readField(ctx, primary.prepare(img), rect, primary.spec, primary.opts)
 	if err != nil || res.Text != "" {
 		return res, false, err
 	}
-	res, err = i.readField(ctx, img, rect, retry.spec, retry.opts)
+	res, err = i.readField(ctx, retry.prepare(img), rect, retry.spec, retry.opts)
 	return res, true, err
 }
 
@@ -1679,4 +1920,85 @@ func (i *Ingester) loadFrame(ctx context.Context, screenshotID int64) (image.Ima
 		return nil, fmt.Errorf("ingest: decoding screenshot %d: %w", screenshotID, err)
 	}
 	return img, nil
+}
+
+// nameInkMinSat is how saturated a pixel must be to count as part of a name
+// when trimming the crop to its ink. Names are drawn in saturated orange, or
+// green for the capturing account; the card behind them is cream and the page
+// behind that is near-white, and neither is saturated at all. 60 is the same
+// floor countOnlineMinSat uses to recognise a tinted glyph, and for the same
+// reason -- it separates populations that are nowhere near each other.
+const nameInkMinSat = 60
+
+// nameInkTrimMarginFrac is how much clear space is left to the right of the
+// last inked column, as a fraction of frame width. Eight pixels of a 720px
+// frame: enough that a glyph's antialiased edge is not clipped, far less than
+// the 40+ of blank card the untrimmed crop hands the engine.
+const nameInkTrimMarginFrac = 8.0 / 720
+
+// trimNameRectToInk narrows a name crop's RIGHT edge to just past the last
+// column carrying name-coloured ink.
+//
+// It exists because of what tesseract does with blank space. nameXFrac1 is
+// 0.67 -- x=482 of a 720px frame -- and it is placed there to clear the
+// longest name on this roster with room to spare, which is correct for a
+// SEARCH bound and wrong for what gets handed to the engine: a short name
+// leaves 40-odd pixels of empty card inside the crop, and the raw-line retry
+// invents glyphs in it. Capture 1 has four members reading with an invented
+// trailing token -- "B52RNI0 ts", "BS2RNI0 ts", "Imovo ts", "aeule ts" -- and
+// the crop those came from is, on inspection, completely clean to the right of
+// the name.
+//
+// It costs B52RN10 the gate: "B52RNI0" scores 97 against that member and
+// "B52RNI0 ts" scores 75, which is below AutoAccept and above ReviewFloor, so
+// the row is queued as ambiguous rather than resolved.
+//
+// TRIMMED ON COLOUR RATHER THAN ON LUMA, for the reason nameSatMinSats gives:
+// the name is saturated and the card is not, so the two populations are far
+// apart on this axis and adjacent on the other. A luma-based trim would have
+// to pick a brightness that separates orange text from cream card, which is
+// the measurement that has never worked on this field.
+//
+// The alternative -- stripping a short trailing token in the matcher -- was
+// rejected. It would be a licence for every name on the roster to lose its
+// last token, granted to fix a defect that is not in the matcher at all; the
+// blank space is the problem, and not handing it to the engine is the fix.
+// roster.coreTokens does grant such a licence, but only against a name that
+// carries a non-ASCII ornament, which is a much narrower door.
+func trimNameRectToInk(img image.Image, rect transport.Rect) transport.Rect {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	x0 := b.Min.X + int(rect.X1*float64(w))
+	x1 := b.Min.X + int(rect.X2*float64(w))
+	y0 := b.Min.Y + int(rect.Y1*float64(h))
+	y1 := b.Min.Y + int(rect.Y2*float64(h))
+	if x1 <= x0 || y1 <= y0 {
+		return rect
+	}
+
+	last := -1
+	for x := x1 - 1; x >= x0; x-- {
+		for y := y0; y < y1; y++ {
+			if vision.Saturated(img, x, y, nameInkMinSat) {
+				last = x
+				break
+			}
+		}
+		if last >= 0 {
+			break
+		}
+	}
+	if last < 0 {
+		// No name-coloured ink anywhere in the crop. That is a real
+		// observation -- an empty row band, or a name this trim cannot see --
+		// and narrowing to nothing would turn a readable crop into a blank
+		// one. Leave it exactly as it was and let the read decide.
+		return rect
+	}
+	edge := last + 1 + int(nameInkTrimMarginFrac*float64(w))
+	if edge >= x1 {
+		return rect
+	}
+	rect.X2 = float64(edge-b.Min.X) / float64(w)
+	return rect
 }

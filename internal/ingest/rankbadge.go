@@ -244,28 +244,45 @@ type scoredRank struct {
 // refuse for an unrelated reason. See TestMatchRankBadgeRefusesAnUnconvincingMatch's
 // own doc comment for why that distinction is the whole point of that test.
 func bestTwoRankScores(img image.Image) (best, runnerUp scoredRank, err error) {
+	best, runnerUp, _, err = bestTwoRankScoresIn(img, rankBadgeRegion)
+	return best, runnerUp, err
+}
+
+// bestTwoRankScoresIn is bestTwoRankScores with the search region supplied,
+// and it also returns where the winner was found.
+//
+// Both additions exist for the same caller. findHeaderCards has to look for
+// rank badges in the MEMBER LIST, not only in the sticky band, because a
+// frame can carry a second group's header card partway down it -- and once
+// the region is a parameter, the winner's position is the only thing that says
+// WHICH rows that card owns. rankBadgeMinGap's own doc comment names the
+// discarded Center/Box as the missing second signal that a match is on the
+// header it thinks it is; this is the caller that needs it.
+func bestTwoRankScoresIn(img image.Image, region transport.Rect) (best, runnerUp scoredRank, bestBox transport.Rect, err error) {
 	templates, err := loadRankTemplates()
 	if err != nil {
-		return scoredRank{}, scoredRank{}, err
+		return scoredRank{}, scoredRank{}, transport.Rect{}, err
 	}
 
 	var results []scoredRank
+	boxes := map[string]transport.Rect{}
 	for _, rt := range templates {
-		res, err := vision.Match(img, rt.Template, rankBadgeRegion, rankBadgeRefHeight)
+		res, err := vision.Match(img, rt.Template, region, rankBadgeRefHeight)
 		if err != nil {
-			return scoredRank{}, scoredRank{}, fmt.Errorf("ingest: matching rank badge template %s: %w", rt.Rank, err)
+			return scoredRank{}, scoredRank{}, transport.Rect{}, fmt.Errorf("ingest: matching rank badge template %s: %w", rt.Rank, err)
 		}
 		results = append(results, scoredRank{rank: rt.Rank, score: res.Score})
+		boxes[rt.Rank] = res.Box
 	}
 	if len(results) < 2 {
 		// Structurally unreachable with the four embedded templates above,
 		// but a gap is meaningless with fewer than two candidates to compare
 		// — refuse loudly rather than let a one-template "gap" of 0
 		// silently pass or fail on arithmetic it was never designed for.
-		return scoredRank{}, scoredRank{}, fmt.Errorf("ingest: only %d rank templates loaded, need at least 2 to compute a gap: %w", len(results), ErrNoConfidentRank)
+		return scoredRank{}, scoredRank{}, transport.Rect{}, fmt.Errorf("ingest: only %d rank templates loaded, need at least 2 to compute a gap: %w", len(results), ErrNoConfidentRank)
 	}
 	sort.Slice(results, func(i, j int) bool { return results[i].score > results[j].score })
-	return results[0], results[1], nil
+	return results[0], results[1], boxes[results[0].rank], nil
 }
 
 // matchRankBadgeReal scores every rank template against img's badge region

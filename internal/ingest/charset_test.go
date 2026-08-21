@@ -234,7 +234,7 @@ func TestParseLastActiveRejectsRealMisreadsFromBothConditions(t *testing.T) {
 // 45, "82 1/1" on seq 60 -- and parseGroupHeader accepts every one of them as
 // a total of 1 for a group of 11. That is the direction of error this package has no
 // defence against downstream -- total feeds groupTracker.expected, and
-// gt.matchedOrCreated < gt.expected gates member creation, so an
+// the group's resolved-member set against gt.expected gates member creation, so an
 // under-count silently stops the rest of the group being created (task 24's
 // review measured a fabricated 6 against a real 64-member group costing 58
 // members). N <= M cannot catch it, because 1/1 is perfectly coherent.

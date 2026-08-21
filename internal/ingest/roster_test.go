@@ -516,8 +516,8 @@ func newRosterIngestHarness(t *testing.T, fx rosterFixture) *rosterIngestHarness
 
 	results = append(results, ocr.Result{Text: fmt.Sprintf("%s Group %d/%d", group, fx.groupTotal, fx.groupTotal), Confidence: 0.9})
 	for _, r := range rows {
+		results = append(results, nameReads(ocr.Result{Text: r.name, Confidence: r.nameConf})...)
 		results = append(results,
-			ocr.Result{Text: r.name, Confidence: r.nameConf},
 			ocr.Result{Text: r.power, Confidence: r.powerConf},
 			ocr.Result{Text: r.level, Confidence: r.levelConf},
 			ocr.Result{Text: r.lastActive, Confidence: r.lastConf},
@@ -542,24 +542,45 @@ var distinctRowNames = []string{
 // rowResults scripts one row's four field reads, in IngestRoster's call
 // order, all comfortably valid and high-confidence.
 func rowResults(name string) []ocr.Result {
-	return []ocr.Result{
-		{Text: name, Confidence: 0.9},
-		{Text: "Power: 200.0M", Confidence: 0.9},
-		{Text: "Lv.30", Confidence: 0.9},
-		{Text: "Online", Confidence: 0.9},
-	}
+	return rowResultsConf(name, 0.9)
 }
 
 // rowResultsConf is rowResults with the name's OCR confidence under the
 // test's control -- the numeric fields stay at 0.9 so nothing else in the row
 // is what routes it.
 func rowResultsConf(name string, nameConf float64) []ocr.Result {
-	return []ocr.Result{
-		{Text: name, Confidence: nameConf},
-		{Text: "Power: 200.0M", Confidence: 0.9},
-		{Text: "Lv.30", Confidence: 0.9},
-		{Text: "Online", Confidence: 0.9},
+	return append(nameReads(ocr.Result{Text: name, Confidence: nameConf}),
+		ocr.Result{Text: "Power: 200.0M", Confidence: 0.9},
+		ocr.Result{Text: "Lv.30", Confidence: 0.9},
+		ocr.Result{Text: "Online", Confidence: 0.9},
+	)
+}
+
+// inertSatRead is one of the saturation-mask name reads every row now takes
+// (see nameSatMinSats), scripted so it cannot win. processRow keeps a colour
+// read only when it is non-empty AND more confident than the luma read, so an
+// empty one at zero confidence leaves every test below asserting on exactly
+// the luma read it scripted.
+//
+// It is a named value rather than a literal because it appears in every row
+// script in this file, and a reader counting scripted results needs to see at
+// a glance which entries are extra NAME reads rather than the row's power.
+var inertSatRead = ocr.Result{Text: "", Confidence: 0}
+
+// nameReads is everything one row consumes at its NAME position: the luma read
+// the test is scripting, then one inert colour read per nameSatMinSats entry.
+//
+// Derived from the constant rather than written out, so adding or removing a
+// saturation threshold does not silently push every scripted row out of step
+// with production -- which is exactly what happened when the second threshold
+// landed, in twenty-odd tests at once.
+func nameReads(luma ocr.Result) []ocr.Result {
+	out := make([]ocr.Result, 0, 1+len(nameSatMinSats))
+	out = append(out, luma)
+	for range nameSatMinSats {
+		out = append(out, inertSatRead)
 	}
+	return out
 }
 
 // reviewReasons counts the queued review rows by reason, for the assertions
@@ -963,16 +984,16 @@ func TestIngestRosterRetriesAnUnparseableStatusOnTheGreenChannel(t *testing.T) {
 	h.stubRankFor("R1")
 	h.addFrame(rosterFrame(1), 0)
 
-	h.engine.Results = []ocr.Result{
-		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
-		{Text: "Zephyr", Confidence: 0.9},
-		{Text: "Power: 200.0M", Confidence: 0.9},
-		{Text: "Lv.30", Confidence: 0.9},
+	h.engine.Results = append(
+		append([]ocr.Result{{Text: groupHeaderText("R1", 5), Confidence: 0.9}},
+			nameReads(ocr.Result{Text: "Zephyr", Confidence: 0.9})...),
+		ocr.Result{Text: "Power: 200.0M", Confidence: 0.9},
+		ocr.Result{Text: "Lv.30", Confidence: 0.9},
 		// What luma makes of the outlined green wordmark.
-		{Text: "oo", Confidence: 0.9},
+		ocr.Result{Text: "oo", Confidence: 0.9},
 		// The green channel's read of the same crop.
-		{Text: "Online", Confidence: 0.9},
-	}
+		ocr.Result{Text: "Online", Confidence: 0.9},
+	)
 
 	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
 	if err != nil {
@@ -1008,14 +1029,14 @@ func TestIngestRosterKeepsTheShippedStatusReadWhenTheGreenRetryAlsoFails(t *test
 	h.stubRankFor("R1")
 	h.addFrame(rosterFrame(1), 0)
 
-	h.engine.Results = []ocr.Result{
-		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
-		{Text: "Zephyr", Confidence: 0.9},
-		{Text: "Power: 200.0M", Confidence: 0.9},
-		{Text: "Lv.30", Confidence: 0.9},
-		{Text: "luma saw this", Confidence: 0.9},
-		{Text: "green saw this", Confidence: 0.9},
-	}
+	h.engine.Results = append(
+		append([]ocr.Result{{Text: groupHeaderText("R1", 5), Confidence: 0.9}},
+			nameReads(ocr.Result{Text: "Zephyr", Confidence: 0.9})...),
+		ocr.Result{Text: "Power: 200.0M", Confidence: 0.9},
+		ocr.Result{Text: "Lv.30", Confidence: 0.9},
+		ocr.Result{Text: "luma saw this", Confidence: 0.9},
+		ocr.Result{Text: "green saw this", Confidence: 0.9},
+	)
 
 	if _, err := h.IngestRoster(context.Background(), 1, testPeriodKey); err != nil {
 		t.Fatalf("IngestRoster: %v", err)
@@ -1053,20 +1074,17 @@ func TestIngestRosterRereadsARowItsFirstSightingCouldNotResolve(t *testing.T) {
 	// already collected rather than a new one.
 	h.addFrame(rosterFrame(1), 20)
 
-	h.engine.Results = []ocr.Result{
-		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
-		// Read correctly and far below nameSpec.MinConf, so processRow
-		// refuses to create a member from it. This is Riesige Banane's shape.
-		{Text: "Zephyr", Confidence: 0.1},
-		{Text: "Power: 200.0M", Confidence: 0.9},
-		{Text: "Lv.30", Confidence: 0.9},
-		{Text: "Online", Confidence: 0.9},
-		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
-		{Text: "Zephyr", Confidence: 0.9},
-		{Text: "Power: 200.0M", Confidence: 0.9},
-		{Text: "Lv.30", Confidence: 0.9},
-		{Text: "Online", Confidence: 0.9},
-	}
+	// Frame 1 reads the name correctly and far below nameSpec.MinConf, so
+	// processRow refuses to create a member from it. This is Riesige Banane's
+	// shape. Frame 2 photographs the same row and reads it confidently.
+	var results []ocr.Result
+	results = append(results, ocr.Result{Text: groupHeaderText("R1", 5), Confidence: 0.9})
+	results = append(results, nameReads(ocr.Result{Text: "Zephyr", Confidence: 0.1})...)
+	results = append(results, rowResultsConf("", 0.9)[1+len(nameSatMinSats):]...)
+	results = append(results, ocr.Result{Text: groupHeaderText("R1", 5), Confidence: 0.9})
+	results = append(results, nameReads(ocr.Result{Text: "Zephyr", Confidence: 0.9})...)
+	results = append(results, rowResultsConf("", 0.9)[1+len(nameSatMinSats):]...)
+	h.engine.Results = results
 
 	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
 	if err != nil {
@@ -1960,21 +1978,23 @@ func TestIngestRosterUpsertsARepeatObservationRatherThanDuplicatingTheFact(t *te
 	// names the same member as frame 1's row.
 	h.addFrame(rosterFrame(1), 5000)
 
-	results := []ocr.Result{
-		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
-		{Text: "Kilo", Confidence: 0.9},
-		{Text: "Power: 200.0M", Confidence: 0.85},
-		{Text: "Lv.30", Confidence: 0.85},
-		{Text: "Online", Confidence: 0.85},
-		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
-		// The exact same row, read again -- a cleaner second pass at the
-		// identical figures, which is what a repeat observation of
-		// unchanged game state within one capture looks like.
-		{Text: "Kilo", Confidence: 0.9},
-		{Text: "Power: 200.0M", Confidence: 0.95},
-		{Text: "Lv.30", Confidence: 0.95},
-		{Text: "Online", Confidence: 0.95},
-	}
+	var results []ocr.Result
+	results = append(results, ocr.Result{Text: groupHeaderText("R1", 5), Confidence: 0.9})
+	results = append(results, nameReads(ocr.Result{Text: "Kilo", Confidence: 0.9})...)
+	results = append(results,
+		ocr.Result{Text: "Power: 200.0M", Confidence: 0.85},
+		ocr.Result{Text: "Lv.30", Confidence: 0.85},
+		ocr.Result{Text: "Online", Confidence: 0.85},
+		ocr.Result{Text: groupHeaderText("R1", 5), Confidence: 0.9})
+	// The exact same row, read again -- a cleaner second pass at the identical
+	// figures, which is what a repeat observation of unchanged game state
+	// within one capture looks like.
+	results = append(results, nameReads(ocr.Result{Text: "Kilo", Confidence: 0.9})...)
+	results = append(results,
+		ocr.Result{Text: "Power: 200.0M", Confidence: 0.95},
+		ocr.Result{Text: "Lv.30", Confidence: 0.95},
+		ocr.Result{Text: "Online", Confidence: 0.95},
+	)
 	h.engine.Results = results
 
 	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
@@ -2023,6 +2043,9 @@ func TestIngestRosterRetriesANameReadTheLayoutAnalysisRefused(t *testing.T) {
 	// "Lothar232" to the POWER field and the name stays empty.
 	results = append(results, ocr.Result{Text: "", Confidence: 0.0})
 	results = append(results, ocr.Result{Text: "Lothar232", Confidence: 0.9})
+	for range nameSatMinSats {
+		results = append(results, inertSatRead)
+	}
 	results = append(results, ocr.Result{Text: "Power: 200.0M", Confidence: 0.9})
 	results = append(results, ocr.Result{Text: "Lv.30", Confidence: 0.9})
 	results = append(results, ocr.Result{Text: "Online", Confidence: 0.9})
