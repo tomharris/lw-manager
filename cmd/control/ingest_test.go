@@ -131,7 +131,7 @@ func TestIngestDispatchesTheRosterRouteFromTheCaptureRow(t *testing.T) {
 	svc := fakeIngester{
 		route: "roster", status: "partial",
 		matched: 90, created: 3, queued: 3,
-		perGroup: map[string]ingest.GroupTally{"R2": {Expected: 20, Parsed: 18}},
+		perGroup: map[string]ingest.GroupTally{"R2": {Expected: 20, ExpectedKnown: true, Parsed: 18, MatchedOrCreated: 17}},
 		calls:    calls,
 	}
 	code := runIngest(&out, &errOut, []string{"--capture", "42"}, svc)
@@ -142,13 +142,38 @@ func TestIngestDispatchesTheRosterRouteFromTheCaptureRow(t *testing.T) {
 		t.Fatalf("calls = %+v, want exactly one IngestRoster call and zero IngestVS calls", calls)
 	}
 	got := out.String()
-	for _, want := range []string{"route=roster", "matched=90", "created=3", "queued=3", "status=partial", "group=R2", "parsed=18", "expected=20"} {
+	for _, want := range []string{"route=roster", "matched=90", "created=3", "queued=3", "status=partial",
+		// The whole group line, not its pieces: the run-level "created=3"
+		// above already satisfies a bare "created=" search, so only the
+		// assembled line says anything about the per-group count.
+		"group=R2 parsed=18 yielded=17 expected=20"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("stdout %q missing %q", got, want)
 		}
 	}
 	if strings.Contains(got, "zeroed=") {
 		t.Error("roster summary should not report a zeroed count — that is VS-only")
+	}
+}
+
+// A group whose header never parsed prints expected=?, not expected=0. The
+// zero would be a size claim nothing measured -- a triage reading
+// "parsed=18 expected=0" goes looking for a scrolling bug rather than an
+// unreadable header, and ingest's own reconciliation refuses to call such a
+// group complete for the same reason (GroupTally.ExpectedKnown).
+func TestIngestPrintsAnUnreadCountAsAQuestionMarkNotAZero(t *testing.T) {
+	var out, errOut bytes.Buffer
+	svc := fakeIngester{
+		route: "roster", status: "partial",
+		matched: 1, created: 0, queued: 17,
+		perGroup: map[string]ingest.GroupTally{"R2": {Parsed: 18, MatchedOrCreated: 1}},
+		calls:    &callLog{},
+	}
+	if code := runIngest(&out, &errOut, []string{"--capture", "42"}, svc); code != 0 {
+		t.Fatalf("exit = %d, want 0: %s", code, errOut.String())
+	}
+	if want := "group=R2 parsed=18 yielded=1 expected=?"; !strings.Contains(out.String(), want) {
+		t.Errorf("stdout %q missing %q", out.String(), want)
 	}
 }
 

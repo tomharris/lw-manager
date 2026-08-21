@@ -2,7 +2,9 @@ package ingest
 
 import (
 	"context"
+	"fmt"
 	"image"
+	"strings"
 	"testing"
 
 	"github.com/tomharris/lw-manager/internal/ocr"
@@ -22,20 +24,40 @@ import (
 // each readField call actually received, and the assertions are on those
 // Options values, never on OCR text.
 
+// preprocessCall is one recorded visionPreprocess call: the Options it
+// received, and the dynamic type of the IMAGE it received.
+//
+// ImageType exists for the same reason the Options recording does. Which
+// PIXELS a call site hands to Preprocess is as invisible to ocr.FakeEngine as
+// which Options are -- the fake ignores the image entirely -- so a call site
+// that stopped passing a transformed view of the frame would leave every test
+// in this package green. The measured case is processRow's last-active retry,
+// which must read vision.GreenChannel(img) and not img: mutating that one
+// argument changes nothing any OCR assertion can see, while costing five of
+// capture 1's twenty-four Online rows.
+//
+// A type name rather than the image itself: vision.GreenChannel returns an
+// unexported type, so a test outside this file cannot name it, and the whole
+// point is to pin that SOME transformation was applied and which one.
+type preprocessCall struct {
+	Opts      vision.Options
+	ImageType string
+}
+
 // spyPreprocess installs a visionPreprocess that records every call's
 // Options (with Region zeroed, since Region is computed per row/frame and
-// tested separately by the parse/geometry tests) and still delegates to the
-// real vision.Preprocess so the pixels handed to ocr.FakeEngine remain a
-// valid image. It returns the recorded slice (grown in place) and a restore
-// func the caller must defer.
-func spyPreprocess(t *testing.T) (*[]vision.Options, func()) {
+// tested separately by the parse/geometry tests) and image type, and still
+// delegates to the real vision.Preprocess so the pixels handed to
+// ocr.FakeEngine remain a valid image. It returns the recorded slice (grown in
+// place) and a restore func the caller must defer.
+func spyPreprocess(t *testing.T) (*[]preprocessCall, func()) {
 	t.Helper()
-	var calls []vision.Options
+	var calls []preprocessCall
 	real := visionPreprocess
 	visionPreprocess = func(img image.Image, opts vision.Options) *image.Gray {
 		recorded := opts
 		recorded.Region = transport.Rect{}
-		calls = append(calls, recorded)
+		calls = append(calls, preprocessCall{Opts: recorded, ImageType: fmt.Sprintf("%T", img)})
 		return real(img, opts)
 	}
 	return &calls, func() { visionPreprocess = real }
@@ -69,7 +91,7 @@ func TestReadFieldSetsRegionWithoutMutatingCallersOptions(t *testing.T) {
 	if len(*calls) != 1 {
 		t.Fatalf("visionPreprocess called %d times, want 1", len(*calls))
 	}
-	got := (*calls)[0]
+	got := (*calls)[0].Opts
 	got.Region = transport.Rect{} // already zeroed by the spy; explicit for clarity
 	want := vision.Options{SkipEqualize: true, UpscaleFactor: 7}
 	if got != want {
@@ -102,9 +124,56 @@ func TestIngestRosterPassesEachFieldsMeasuredOptions(t *testing.T) {
 		t.Fatalf("visionPreprocess called %d times, want %d (calls: %+v)", len(*calls), len(want), *calls)
 	}
 	for i, w := range want {
-		if (*calls)[i] != w {
-			t.Errorf("call %d: got Options %+v, want %+v", i, (*calls)[i], w)
+		if (*calls)[i].Opts != w {
+			t.Errorf("call %d: got Options %+v, want %+v", i, (*calls)[i].Opts, w)
 		}
+	}
+}
+
+// The last-active retry must read a DIFFERENT IMAGE, not the same image with
+// different Options: vision.GreenChannel(img), because "Online" is green with
+// a dark outline and luma leaves that green close to the cream card behind it.
+//
+// Nothing else in this package can catch a call site that reverts to `img`.
+// ocr.FakeEngine ignores pixels, so the retry's scripted result comes back
+// identical either way, and the Options are deliberately the same on both
+// reads (lastActiveOptions) so an Options-only assertion cannot see the
+// difference. This is the seam rankBadgeMinGap's own tests use for the same
+// reason: a constant or an argument that only the pixels depend on needs a
+// test that watches the pixels being chosen.
+func TestIngestRosterLastActiveRetryReadsTheGreenChannel(t *testing.T) {
+	calls, restore := spyPreprocess(t)
+	defer restore()
+
+	h := newHarness(t)
+	h.stubRankFor("R1")
+	h.addFrame(rosterFrame(1), 0)
+	h.engine.Results = []ocr.Result{
+		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
+		{Text: "Zephyr", Confidence: 0.9},
+		{Text: "Power: 200.0M", Confidence: 0.9},
+		{Text: "Lv.30", Confidence: 0.9},
+		{Text: "oo", Confidence: 0.9}, // what luma makes of the wordmark
+		{Text: "Online", Confidence: 0.9},
+	}
+
+	if _, err := h.IngestRoster(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+
+	// header, name, power, level, last-active, last-active retry.
+	if len(*calls) != 6 {
+		t.Fatalf("visionPreprocess called %d times, want 6 (calls: %+v)", len(*calls), *calls)
+	}
+	primary, retry := (*calls)[4], (*calls)[5]
+	if primary.Opts != lastActiveOptions || retry.Opts != lastActiveOptions {
+		t.Errorf("both status reads must carry lastActiveOptions; got %+v and %+v", primary.Opts, retry.Opts)
+	}
+	if retry.ImageType == primary.ImageType {
+		t.Fatalf("the retry preprocessed the same image type as the primary (%s): it must read vision.GreenChannel(img), and nothing about the Options or the OCR text can show that", retry.ImageType)
+	}
+	if !strings.Contains(retry.ImageType, "greenChannel") {
+		t.Errorf("retry read image type %s, want vision's green-channel view", retry.ImageType)
 	}
 }
 
@@ -130,8 +199,8 @@ func TestIngestRosterPassesAllianceMemberCountOptions(t *testing.T) {
 	}
 	// The alliance frame is read first, ahead of any group header (see
 	// newRosterIngestHarness's fixture-building comment).
-	if (*calls)[0] != allianceMemberCountOptions {
-		t.Errorf("alliance-count read: got Options %+v, want %+v", (*calls)[0], allianceMemberCountOptions)
+	if (*calls)[0].Opts != allianceMemberCountOptions {
+		t.Errorf("alliance-count read: got Options %+v, want %+v", (*calls)[0].Opts, allianceMemberCountOptions)
 	}
 }
 
@@ -155,8 +224,8 @@ func TestIngestVSPassesEachFieldsMeasuredOptions(t *testing.T) {
 		t.Fatalf("visionPreprocess called %d times, want %d (calls: %+v)", len(*calls), len(want), *calls)
 	}
 	for i, w := range want {
-		if (*calls)[i] != w {
-			t.Errorf("call %d: got Options %+v, want %+v", i, (*calls)[i], w)
+		if (*calls)[i].Opts != w {
+			t.Errorf("call %d: got Options %+v, want %+v", i, (*calls)[i].Opts, w)
 		}
 	}
 }

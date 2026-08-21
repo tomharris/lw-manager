@@ -113,8 +113,8 @@ func TestLastActiveCharsetCannotLaunderACorrectRead(t *testing.T) {
 // argument was insufficient here -- see this file's header comment and
 // vsPointsSpec's own doc comment in vs.go for why. Measured directly: 6 of
 // 11 real bands cut from a committed VS frame produced a parseable number
-// out of text that was not a number, once the whitelist was applied; 0 of
-// those failed safely without it. Mirrors TestPowerSpecHasNoCharset.
+// out of text that was not a number, once the whitelist was applied; all 6
+// of those failed safely without it. Mirrors TestPowerSpecHasNoCharset.
 func TestVSPointsSpecHasNoCharset(t *testing.T) {
 	if vsPointsSpec.Charset != "" {
 		t.Errorf("vsPointsSpec.Charset = %q, want empty -- see vsPointsSpec's doc comment in vs.go "+
@@ -213,5 +213,46 @@ func TestParseLastActiveRejectsRealMisreadsFromBothConditions(t *testing.T) {
 		if _, err := ParseLastActiveHours(in); !errors.Is(err, ErrUnparseable) {
 			t.Errorf("ParseLastActiveHours(%q) did not route to review, want ErrUnparseable", in)
 		}
+	}
+}
+
+// TestGroupHeaderSpecHasNoCharset is the third field in this file to have a
+// whitelist ruled out by measurement rather than by argument, and the first
+// where the measurement was taken BEFORE anyone proposed one.
+//
+// A digit whitelist is the obvious thing to reach for on this field: the group
+// header's "N/M" count is digits and a slash, and 21 of capture 1's 61 frames
+// fail to read theirs at all ("1/11" coming back as "VN", "VL", "Wu", "U/L" --
+// see groupHeaderRegion's doc comment in roster.go). So it was measured, over
+// every frame of that capture, through both candidate rectangles, and it is a
+// committed mode rather than a note: `make probe-roster
+// PROBE_ARGS=-roster.headeropts`.
+//
+// It does not read R2's count either. What it does instead is FABRICATE:
+// through groupHeaderRegion at gray+thr x2, "0123456789/" turns four of those
+// 21 unreadable frames into a count-shaped token -- "2 1/1" on seq 29, 44 and
+// 45, "82 1/1" on seq 60 -- and parseGroupHeader accepts every one of them as
+// a total of 1 for a group of 11. That is the direction of error this package has no
+// defence against downstream -- total feeds groupTracker.expected, and
+// gt.matchedOrCreated < gt.expected gates member creation, so an
+// under-count silently stops the rest of the group being created (task 24's
+// review measured a fabricated 6 against a real 64-member group costing 58
+// members). N <= M cannot catch it, because 1/1 is perfectly coherent.
+//
+// The unconstrained read is not merely as good, it is strictly safer: without
+// the whitelist those four frames produce no count-shaped token at all and
+// route to review, which is recoverable. This test exists because a comment
+// recording that measurement survives exactly until someone adds the field
+// without reading it.
+func TestGroupHeaderSpecHasNoCharset(t *testing.T) {
+	if groupHeaderSpec.Charset != "" {
+		t.Errorf("groupHeaderSpec.Charset = %q, want empty -- a whitelist here was measured "+
+			"FABRICATING a count, not fixing one: \"0123456789/\" turned four unreadable R2 headers "+
+			"into a count-shaped token (\"2 1/1\" on three frames, \"82 1/1\" on the fourth), each "+
+			"parsing to a total of 1 for a group of 11, which parseGroupHeader accepts "+
+			"because 1/1 is coherent. total feeds groupTracker.expected and gates member creation, "+
+			"so that under-count silently stops the other 10 members being created. Re-run "+
+			"`make probe-roster PROBE_ARGS=-roster.headeropts` before restoring one, and read "+
+			"groupHeaderRegion's doc comment in roster.go", groupHeaderSpec.Charset)
 	}
 }

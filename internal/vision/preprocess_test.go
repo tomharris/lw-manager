@@ -136,3 +136,43 @@ func TestCropTakesNormalizedRegion(t *testing.T) {
 		t.Errorf("crop origin column: got %d, want 5", got)
 	}
 }
+
+// GreenChannel must return the green channel and nothing else. The obvious
+// wrong implementation returns luma anyway (or the red channel, which the
+// probe measured as the worst of the three on the field this exists for), and
+// on a photograph of real UI both would look plausible.
+func TestGreenChannelReturnsGreenNotLuma(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	src.Set(0, 0, color.RGBA{R: 200, G: 10, B: 30, A: 255})
+	src.Set(1, 0, color.RGBA{R: 10, G: 200, B: 30, A: 255})
+
+	g := GreenChannel(src)
+	for x, want := range []uint8{10, 200} {
+		got := color.GrayModel.Convert(g.At(x, 0)).(color.Gray).Y
+		if got != want {
+			t.Errorf("GreenChannel at x=%d = %d, want %d", x, got, want)
+		}
+	}
+	if g.Bounds() != src.Bounds() {
+		t.Errorf("bounds = %v, want %v", g.Bounds(), src.Bounds())
+	}
+}
+
+// The reason it is a separate image rather than a Options flag: it must
+// compose with Preprocess, whose own Grayscale step has to become a no-op.
+func TestGreenChannelSurvivesPreprocess(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := range 4 {
+		for x := range 4 {
+			src.Set(x, y, color.RGBA{R: 200, G: uint8(20 * (x + 1)), B: 30, A: 255})
+		}
+	}
+	out := Preprocess(GreenChannel(src), Options{
+		SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 1,
+	})
+	for x, want := range []uint8{20, 40, 60, 80} {
+		if got := out.GrayAt(x, 0).Y; got != want {
+			t.Errorf("preprocessed green channel at x=%d = %d, want %d", x, got, want)
+		}
+	}
+}

@@ -40,6 +40,16 @@ const (
 	// gateRowAccuracy and gateTolerance are the design doc's §7 numbers: a
 	// row counts as correct when its parsed points land within 1% of the
 	// hand-checked value, and at least 95% of rows must.
+	//
+	// The 1% bar stays, having been questioned and ruled on: a tighter one
+	// would catch rank 7's single wrong digit (see the final t.Logf) but
+	// would also start failing rows for transcription ambiguity in
+	// expected.yaml itself, which is 86 numbers read by eye off screenshots
+	// and is not regenerable. An absolute tolerance, or one scaled to digit
+	// position rather than to magnitude, are both plausible and neither has
+	// been measured. Changing this number is a decision about what the gate
+	// is for, not a fix to make the current headline better —
+	// docs/superpowers/specs/2026-08-17-m4-closed-set-matching-design.md §9.
 	gateRowAccuracy = 0.95
 	gateTolerance   = 0.01
 
@@ -207,9 +217,22 @@ func TestM4IngestGate(t *testing.T) {
 		t.Errorf("M4 gate condition 3: capture %d finished with parsed_rows = 0", captureID)
 	}
 
+	// The headline, and immediately after it what the headline does not say.
+	// The bar stays at 1% deliberately — see the design doc's §9 open question
+	// — but a pass at that tolerance is a weaker claim than it reads as, and
+	// the gate is the only place the number is quoted from, so the caveat
+	// belongs in its own output rather than only in a document nobody reads
+	// while looking at a green run. Rank 7 `Mar 89` was written 18,356,304
+	// against a hand-checked 18,356,804 — one digit, an 8 read as a 3 — and
+	// is counted below among the rows that pass, because 500 on 18.3M is
+	// 0.0027%. Every low-order digit misread in this capture passes the same
+	// way. See CLAUDE.md, "A passing aggregate hides everything its tolerance
+	// is wider than".
 	t.Logf("M4 gate: %d/%d rows within %.0f%%, matched=%d queued=%d zeroed=%d status=%s (game version %s)",
 		len(exp.Rows)-len(wrong), len(exp.Rows), gateTolerance*100,
 		res.Matched, res.Queued, res.Zeroed, res.Status, exp.GameVersion)
+	t.Logf("M4 gate: a pass means each row reached the right member carrying roughly the right magnitude, NOT that the numbers are correct: %.0f%% of rank 7's 18,356,804 is a window ~183,000 wide, and every low-order digit misread passes inside it (rank 7 itself did — written 18,356,304, counted above as passing)",
+		gateTolerance*100)
 }
 
 // withinTolerance is the ±1% comparison. An expected zero is compared
@@ -306,20 +329,6 @@ func gateBlobs(t *testing.T, ctx context.Context, exp expectedCapture) blob.Stor
 	return blobs
 }
 
-func gatePool(t *testing.T, ctx context.Context) *db.Pool {
-	t.Helper()
-	url, err := dbtest.Prepare(ctx, db.Migrate)
-	if err != nil {
-		t.Fatalf("dbtest.Prepare(): %v", err)
-	}
-	pool, err := db.Connect(ctx, url)
-	if err != nil {
-		t.Fatalf("Connect(): %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
 // seedCapture builds the database state one real VS capture would have left
 // behind: an alliance, its members, a screenshot row per frame pointing at
 // the content-addressed blob, and a complete capture referencing them in
@@ -397,19 +406,4 @@ func seedCapture(t *testing.T, ctx context.Context, pool *db.Pool, exp expectedC
 		t.Fatalf("reading back the seeded capture: %v", err)
 	}
 	return captureID, memberIDs
-}
-
-func join(lines []string) string {
-	out := ""
-	for _, l := range lines {
-		out += "  " + l + "\n"
-	}
-	return out
-}
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }

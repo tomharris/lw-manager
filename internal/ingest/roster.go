@@ -72,7 +72,109 @@ const memberRowPitch = 112
 // The two constants are consistent by measurement, not by assumption:
 // memberListRegion.Y1=0.44 is y=704, which clears this band's bottom edge
 // (697) by 7px. Whoever moves either one next should keep that clearance.
-var groupHeaderRegion = transport.Rect{X1: 0.03, Y1: 0.409, X2: 0.97, Y2: 0.435}
+//
+// X2 was 0.97 -- x=698 of a 720px frame -- which is past the collapse chevron
+// (x=651..683) AND past the header card's own right edge (x=691), so every
+// header read ended in a fragment of the chevron button: "10/64 yi]", "2/9)",
+// "10/64) y]". It is the third crop in this milestone placed where a human
+// reading the rectangle still sees the right answer, after the roster name
+// crop's status icon and the VS name crop's avatar, and like both of those it
+// is now placed off an ink profile (`make probe-roster
+// PROBE_ARGS=-roster.headerink`, 61 frames x 42 scanlines = 2562 scanlines):
+//
+//	x=565..634  the N/M count               ink 117..1257
+//	x=634       the count's last column      ink 640
+//	x=635       antialiasing tail            ink 0 at threshold 90, 199 at threshold 5
+//	x=636..650  GUTTER, 15 columns           ink 0 at EVERY threshold down to 5
+//	x=642       where X2 sits now (0.8917)
+//	x=651..683  the collapse chevron button  ink 1829..2155
+//
+// A plateau, not a spike: 15 columns carrying literally no deviation from the
+// card's own colour on any of the 2562 scanlines, which is the shape CLAUDE.md
+// requires before an edge is placed. So 0.8917 is the plateau's midpoint rather
+// than a fitted number -- 8px clear of the count, 9px clear of the chevron.
+//
+// The margin is the point, and it is what the geometry test enforces. OCR
+// accuracy does not distinguish the plateau's ends from its middle:
+// `-roster.headersweep` reads 40 frames with 40 correct totals at 0.8819,
+// 0.8917 and 0.9028 alike. TestGroupHeaderCropEndsInTheGutterLeftOfTheChevron
+// is stricter on purpose -- it requires four ink-free columns either side of
+// the edge, which admits exactly x=639..647 (0.8875..0.8986, measured by
+// running it at each) and REJECTS both ends of that accuracy-equal range. A future reader moving this edge on the
+// accuracy numbers alone gets a red test; the test is asserting clearance for
+// a count or a button that renders a pixel wider tomorrow, which an accuracy
+// measured on one capture cannot see.
+//
+// WHAT THIS DID NOT FIX, recorded because the obvious reading of the change is
+// wrong. It was expected to recover 22 dropped frames; it recovers ONE. The
+// chevron was never why R2's 21 frames failed. Their count is "1/11", and
+// tesseract classifies that token as "VN", "VL", "Wu" or "U/L" -- a run of
+// near-identical vertical bars -- through every rectangle, preprocessing shape,
+// threshold setting, page-segmentation mode and character whitelist measured.
+// Every one of those is a committed mode, because a claim that closes off a
+// line of work has to be contestable by the next person:
+//
+//	-roster.headersweep   12 geometries (both rectangles)
+//	-roster.headeropts    24 preprocessing shapes through EACH of the two
+//	                      rectangles; PSM 8/11/13 through the count-only
+//	                      rectangle; a "0123456789/" whitelist through both
+//	-roster.headerthresh  40 AdaptiveThreshold block/C settings through EACH
+//	                      of the two rectangles
+//
+// The whitelist deserves its own line because it is the obvious thing to reach
+// for on a field of digits, and because it does not merely fail: through the
+// count-only rectangle it returns the empty string on every R2 frame, and
+// through this rectangle at gray+thr x2 it manufactures a count on four of
+// them -- "2 1/1" on seq 29, 44 and 45, "82 1/1" on seq 60, every one of which
+// parses to a total of 1 against a real 11-member group. That is exactly the
+// under-count that stops a group's members being created, and the leading
+// digits differing while the fabricated total does not is the point: the
+// whitelist is not reading one stable wrong thing, it is forcing whatever the
+// crop holds into digits. It is measured so that it stays rejected on
+// evidence.
+//
+// The same reads reproduce outside internal/ingest's read path entirely, on
+// vision.Preprocess plus the tesseract binary, with none of this package
+// involved (paths must be absolute -- `go test` runs in the package's own
+// directory):
+//
+//	go test -tags scrolldiag ./internal/vision -run TestPreprocMeasure -v -args \
+//	  -pmframes "$PWD/data/blobs/sha256/6f/07/6f07eb91d7cc88a193b1c35736f466814bee7c6bb5e41b5cf67cb5bd90ae32ac|$PWD/data/blobs/sha256/b0/0b/b00b49dd5d493db1bf2165aaf58e44ffc859b60d7b41f4a5156c48aca517fe5c" \
+//	  -pmexpect "10/64|1/11" -pmx1 0.7778 -pmy1 0.409 -pmx2 0.8917 -pmy2 0.435
+//
+// Run from the repo root with the blob store at its default ./data/blobs; the
+// hashes are capture 1's seq 2 (R3) and seq 23 (R2), both listed in
+// fixtures/m4rostergate/expected.yaml. Add -pmcharset "0123456789/" for the
+// whitelist. Every one of its 24 variants reads seq 2's "10/64" or a near miss
+// and none reads seq 23's "1/11": "Vw", "Wu", "WAL", "U/L", "{i", "fit".
+//
+// That is a classifier failure on the glyphs themselves, not a crop defect and
+// not a contrast defect, and no move of this rectangle can reach it.
+//
+// What DID change for those 21 frames is downstream of this constant and had
+// nothing to do with OCR: IngestRoster no longer discards a frame because this
+// field failed on it (task 6b). R2's rows are now read, attributed to the rank
+// its badge supplies, matched against known members and queued one row per row
+// -- 33 parsed and 2 matched (the gate's own per-group tally), against 21
+// unparseable_group_header rows and nothing else before. They still create
+// nobody, because the count is what gates creation and this count is still
+// unread.
+//
+// 22 of those rows are queued as no_confident_match_group_count_unknown, read
+// straight off the gate's review-queue breakdown, and that is the measured
+// cost of leaving the count unread -- the number to weigh a per-digit NCC
+// classifier against. R2 also accounts for roughly 9 more rows under
+// low_confidence_name, which is INFERRED from a capture-wide 14 -> 23 delta
+// rather than measured per group; the queue does not record which group a row
+// came from, so do not quote 31 as if it were counted.
+//
+// The one frame it does recover is capture 1's seq 1, and recovering it made
+// the roster gate's coverage WORSE, 45/75 to 43/75. Not a defect in this
+// constant: seq 1's sticky header is R4 "This Is It 2/9" COLLAPSED, with R3's
+// own header and R3's rows directly beneath it, so the frame's rows belong to
+// a different group than its sticky header names. See the groupKey assignment
+// in IngestRoster for what that costs and why it is not fixed here.
+var groupHeaderRegion = transport.Rect{X1: 0.03, Y1: 0.409, X2: 0.8917, Y2: 0.435}
 
 // groupHeaderOptions is the preprocessing task 21's harness measured for
 // groupHeaderRegion: grayscale and upscale(3), nothing else. Across the same
@@ -83,6 +185,26 @@ var groupHeaderRegion = transport.Rect{X1: 0.03, Y1: 0.409, X2: 0.97, Y2: 0.435}
 // alone tied for the best score measured (14/18) without depending on that
 // interaction, so it is the one used here rather than a threshold variant
 // that happened to tie on this sample.
+//
+// Re-measured through the MOVED rectangle above rather than re-reasoned about,
+// because CLAUDE.md is explicit that options measured through the wrong
+// rectangle are not evidence about the right one -- and the sentence above was
+// measured with the chevron still in the crop. `make probe-roster
+// PROBE_ARGS=-roster.headeropts`, the same eight-shape x three-upscale grid
+// every other field in this package is fitted on, over 61 real frames scored
+// against the transcribed group totals:
+//
+//	gray x3        40 parsed, 40 correct, 0 wrong   <- this setting
+//	gray+inv x3    40 parsed, 40 correct, 0 wrong
+//	gray x4        40 parsed, 39 correct, 1 WRONG
+//	gray+thr x3    37 parsed, 37 correct, 0 wrong
+//	gray+eq x3      0 parsed
+//
+// So the shape is unchanged and the equalize finding still holds through the
+// new rectangle. gray+inv x3 ties on every column; gray x3 is kept because it
+// is what shipped and a tie is not a reason to move. `-roster.headerthresh`
+// sweeps AdaptiveThreshold's block size and C, the two knobs that grid never
+// varies, across 80 settings: none beats 40 either.
 var groupHeaderOptions = vision.Options{SkipEqualize: true, SkipThreshold: true, SkipInvert: true, UpscaleFactor: 3}
 
 // Field sub-rects, as fractions of the full frame width (X) and of one row
@@ -153,7 +275,8 @@ const (
 // to catch it, and a bad read does not lose a number, it mints a *member*.
 // processRow therefore enforces nameSpec.MinConf on the member-creation branch
 // specifically (see the comment there for why creation and not matching, and
-// for the measurement that says the floor costs nothing at 0.4).
+// for what the floor costs -- three members on capture 1, re-measured, not
+// the zero the first measurement recorded).
 // powerSpec carries no Charset, deliberately -- see task 23's report and
 // parse.go's powerRe doc comment. It used to carry "0123456789.KMB", and
 // that whitelist is exactly what Finding 7 (docs/superpowers/specs/evidence/
@@ -391,6 +514,16 @@ type RosterRow struct {
 type GroupTally struct {
 	Expected, Parsed int
 
+	// ExpectedKnown reports whether Expected came from a header this run
+	// actually read. False means the group's own count never parsed on any
+	// frame, and Expected is then meaningless rather than zero: a group of
+	// size zero does not exist (parseGroupHeader rejects a zero total as
+	// incoherent), so "0" here would be a size claim nothing measured.
+	// Every reader of Expected must consult this first -- reconciliation
+	// treats an unknown count as a shortfall, and `control ingest` prints
+	// expected=? rather than a number it does not have.
+	ExpectedKnown bool
+
 	// Name is the group's display name as read off its own sticky header
 	// (parseGroupHeader), taken from whichever frame first established this
 	// rank's tally. It is descriptive only — printRosterSummary surfaces it
@@ -401,6 +534,45 @@ type GroupTally struct {
 	// why GroupTally is keyed on rank (matchRankBadge's NCC read) and not on
 	// this field.
 	Name string
+
+	// MatchedOrCreated is how many of this group's rows ended as a member --
+	// matched to an existing one or created. It is deliberately distinct from
+	// Parsed, which counts row bands that reached OCR: a band that was read
+	// and then failed to match is parsed and contributes no member, so the
+	// two numbers answer different questions. Their difference is the
+	// NAME-CLASS review rows for this group (unreadable_name,
+	// ambiguous_name_match, low_confidence_name,
+	// no_confident_match_group_full) and nothing else -- not the review queue
+	// as a whole, which also carries a row per unparseable or low-confidence
+	// numeric field on rows that resolved to a member perfectly well.
+	//
+	// Reconciliation keys on Parsed, because it is asking whether the scroll
+	// saw the whole group. `control ingest` prints this as yielded=, because
+	// what a group produced is the other half of a triage.
+	//
+	// It counts row EVENTS, not distinct members: a member whose row is
+	// collected on two frames counts twice, so it can legitimately exceed the
+	// number of people the group contains. Anything comparing it to a member
+	// count is comparing two different units.
+	MatchedOrCreated int
+}
+
+// ExpectedLabel renders Expected for a human: the number, or "?" when no
+// frame of this group ever read its count. It exists so the rule stated on
+// ExpectedKnown above -- every reader of Expected must consult it first -- is
+// structural rather than advisory at the two places that print the pair
+// (`control ingest`, and the roster gate's per-group tally line), which had
+// the same four-line formatting twice and would have drifted apart at the
+// first change.
+//
+// Printing the raw 0 is the failure this prevents: "parsed=33 expected=0"
+// sends a triage looking for a scrolling bug, when what happened is an
+// unreadable header and, in consequence, no creation budget at all.
+func (t GroupTally) ExpectedLabel() string {
+	if !t.ExpectedKnown {
+		return "?"
+	}
+	return strconv.Itoa(t.Expected)
 }
 
 // RosterResult summarizes one IngestRoster run.
@@ -442,15 +614,147 @@ type rosterRun struct {
 // the geometric dedupe cursor.
 type groupTracker struct {
 	expected         int
+	countKnown       bool
 	matchedOrCreated int
 	contentY         int
-	lastRowY         int // content-Y of the last collected row; -1 = none yet
+	rows             []collectedRow
 }
 
-// advance decides this frame's contentY and whether its topmost detected
-// band must be discarded as the sticky header's occlusion of an already-
-// collected row (see the call site's own comment on that band-drop, and
-// TestIngestRosterDiscardsTheOccludedTopRow). sameGroupAsPrevFrame is true
+// collectedRow is one row band this group has already been photographed
+// with, in the group's own content coordinates, and whether reading it
+// produced a member.
+//
+// The resolved flag is the whole reason this is a slice rather than the
+// single monotonic cursor (`lastRowY`) it replaces. A roster capture
+// photographs most rows three or more times -- capture 1 reads some of them
+// seventeen times -- and the cursor let exactly one of those sightings reach
+// OCR: the first. A row whose first sighting read badly was never read
+// again, however many clean photographs of it the capture went on to take.
+// Two members of capture 1 are lost precisely that way and no other:
+// Bujangann reads at confidence 0.03 and 0.00 on seq 7 and 8 and 0.80 on
+// seq 9, and Riesige Banane at 0.38 on seq 6 (just under nameSpec.MinConf)
+// and 0.77 on seq 7. Neither is a matcher problem, a crop problem or a
+// preprocessing problem; the good photograph was taken and thrown away.
+//
+// So a sighting of a row that has already RESOLVED is still skipped before
+// OCR -- that is the dedupe, and it is what stops one member being minted
+// twice -- while a sighting of a row that has not resolved is read again.
+// The cost is bounded by the capture: a row nothing can read is re-read once
+// per photograph of it, which is OCR time, not wrong facts -- the `reviewed`
+// flag below stops the re-read from also costing a review row per photograph.
+//
+// WHAT THIS COST AND WHAT THE LIST COST, separated, because they are two
+// changes in one place and the group tallies distinguish them exactly. A
+// re-read does not increment Parsed (see the call site) and a newly collected
+// row does, so Parsed moves only for the list and yielded moves for both:
+//
+//	group  parsed          yielded         expected
+//	R2     33 ->  33       2  ->  18       ?          (unreadable header count)
+//	R3     96 ->  98       83 ->  90       64
+//	R4      5 ->   5       4  ->   4       9
+//	R1     no tally on either run -- collapsed, never a sticky header
+//
+// Parsed +2, both in R3: that is the ENTIRE effect of replacing the monotonic
+// cursor with this list. The cursor skipped any band at or before it,
+// including bands well above it, and capture 1 scrolls backwards past its own
+// cursor from seq 26 on (offset_px 0, the same stretch re-photographed); two
+// such bands are now collected. Yielded +23 against created +2 is matched +21,
+// and at most two of those 21 sit on the two new bands -- the other nineteen
+// are re-reads of rows already collected, sixteen of them in R2, where not one
+// new band was collected at all. The commit that introduced this attributed
+// the +21 to the cursor change; the tallies say otherwise, and they were
+// printed in the same run.
+type collectedRow struct {
+	y        int
+	resolved bool
+	// reviewed records that this row has already put a row in front of a
+	// human. A row nothing can read is re-read on every photograph of it --
+	// capture 1 photographs some rows seventeen times -- and without this the
+	// queue grows by one row per photograph while the amount of human work
+	// stays at one. Measured: the review queue went 271 -> 378 rows on
+	// capture 1 with the re-read and no suppression, R2's eleven unresolvable
+	// members alone accounting for 49 of them.
+	//
+	// One row per collected row, not per reason: the alternative (suppress
+	// only a REPEAT of the same reason) keeps a second row whenever a later
+	// sighting fails differently, which is more rows describing one piece of
+	// work, which is the thing being avoided.
+	//
+	// The row kept is the FIRST sighting's, not the highest-confidence one,
+	// and that is a choice against the reviewer's convenience. The queued row
+	// carries a reason, a raw text and a screenshot id, and those three
+	// describe one photograph: swapping in a later read's text would show a
+	// reviewer a string that the recorded reason was not derived from and that
+	// the recorded screenshot does not contain. Keeping the best text would
+	// also mean rewriting a queue row already written, which nothing in the
+	// review path does today. If a reviewer wants the clearest photograph, the
+	// answer is a queue row that can name several screenshots, not one whose
+	// three fields come from different frames.
+	//
+	// The flag only ever latches true; nothing clears it when a later
+	// sighting resolves the row (TestIngestRosterRereadsARowItsFirstSightingCouldNotResolve
+	// pins both outcomes on the same row). So a queued review row can outlive
+	// the resolution that makes it moot -- an operator is handed queue work
+	// for a member who by then already exists. Clearing it on resolution is a
+	// real design question and is deliberately not addressed here.
+	reviewed bool
+}
+
+// seenRow finds the already-collected row whose content-Y is within half a
+// pitch of y, which is the same proximity test the monotonic cursor applied
+// -- it is the tolerance the scroll offset is trusted to, not a new one.
+//
+// Scanning the slice rather than keying a map on a quantized y: quantizing
+// puts a boundary somewhere, and two sightings of one row that straddle it
+// would become two rows, which is the split this whole mechanism exists to
+// avoid. A group holds tens of rows and a frame holds six bands, so the scan
+// is not worth avoiding.
+func (gt *groupTracker) seenRow(y int) (int, bool) {
+	for i, r := range gt.rows {
+		if d := y - r.y; d >= -memberRowPitch/2 && d <= memberRowPitch/2 {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+// canCreate reports whether this group may mint a new member for one more
+// row: it has a count of its own, and has not yet resolved that many rows to
+// a member. An accessor rather than the expression inline, because those are
+// two different refusals and only one of them is arithmetic -- reading
+// gt.expected without consulting gt.countKnown is the mistake this method
+// exists to make unwritable at the one site where it matters.
+//
+// The countKnown half changes nothing TODAY, and that was measured rather
+// than assumed: parseGroupHeader returns total 0 on every one of its three
+// error paths, so a countless tracker carries expected 0 and `0 < 0` already
+// refuses. Deleting the conjunct leaves the whole suite green. The mutation
+// that does go red is `!gt.countKnown || ...` -- "unknown means unlimited" --
+// which mints 3 phantom members against a group of unknown size. So this
+// conjunct is a claim about intent that survives the day someone gives an
+// unread group a non-zero default, and the flag is load-bearing on its own at
+// two other sites: the review reason processRow queues, and reconciliation's
+// refusal to call such a group complete.
+//
+// ONE ORDERING PROPERTY THIS RELIES ON, and it is the capture's, not the
+// code's. Every MATCH charges the budget too (processRow), so a group whose
+// rows are re-observed enough times exhausts `expected` on re-matches alone:
+// R3 reports yielded=90 against expected=64 on capture 1 and still creates
+// every member it can, only because its first sightings all happen in the
+// forward scan and the duplicates pile up behind them. A capture whose repeat
+// observations interleave with first sightings would spend the budget on
+// re-matches and refuse a real creation as `no_confident_match_group_full`.
+// The empirical check that this is not happening today is that the reason
+// appears zero times in capture 1's review queue -- which is evidence about
+// this capture, not a property of this method. If it ever starts firing on a
+// group that is demonstrably not full, the fix is to charge the budget on
+// DISTINCT members rather than on row events, not to raise `expected`.
+func (gt *groupTracker) canCreate() bool {
+	return gt.countKnown && gt.matchedOrCreated < gt.expected
+}
+
+// advance decides this frame's contentY: where in this group's own scroll
+// the top of the list region now sits. sameGroupAsPrevFrame is true
 // only when the frame immediately before this one — in capture order, not
 // in "frames of this group" order — carried this same group's header: i.e.
 // this frame is an unbroken continuation of a scroll that was already moving
@@ -474,16 +778,19 @@ type groupTracker struct {
 // away group does not move while it is off screen, which is the only
 // assumption this frame pair has any evidence for either way — and it is
 // what makes returning to a group idempotent rather than merely
-// non-crashing: the resumed position lines up with gt.lastRowY well enough
-// for the geometric dedupe below to recognize rows already collected,
+// non-crashing: the resumed position lines up with the rows this group has
+// already collected well enough for the geometric dedupe below to recognize them,
 // instead of a reset making them look brand new (task 27's brief; the
 // resulting duplicate INSERT is what actually crashed the first real run).
-func (gt *groupTracker) advance(offsetPx int, sameGroupAsPrevFrame bool) (contentY int, skipTopBand bool) {
+//
+// It used to return a second value, skipTopBand, telling the caller to throw
+// away each continuing frame's topmost band. It does not any more; see the
+// call site for the segmentation invariant that makes that drop a pure loss.
+func (gt *groupTracker) advance(offsetPx int, sameGroupAsPrevFrame bool) (contentY int) {
 	if sameGroupAsPrevFrame {
 		gt.contentY += offsetPx
-		return gt.contentY, true
 	}
-	return gt.contentY, false
+	return gt.contentY
 }
 
 // IngestRoster turns one roster capture's frames into members and facts.
@@ -597,18 +904,43 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		hy0 := int(groupHeaderRegion.Y1 * float64(img.Bounds().Dy()))
 		hy1 := int(groupHeaderRegion.Y2 * float64(img.Bounds().Dy()))
 
-		// The count comes from OCR (it reads cleanly — task 24's brief); the
-		// rank does not (Finding 4: outlined game glyphs do not OCR under any
-		// PSM or charset tried). The two reads are independent and both must
-		// succeed before this frame's rows can be attributed to a group, so
-		// each gets its own failure path to its own review reason rather than
-		// one collapsing into the other's error message.
+		// The count comes from OCR (task 24's brief expected it to read
+		// cleanly; capture 1's R2 shows it does not always — see
+		// groupHeaderRegion); the rank does not (Finding 4: outlined game
+		// glyphs do not OCR under any PSM or charset tried). The two reads are
+		// independent, and so are their consequences: only the RANK is
+		// required before this frame's rows can be attributed to a group,
+		// because a row with no group has nowhere honest to attach. Each gets
+		// its own failure path to its own review reason rather than one
+		// collapsing into the other's error message.
+		//
+		// A count that does not parse costs no frame its rows. It used to
+		// cost the whole frame: this branch `continue`d, so one unreadable
+		// field discarded every row on the screen and left a single review
+		// row where a reader would expect one per member. Capture 1's 21 R2
+		// frames are the measured case -- 21 header rows in the queue and not
+		// one word about the members on them -- and the defect is independent
+		// of that capture, since one smudged header on any future capture
+		// loses a whole group the same way. The rows below are read,
+		// attributed to the rank the badge supplies (an independent read,
+		// measured correct at 61/61), and matched against members already
+		// known.
+		//
+		// What a failed count withholds is the CREATION BUDGET, and it
+		// withholds it from the GROUP, not from this frame: the budget lives
+		// on groupTracker, so a group is countless only while NO frame of it
+		// has read a count, and one good header anywhere in the capture
+		// (before or after — see the tracker upgrade below) restores it for
+		// every frame of that group. On capture 1 the two readings coincide
+		// exactly, because all 21 R2 headers fail, which is precisely the
+		// condition under which a comment saying "this frame" would survive
+		// review and ship wrong.
 		groupName, headerTotal, herr := parseGroupHeader(headerRes.Text)
+		countKnown := herr == nil
 		if herr != nil {
 			if err := run.queueReview(ctx, i, frame.ScreenshotID, RowBand{Y0: hy0, Y1: hy1}, headerRes.Text, nil, "unparseable_group_header", 0); err != nil {
 				return RosterResult{}, err
 			}
-			continue
 		}
 		rankRes, rerr := matchRankBadge(img)
 		if rerr != nil {
@@ -637,6 +969,28 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 			}
 			continue
 		}
+		// Every row on this frame is attributed to the rank its STICKY HEADER
+		// names, and that is wrong on a frame whose sticky group is collapsed.
+		// Capture 1's seq 1 is the case: the sticky band reads R4 "This Is It
+		// 2/9" with the UP chevron, R3's own header sits immediately below it
+		// inside memberListRegion, and R3's rows follow. Four transcribed R3
+		// members (Kain445, K4RAZOR1, KIRCHO, ΔKΔŽΔ) are created under R4 by
+		// this line, two of which the later R3 frames used to create
+		// correctly -- creation is first-writer-wins, so a wrong first frame
+		// is not repaired by a right later one.
+		//
+		// It went unseen while groupHeaderRegion swallowed the collapse
+		// chevron, because seq 1's header did not parse and the frame was
+		// dropped whole before reaching here. Fixing the crop did not cause
+		// this; it stopped hiding it.
+		//
+		// The fix is a chevron-polarity read, not a change here: a collapsed
+		// sticky group has no rows on its own frame, so such a frame should
+		// contribute its tally and no members at all. That needs a template
+		// and a measurement of its own (the chevron button is at x=651..683 of
+		// the header band, already measured by
+		// `make probe-roster PROBE_ARGS=-roster.headerink`), and guessing
+		// without one would be the blind tap CLAUDE.md's invariant #3 forbids.
 		groupKey := rankRes.Rank
 		// Rank is not OCR-derived, so invariant #5's confidence-on-every-fact
 		// rule does not literally reach it and members.Rank has nowhere to
@@ -652,37 +1006,54 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 
 		gt, exists := run.groups[groupKey]
 		if !exists {
-			gt = &groupTracker{expected: headerTotal, lastRowY: -1}
+			gt = &groupTracker{expected: headerTotal, countKnown: countKnown}
 			run.groups[groupKey] = gt
-			run.res.PerGroup[groupKey] = GroupTally{Expected: headerTotal, Name: groupName}
+			run.res.PerGroup[groupKey] = GroupTally{Expected: headerTotal, ExpectedKnown: countKnown, Name: groupName}
+		} else if !gt.countKnown && countKnown {
+			// A count read on a LATER frame of the same group is still the
+			// count, and a tracker is created on whichever frame sighted the
+			// group first -- which is wherever a swipe happened to land, not
+			// something the capture chooses. Without this, a group whose
+			// first header failed would stay budgetless for the rest of the
+			// run with the evidence for its size sitting in a frame already
+			// read. The upgrade only ever goes one way: a header that parsed
+			// is never overwritten by a later one that did not, so noise on
+			// one frame cannot take a budget away.
+			gt.expected, gt.countKnown = headerTotal, true
+			tally := run.res.PerGroup[groupKey]
+			tally.Expected, tally.ExpectedKnown, tally.Name = headerTotal, true, groupName
+			run.res.PerGroup[groupKey] = tally
 		}
 
 		sameGroupAsPrevFrame := havePrev && groupKey == prevGroupKey
-		_, skipTopBand := gt.advance(frame.OffsetPx, sameGroupAsPrevFrame)
+		gt.advance(frame.OffsetPx, sameGroupAsPrevFrame)
 		prevGroupKey, havePrev = groupKey, true
 
+		// Every band SegmentRows returns is a whole row. There used to be a
+		// drop here of each continuing frame's topmost band, on the theory
+		// that the fixed region-top line bisects whichever row is sitting
+		// across it — first justified as the sticky header occluding that
+		// row, and re-justified as the swipe's travel never being an exact
+		// multiple of the pitch once memberListRegion.Y1 moved below the
+		// header and the first reason stopped being true. Both readings are
+		// wrong, and collectBands says why: a band spans boundary k to
+		// boundary k+1, every boundary is a confirmed inter-card GAP, and
+		// bands are therefore exactly one pitch tall with a gap above them.
+		// A row bisected by the region top is not emitted as a short band —
+		// it is not emitted at all. So the drop discarded a whole,
+		// correctly-segmented row on every continuing frame.
+		//
+		// What made it look harmless is that the dropped band is usually a
+		// duplicate the geometric dedupe below would have refused anyway, so
+		// removing it changes nothing on most frames — measured on capture 1,
+		// it changes nothing at all by itself. It is not harmless when the
+		// swipe happens to travel a whole number of rows (the dropped band is
+		// then a row seen on no other frame), and it is not harmless when the
+		// dedupe wants to re-read that row because its earlier sighting
+		// produced nothing.
 		bands, err := SegmentRows(img, memberListRegion, memberRowPitch)
 		if err != nil {
 			return RosterResult{}, fmt.Errorf("ingest: segmenting screenshot %d: %w", frame.ScreenshotID, err)
-		}
-		if skipTopBand && len(bands) > 0 {
-			// memberListRegion.Y1 is a fixed pixel line (704, 7px below the
-			// sticky header's own bottom edge — see memberListRegion's doc
-			// comment) and the list keeps scrolling underneath it, so this is
-			// no longer "the header covers the first band" as it was
-			// described here before the region moved to clear the header:
-			// with Y1 below the header, the header cannot be why a band gets
-			// cut. It is still true, for an unrelated reason — a swipe's
-			// travel is essentially never an exact multiple of a row's
-			// pitch, so the fixed region-top line almost always bisects
-			// whichever row happens to be sitting across it once the list
-			// has moved at all within the same group (skipTopBand is true).
-			// The result looks identical either way (a partial top band
-			// that must not be parsed as a whole row), which is exactly why
-			// the wrong reason survived a region move undetected — see
-			// CLAUDE.md on the `vs` mislabel for the general shape of that
-			// failure. Discard it rather than parse a partial row.
-			bands = bands[1:]
 		}
 
 		regionTop := int(memberListRegion.Y1 * float64(img.Bounds().Dy()))
@@ -709,25 +1080,50 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 			// as PhaseDuplicate before its residual phase ever runs (see
 			// vs.go and assign.go). This route has no such phenomenon to
 			// guard against in the first place.
-			if gt.lastRowY >= 0 && rowY <= gt.lastRowY+memberRowPitch/2 {
-				continue // geometric duplicate; OCR never runs on it
+			idx, seen := gt.seenRow(rowY)
+			switch {
+			case seen && gt.rows[idx].resolved:
+				// This row is already somebody. OCR never runs on it again:
+				// that is the geometric dedupe, and it is what stops one
+				// member being minted twice off two photographs.
+				continue
+			case seen:
+				// Collected before and still nobody. The capture took
+				// another photograph of it, so read it again rather than
+				// leave a member lost to whichever sighting happened to be
+				// first (see collectedRow). It is NOT counted as a second
+				// parsed row -- Parsed asks whether the scroll photographed
+				// the whole group, and re-reading one row does not make the
+				// group larger.
+			default:
+				gt.rows = append(gt.rows, collectedRow{y: rowY})
+				idx = len(gt.rows) - 1
+
+				totalParsed++
+				tally := run.res.PerGroup[groupKey]
+				tally.Parsed++
+				run.res.PerGroup[groupKey] = tally
 			}
-			gt.lastRowY = rowY
 
-			totalParsed++
-			tally := run.res.PerGroup[groupKey]
-			tally.Parsed++
-			run.res.PerGroup[groupKey] = tally
-
-			if err := run.processRow(ctx, i, img, band, frame.ScreenshotID, groupKey); err != nil {
+			resolved, reviewed, err := run.processRow(ctx, i, img, band, frame.ScreenshotID, groupKey, gt.rows[idx].reviewed)
+			if err != nil {
 				return RosterResult{}, err
 			}
+			gt.rows[idx].resolved = resolved
+			gt.rows[idx].reviewed = gt.rows[idx].reviewed || reviewed
 		}
 	}
 
 	status := "complete"
 	for _, t := range run.res.PerGroup {
-		if t.Parsed != t.Expected {
+		// A group whose count never parsed is not reconciled, it is
+		// unreconcilable: there is no number to compare Parsed against. That
+		// is a shortfall in the only sense this status has -- the capture is
+		// not known to have seen everybody -- and it is stated explicitly
+		// rather than left to fall out of Expected being 0, which would read
+		// as a group of size zero and would silently call the group complete
+		// the moment it also parsed no rows.
+		if !t.ExpectedKnown || t.Parsed != t.Expected {
 			status = "partial"
 			break
 		}
@@ -794,6 +1190,18 @@ func (run *rosterRun) readAllianceMemberCount(ctx context.Context, i *Ingester, 
 	return count, true
 }
 
+// noteMemberFor records on the group's public tally that one of its rows
+// ended as a member. It exists as a helper rather than inline at each site
+// because the private groupTracker.matchedOrCreated -- the group's creation
+// budget -- and the exported GroupTally.MatchedOrCreated count the same event
+// and must move together, or `control ingest` prints a yielded= column that
+// nothing maintains. Both call sites bump the tracker and then call this.
+func (run *rosterRun) noteMemberFor(groupKey string) {
+	tally := run.res.PerGroup[groupKey]
+	tally.MatchedOrCreated++
+	run.res.PerGroup[groupKey] = tally
+}
+
 // processRow crops and reads one row's four fields, then routes it to a
 // match, a creation, or the review queue.
 //
@@ -809,29 +1217,88 @@ func (run *rosterRun) readAllianceMemberCount(ctx context.Context, i *Ingester, 
 // resolve to a member at all: without a memberID no fact has anywhere to
 // attach, so an ambiguous or unmatched-and-group-full name still sends the
 // whole row to review, same as before.
-func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Image, band RowBand, screenshotID int64, groupKey string) error {
+//
+// It reports whether the row RESOLVED -- matched an existing member or
+// created one. The caller records that against the row's position so a later
+// photograph of the same row is read again if this one produced nobody, and
+// skipped if it did (see collectedRow). Every name-class review path returns
+// false: a queued row is a row that is still nobody, whatever the reason.
+//
+// alreadyReviewed says this row's name has already been queued for a human on
+// an earlier photograph, so a name-class failure here must not queue a second
+// row describing the same piece of work. It gates the NAME class only. The
+// field-level rows writeFacts queues belong to a row that did resolve, so
+// they are written once by construction and need no such guard.
+//
+// The second return value reports whether this call queued a name-class row,
+// which is what the caller latches.
+func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Image, band RowBand, screenshotID int64, groupKey string, alreadyReviewed bool) (resolved, reviewed bool, err error) {
 	nameRes, _, err := i.readFieldWithRetry(ctx, img,
 		fieldRect(band, img, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1),
 		readPlan{spec: nameSpec, opts: nameOptions}, nameRetry)
 	if err != nil {
-		return err
+		return false, false, err
 	}
 	powerRes, err := i.readField(ctx, img, fieldRect(band, img, powerXFrac0, powerXFrac1, bottomRowYFrac0, bottomRowYFrac1), powerSpec, powerOptions)
 	if err != nil {
-		return err
+		return false, false, err
 	}
 	levelRes, err := i.readField(ctx, img, fieldRect(band, img, levelXFrac0, levelXFrac1, bottomRowYFrac0, bottomRowYFrac1), levelSpec, levelOptions)
 	if err != nil {
-		return err
+		return false, false, err
 	}
-	lastRes, err := i.readField(ctx, img, fieldRect(band, img, statusXFrac0, statusXFrac1, statusYFrac0, statusYFrac1), lastActiveSpec, lastActiveOptions)
+	statusRect := fieldRect(band, img, statusXFrac0, statusXFrac1, statusYFrac0, statusYFrac1)
+	lastRes, err := i.readField(ctx, img, statusRect, lastActiveSpec, lastActiveOptions)
 	if err != nil {
-		return err
+		return false, false, err
 	}
 
 	power, perr := ParsePower(powerRes.Text)
 	level, lerr := ParseLevel(levelRes.Text)
 	lastActive, aerr := ParseLastActiveHours(lastRes.Text)
+	if aerr != nil {
+		// The status column has two states drawn differently, and the shipped
+		// preprocessing serves one of them. "Online" is green with a dark
+		// outline; luma leaves that green close to the cream card behind it,
+		// so tesseract is handed hollow glyphs -- the same class of failure
+		// Finding 4 records for the rank badges, which is why they are matched
+		// by NCC and not read at all.
+		//
+		// So this is a second READ, not different Options on the first: the
+		// green channel (vision.GreenChannel) is a different image, and it is
+		// worse than luma on the grey elapsed-time state by a wide margin, so
+		// it can only ever be a retry. Measured over capture 1's 277
+		// attributable bands (`make probe-roster PROBE_ARGS=-roster.lastactive`):
+		//
+		//   shipped luma          online  7/24 parsed   elapsed 250/253
+		//   green channel         online 12/24          elapsed 202/253
+		//   shipped, green retry  online 12/24          elapsed 253/253
+		//
+		// CLAUDE.md's rule is that retrying a NUMBER is not like retrying a
+		// name, because a number has no roster behind it and a second read can
+		// manufacture a plausible value out of noise. That is why the retry is
+		// gated on ParseLastActiveHours SUCCEEDING rather than on the read
+		// being non-empty, why the primary's raw text survives a retry that
+		// fails (so a review row still shows what the shipped path saw), and
+		// why the probe counts `wrong` -- a read parsing BELOW the transcribed
+		// value, which the clock cannot explain. The retry produced zero of
+		// those; the one on this capture is the shipped path's own ("9m ago"
+		// read as "3m ago" on Kapton Banana, seq 5).
+		//
+		// A grid of 144 shape/PSM combinations found nothing that serves both
+		// states: every shape reaching 12 online rows costs 46 to 109 elapsed
+		// ones (-roster.lasweep). The indicated end state for the Online half
+		// is an NCC template match like matchRankBadge's, since an outlined
+		// game glyph is not an OCR problem; this retry is what the measurement
+		// supports today.
+		greenRes, gerr := i.readField(ctx, vision.GreenChannel(img), statusRect, lastActiveSpec, lastActiveOptions)
+		if gerr != nil {
+			return false, false, gerr
+		}
+		if v, perr := ParseLastActiveHours(greenRes.Text); perr == nil {
+			lastRes, lastActive, aerr = greenRes, v, nil
+		}
+	}
 
 	row := RosterRow{
 		Name: nameRes.Text, NameConf: nameRes.Confidence,
@@ -855,7 +1322,7 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 	// confidence gate below would have caught them too -- the point of keeping
 	// both is that neither should have to rely on the other.)
 	if strings.TrimSpace(row.Name) == "" {
-		return run.queueReview(ctx, i, screenshotID, band, nameRes.Text, nil, "unreadable_name", row.NameConf)
+		return run.queueNameReview(ctx, i, screenshotID, band, nameRes.Text, nil, "unreadable_name", row.NameConf, alreadyReviewed)
 	}
 
 	candidates := roster.Rank(row.Name, run.members)
@@ -863,12 +1330,13 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 	case len(candidates) > 0 && candidates[0].Score >= roster.AutoAccept:
 		gt := run.groups[groupKey]
 		gt.matchedOrCreated++
+		run.noteMemberFor(groupKey)
 		run.res.Matched++
 		matchNorm := float64(candidates[0].Score) / 100.0
-		return run.writeFacts(ctx, i, screenshotID, band, candidates[0].MemberID, matchNorm, fieldReads(row, powerRes, levelRes, lastRes, perr, lerr, aerr))
+		return true, false, run.writeFacts(ctx, i, screenshotID, band, candidates[0].MemberID, matchNorm, fieldReads(row, powerRes, levelRes, lastRes, perr, lerr, aerr))
 
 	case len(candidates) > 0 && candidates[0].Score >= roster.ReviewFloor:
-		return run.queueReview(ctx, i, screenshotID, band, row.Name, candidates, "ambiguous_name_match", 0)
+		return run.queueNameReview(ctx, i, screenshotID, band, row.Name, candidates, "ambiguous_name_match", 0, alreadyReviewed)
 
 	default:
 		// Creating a member is the one irreversible thing this loop does: a
@@ -883,19 +1351,44 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 		// seven rows scored below 0.4 and still auto-matched a real member, and
 		// refusing those would lose good data to no purpose.
 		//
-		// Measured before it was enforced: across capture 1's 96 rows, no
-		// non-empty name below this floor reached the creation branch at all
-		// (every sub-0.4 read either matched at 92+ or was empty), so turning
-		// this on costs zero legitimate creations on the only real roster
-		// capture there is. That makes it a guard against a class rather than
-		// a threshold tuned to trim a distribution -- if a future capture
-		// starts losing real members here, the answer is to re-measure the
-		// field's OCR, not to lower this.
+		// WHAT IT COSTS, re-measured, because the first measurement is no
+		// longer true and a stale measured claim in a comment is how this
+		// project's last two defects survived (CLAUDE.md, "A crop verified by
+		// eye is not measured" -- the roster name crop's own comment recorded
+		// an eye-check as authoritative for a milestone).
+		//
+		// The original claim: across capture 1's 96 rows, no non-empty name
+		// below this floor reached the creation branch at all -- every sub-0.4
+		// read either matched at 92+ or was empty -- so enforcement cost zero
+		// legitimate creations. That was accurate when it was made.
+		//
+		// Two things changed underneath it. nameXFrac0 moved out of the status
+		// icon, and the PSM 13 retry landed on this field: empty reads went
+		// from 87 of 331 bands to 0, and a raw-line read that recovers a name
+		// PSM 7 could not see arrives with a confidence PSM 7 never reported.
+		// So reads that used to be empty now reach this branch carrying a low
+		// score. Measured on the same capture with
+		// `make probe-roster PROBE_ARGS=-roster.members`, the floor now costs
+		// THREE members, all of them read correctly:
+		//
+		//   AnthraxVIII     "AnthraxVill"    score 96   confidence 0.24
+		//   Recon13Bravo    "Recon13Bravo"   score 100  confidence 0.26
+		//   IamIronman2025  "lamironman2025" score  98  confidence 0.00
+		//
+		// The floor stays. Admitting a 0.00-confidence read as grounds to MINT
+		// a member is exactly what it exists to prevent, and the three above
+		// are queued rather than lost -- a queued row is recoverable, a member
+		// minted from noise is not (the asymmetry CLAUDE.md states for
+		// AutoAccept applies here for the same reason). What the number
+		// obliges is a measurement of the whole confidence distribution on
+		// this field, not a nudge to clear these three: 0.24 and 0.26 are not
+		// near-misses of 0.40, and a floor moved far enough to admit them
+		// admits a great deal else.
 		if !nameRes.Accepted(nameSpec) {
-			return run.queueReview(ctx, i, screenshotID, band, nameRes.Text, candidates, "low_confidence_name", row.NameConf)
+			return run.queueNameReview(ctx, i, screenshotID, band, nameRes.Text, candidates, "low_confidence_name", row.NameConf, alreadyReviewed)
 		}
 		gt := run.groups[groupKey]
-		if gt.matchedOrCreated < gt.expected {
+		if gt.canCreate() {
 			memberID, err := i.store.CreateMember(ctx, db.Member{
 				AllianceID:     run.allianceID,
 				Name:           row.Name,
@@ -903,22 +1396,54 @@ func (run *rosterRun) processRow(ctx context.Context, i *Ingester, img image.Ima
 				Rank:           groupKey,
 			})
 			if err != nil {
-				return fmt.Errorf("ingest: creating member %q: %w", row.Name, err)
+				return false, false, fmt.Errorf("ingest: creating member %q: %w", row.Name, err)
 			}
 			run.members = append(run.members, roster.Member{ID: memberID, Name: row.Name})
 			gt.matchedOrCreated++
+			run.noteMemberFor(groupKey)
 			run.res.Created++
 			// A newly created member has no candidate to score against, so
 			// its match component is 1.0: the row is definitionally this
 			// member. Only each field's own OCR confidence gates its fact
 			// from here.
-			return run.writeFacts(ctx, i, screenshotID, band, memberID, 1.0, fieldReads(row, powerRes, levelRes, lastRes, perr, lerr, aerr))
+			return true, false, run.writeFacts(ctx, i, screenshotID, band, memberID, 1.0, fieldReads(row, powerRes, levelRes, lastRes, perr, lerr, aerr))
 		}
 		// The group's own header says it is already full. A 12th "new
 		// member" against an 11-member group is an OCR artifact, not a
 		// person — the recon's structural guard, not a tuned threshold.
-		return run.queueReview(ctx, i, screenshotID, band, row.Name, candidates, "no_confident_match_group_full", 0)
+		//
+		// A group whose header never parsed reaches the same queue by a
+		// different route and says so, because the two need opposite fixes:
+		// group_full is the pipeline working (the count was read and it is
+		// spent), count_unknown is a field that failed and every row of the
+		// group paying for it. Creation is gated on the count and not on a
+		// confidence threshold alone (design §4), so a group whose size is
+		// unknown has no budget to spend -- ending the frame-wide drop above
+		// must not become a licence to invent people. gt.countKnown is what
+		// says so; `expected == 0` would not, since a group of size zero is
+		// something parseGroupHeader already refuses to report.
+		reason := "no_confident_match_group_full"
+		if !gt.countKnown {
+			reason = "no_confident_match_group_count_unknown"
+		}
+		return run.queueNameReview(ctx, i, screenshotID, band, row.Name, candidates, reason, 0, alreadyReviewed)
 	}
+}
+
+// queueNameReview queues one name-class review row unless this row's name has
+// already been queued on an earlier photograph of it, and reports the two
+// values processRow's callers latch: the row did not resolve, and whether a
+// review row was written this time.
+//
+// It exists because the re-read of an unresolved row (collectedRow) turns one
+// piece of human work into one row per photograph. Suppression is here rather
+// than at the call site so no name-class branch can be added later that
+// forgets it.
+func (run *rosterRun) queueNameReview(ctx context.Context, i *Ingester, screenshotID int64, band RowBand, rawText string, candidates []roster.Candidate, reason string, confidence float64, alreadyReviewed bool) (bool, bool, error) {
+	if alreadyReviewed {
+		return false, false, nil
+	}
+	return false, true, run.queueReview(ctx, i, screenshotID, band, rawText, candidates, reason, confidence)
 }
 
 // fieldRead is one numeric field's OCR read, parse outcome, and the label

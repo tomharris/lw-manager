@@ -54,7 +54,10 @@ make build                    # bin/agent, bin/control
 ./bin/agent score --json                          # + per-frame predictions, to localize a failure
 make gate                                         # the same gate, as a test
 
-make gate-m4                                      # the M4 gate: ingest vs a hand-checked capture
+make gate-m4                                      # the M4 VS gate: ingest vs a hand-checked capture
+make gate-roster                                  # the M4 roster gate; does not pass yet, deliberately
+# never run those two at once — they truncate each other; see Testing
+
 make probe-m4                                     # measure the name field; not a gate, read the output
 make probe-m4 PROBE_ARGS='-probe.detail'          # per-member, to localize
 make probe-points                                 # measure the points field; also not a gate
@@ -143,20 +146,49 @@ instead of creating a duplicate account.
   none — which is how its name crop stayed wrong while the VS crops were being
   fitted to histograms. `-roster.inkprofile` prints the column ink histogram a
   crop edge is placed from, `-roster.x0sweep` sweeps `nameXFrac0`,
-  `-roster.detail` is the per-band view, `-roster.retry` measures the PSM-13
-  retry. Read its `junk-prefixed` column, not its `exact` column: there is no
-  hand-checked roster transcription, so it scores against the VS fixture's 86
-  names, which are neither complete (97 members) nor contemporaneous (three
-  days apart), and `exact` is therefore a lower bound that must never be quoted
-  as an accuracy. `junk-prefixed` counts reads that are a known name plus one
-  leading token — provably-correct reads with something the crop let in — and
-  that measure does not depend on the truth set being complete.
+  `-roster.detail` is the per-band view, `-roster.members` the per-member one,
+  `-roster.noretry` measures what the shipped PSM-13 retry is worth, and
+  `-roster.lastactive` / `-roster.lasweep` measure the status column split by
+  which of its two states a row is in.
+  It scores against `fixtures/m4rostergate/expected.yaml` — 75 members, that
+  capture, transcribed frame by frame — so `exact` is an accuracy and
+  `unmatched` an error rate. It did **not** used to be: until the roster gate's
+  fixture existed it scored against the VS ranking's 86 ranked names, three
+  days later and missing 11 of this roster's members, and every number carried
+  a "lower bound, never an accuracy" caveat. Two columns still need their own
+  reading: `junk-prefixed` (a known name plus one leading token — the direct
+  measure of a left-edge crop defect) and `exact (below MinConf)` (read
+  correctly, refused for confidence, and invisible to an accuracy count).
+  **`-roster.members` is the mode that answers the gate's question**, because
+  the gate reports members never created and every other mode reports bands: a
+  band-keyed count and a member-keyed loss are two aggregates, and pairing them
+  by hand is the inference this milestone got wrong twice.
 - `make gate` — the M1 phase gate: recognizer accuracy against the real
   corpus. Tagged `//go:build corpus`, device-free but slow, so it stays out
   of `make test`. Skips when the corpus has not been pulled. Carries an
   explicit `-timeout` because it costs frames × anchors and both keep
   growing; a panic with a goroutine dump at exactly 600s is Go's default
   timeout, not a gate failure.
+- `make gate-m4` — the M4 VS phase gate: `IngestVS` against the 86 rows of
+  `fixtures/m4gate/expected.yaml`, at ≥95% of rows within ±1% of the
+  hand-checked points. Tagged `m4gate`; needs Postgres, the blob store and
+  tesseract. **What its pass does not say** is in its own output and in "A
+  passing aggregate hides everything its tolerance is wider than" below: at
+  1% a row can carry a wrong low-order digit and still count. The bar stays
+  at 1% — see `gateTolerance`'s comment for the ruling — so the caveat is
+  permanent, not a bug waiting to be fixed.
+- `make gate-roster` — the M4 roster phase gate: `IngestRoster` against the
+  75 hand-transcribed members of capture 1
+  (`fixtures/m4rostergate/expected.yaml`), at ≥95% member coverage with zero
+  splits and zero orphans. Tagged `m4rostergate`; same three dependencies as
+  `gate-m4`. **It does not pass, and is committed failing on purpose**:
+  47/75 covered (never_created 19, wrong_group 9), orphans 5, splits 0 as of
+  2026-08-20. Read that number knowing its ceiling: R2's group header count
+  is unread on this capture (see "Sometimes it is the classifier, not the
+  layout" below), the count is what gates member creation, so R2's 11 members
+  cannot be created at all and coverage caps at **64/75 = 85.3% against a
+  0.95 condition**. The bar is a claim about the route, not about capture 1,
+  and a run here measures progress toward a ceiling below its own bar.
 - New packages get a fake or a replay path before they get a real
   implementation. `ReplayTransport` was written before `ADBTransport` was
   trusted, and that ordering is the pattern to follow.
@@ -197,6 +229,28 @@ Postgres advisory lock across migration for the same reason.
 This only ever fails on a clean database, which means it fails on CI and on a
 new developer's first run and nowhere else. Test it with a `DROP DATABASE`
 first, not by re-running a suite that already passed.
+
+### The two M4 gates cannot run at the same time
+
+`make gate-m4` and `make gate-roster` are two `go test` invocations of the
+same package under different build tags, both seeding and truncating
+`lw_manager_test`. Run them concurrently to save wall-clock and they truncate
+each other's fixtures mid-run. **Run them serially. Always.**
+
+This is a different failure from the clean-database race above — that one is
+about two `CREATE DATABASE` calls, this one is two *populated* gates
+overwriting each other — and it is far more dangerous, because it **fails as
+a plausible catastrophic result rather than as an error**. Run in parallel,
+`gate-m4` reports `0/86 rows within 1%, matched=0 queued=86`: no panic, no
+connection error, just a number that reads exactly like the ingest pipeline
+having been broken by whatever you last touched. Run serially, the same code
+gives 85/86 and 47/75. It cost a session, and the session was spent looking
+at the pipeline.
+
+Nothing in the Makefile prevents it. The general shape is worth holding onto
+rather than just the one pair: any two test binaries that share
+`lw_manager_test` and truncate are in this relationship, which includes
+either gate run alongside `make test-integration`.
 
 ### ReplayTransport exhaustion
 
@@ -415,14 +469,43 @@ profile put the gutter at x=156-158 (ink 16 across 68 bands, against 787 at
 x=136 and 946 at x=160), and moving the edge there took exact reads from 53 to
 141 with junk-prefixed reads to 0.
 
-Two things generalize from the repeat. First, **an eye-check does not become
-reliable by being done on a different field** — it failed identically on the VS
-name crop and the roster name crop, for the same reason both times. Second,
+**It happened a third time, on `groupHeaderRegion`, and this time nobody
+noticed — an instrument did.** `X2` was 0.97, x=698 of a 720px frame, which is
+past the collapse chevron (x=651..683) and past the header card's own right
+edge (x=691), so every header read ended in a fragment of the button:
+`10/64 yi]`, `2/9)`, `10/64) y]`. Those strings had been in front of people for
+the whole milestone and read as "10/64, fine" every time. What found it was
+`-roster.headerink` over 61 frames × 42 scanlines: a 15-column plateau at
+x=636..650 carrying literally zero ink at every threshold down to 5. The edge
+now sits at its midpoint. The generalization is not "check crops harder", it is
+**instrument a field before you change it** — the first two instances were
+caught by a person eventually deciding to look, and the third was caught the
+first time a histogram was run over the region, before anyone suspected it.
+
+**And it is not confined to crops.** The same failure works on a whole screen:
+a pre-flight pass read capture 1's `seq 1`, saw the sticky header `R4 This Is
+It 2/9`, and recorded R4 as an expanded group — without checking whether any
+rows followed it. R3's own header sits immediately beneath with nothing in
+between, and the chevron's direction was never consulted. The frame was read
+correctly and the conclusion was still wrong, because the reader was
+confirming what they expected rather than asking what the pixels ruled out.
+It was overturned only by going through all 61 member-list frames
+individually, which found that **no frame anywhere shows a row belonging to
+R4** — the group is collapsed in this capture and the roster fixture
+transcribes 75 members, not 84.
+
+Three things generalize from the repeats. First, **an eye-check does not
+become reliable by being done on a different field** — it failed identically
+on the VS name crop, the roster name crop and the group header crop, for the
+same reason all three times. Second,
 **the symptom named the wrong culprit**: reading `7 Leroy Jenkins 0914` off a
 list of members suggests a rank badge, which is per-group and constant, and the
 pixels showed a status icon, which is per-member and optional. That difference
 is exactly why only a third of names were affected, and no amount of staring at
-OCR output would have settled it.
+OCR output would have settled it. Third, **the unit is not the rectangle** —
+the same defect took a screen-level reading (R4 "expanded") down with it, so
+"did I check the whole thing, or the part I already had a belief about"
+applies to a frame exactly as it does to a crop.
 
 The corollary applies to anything fitted downstream of a crop: **options
 measured through the wrong rectangle are not evidence about the right one.**
@@ -474,6 +557,41 @@ flipped. There, implausible *uniformity* was the tell. Here the result was
 plausible and simply unvalidated, and the discipline is the same either way:
 before believing a measurement, establish that it can produce the answer you
 are hoping not to see.
+
+### Committing a measurement can change the measurement
+
+An ad-hoc run measured a digit whitelist on the group header and reported that
+it "returns empty on every R2 frame" — a clean negative, and the basis for
+rejecting the whitelist. Rebuilt as a committed probe mode over both candidate
+rectangles, the same whitelist **fabricates** a count on four frames (see the
+charset section below). The original claim was not sloppy; it was true of the
+one rectangle it happened to test, and false as stated.
+
+So a finding worth acting on is worth re-taking as a committed mode, and not
+because someone might want to re-run it later: the act of writing it down as a
+mode forces the axes to be enumerated, and enumerating them is what found the
+second rectangle. A one-liner measures whatever its author already had loaded.
+
+### A citation that resolves to nothing is worse than no citation
+
+It transfers authority the source never granted, and it is cheap to write and
+expensive to check. Two instances in one milestone, both caught only in
+review:
+
+- A production comment rested a scope decision on a Python one-liner and an
+  ad-hoc whitelist run that nobody could re-run and that no longer existed.
+- A `README.md` sentence explained a gate shortfall with "(see `CLAUDE.md`)"
+  for reasoning `CLAUDE.md` did not contain — and the mechanism it asserted
+  was wrong on every point besides.
+
+The rule: cite something a reader can open — a committed probe mode, a test
+name, a file and its doc comment, a fixture. If the evidence was an ad-hoc run,
+either commit it (see above) or write the number without the citation and say
+it was measured once, by hand. Note where the second one came from: **a
+rewrite whose own stated purpose was retiring a claim that had stopped being
+true.** Correcting the record is exactly when a plausible-sounding citation
+gets reached for, so this is not a matter of being careful enough — assume a
+citation you did not personally open is unverified.
 
 ### The gate's capture is square and production is not
 
@@ -528,6 +646,15 @@ what establishes that a failure exists at all. A green number is the hardest
 aggregate to interrogate, and interrogating it means a full readout against
 ground truth, not a re-run.
 
+**The bar was questioned and stays at 1%.** A tighter one would have caught
+rank 7; it would also start failing rows for transcription ambiguity in
+`expected.yaml` itself, which is 86 numbers read by eye off screenshots and is
+not regenerable. An absolute tolerance, or one scaled to digit position rather
+than to magnitude, are both plausible and neither has been measured. Changing
+it is a decision about what the gate is for, not a fix to make the current
+number better — so what changed instead is that the gate now says all of this
+in its own output, where the number is actually read.
+
 ### Tesseract's layout analysis is blind to some perfectly legible crops
 
 Not a preprocessing problem and not a contrast problem. A crop can be bold
@@ -555,6 +682,71 @@ Three consequences worth keeping:
   (`make probe-m4 PROBE_ARGS=-probe.fbsweep`).
 - `internal/ocr/testdata/psm7_layout_blind.png` is the whole defect in 2KB,
   and its test is a canary: if PSM 7 ever reads it, the retry can be revisited.
+
+### Sometimes it is the classifier, not the layout — and then PSM cannot help
+
+The section above has an obvious sibling that is a different defect and needs
+a different response. There, layout analysis fails before recognition runs,
+and a PSM that bypasses it recovers the crop. Here recognition itself fails on
+the glyphs, and no page-segmentation mode is the stage at fault.
+
+The instance: capture 1's R2 group header reads `1/11`, and tesseract
+classifies that token as `VN`, `VL`, `Wu`, `U/L`, `{i` or `fit` — a run of
+near-identical vertical strokes with a slash in it. It survives 12 geometries,
+24 preprocessing shapes through **each** of two rectangles, 40
+AdaptiveThreshold block/C settings through each, PSM 8/11/13, and a digit
+whitelist. 21 of that capture's 61 frames are affected, and it **reproduces
+outside `internal/ingest`'s read path entirely**, on `vision.Preprocess` plus
+the tesseract binary with none of this package involved — the reproducer
+invocation is in `groupHeaderRegion`'s doc comment in
+`internal/ingest/roster.go`, and every mode named above is committed
+(`make probe-roster PROBE_ARGS=-roster.headeropts`, `-roster.headersweep`,
+`-roster.headerthresh`) because a claim that closes off a line of work has to
+be contestable.
+
+Two things follow. First, **a run of vertical strokes may need a non-OCR
+read.** That is why rank comes from `matchRankBadge`'s NCC against embedded
+badge templates (`internal/ingest/rankbadge.go`) and not from OCR of the same
+pixels. Second, before spending another session on preprocessing, establish
+which stage is failing: a crop that reads under *some* PSM is a layout
+problem, and a crop that reads under none of them, at any threshold, through
+two rectangles, is not going to be fixed by a thirteenth setting.
+
+### A charset whitelist can fabricate a value, not just fail to read one
+
+A character whitelist is the obvious reach on a numeric field. It is rejected
+on three of this project's fields, each time on measurement rather than on
+argument, with an assertion each in `internal/ingest/charset_test.go` so it
+stays rejected:
+
+- `powerSpec` — a charset was measured laundering **33 of 53** real rows into
+  a wrong value.
+- `vsPointsSpec` — `"0123456789,"` turned 6 of 11 real bands into a parseable
+  number out of text that was not a number.
+- `groupHeaderSpec` — `"0123456789/"` turned four unreadable R2 headers into a
+  count-shaped token, `"2 1/1"` on three frames and `"82 1/1"` on a fourth,
+  each parsing to a total of **1** for a real group of 11.
+
+The rule that makes this predictable rather than a run of bad luck: **a
+whitelist is safe only where every character it removes would also have been
+absent from a correct read.** Strip a character a correct read never contains
+and there is nothing legitimate to launder; strip one it can contain and the
+whitelist has to put that ink somewhere, so it reclassifies it as an allowed
+character. `levelSpec` and `lastActiveSpec` keep their whitelists on exactly
+that basis.
+
+The superset property is necessary and **not sufficient**, which is the part
+that caught `vsPointsSpec`: it reasons about the text a correct read produces
+and not about what else the *crop* can contain. `"0123456789,"` is a superset
+of every character `101,286,241` is built from, and it still laundered,
+because that crop sits against the alliance-name line and can catch it.
+
+The group header case is the worst of the three and is worth keeping
+specifically, because the fabricated value was **coherent**: `1/1` passes
+`N <= M`, and `total` feeds `groupTracker.expected`, which gates member
+creation — so a fabricated 1 silently stops the other ten members of the group
+being created. There is no downstream check that can catch it. Failing to read
+is recoverable through the review queue; fabricating is not.
 
 ### OCR reads the glyph, not the codepoint
 
@@ -677,12 +869,17 @@ fixtures/       recorded screenshots for device-free tests
   so nothing about a group is safe to key on. `roster_capture` therefore
   never asks which group it is looking at: it opens whichever
   `chevron_collapsed` anchor `Match` finds next and stops once none remain,
-  and rank attribution happens at ingest, from OCR of each frame's own
-  sticky header, rather than a label the task would otherwise have to
-  assert. This is the clearest case in the project of something a single
-  capture session cannot reveal — one session shows a self-consistent world,
-  and only two sessions weeks apart show what actually moves, which is the
-  entire reason this project exists.
+  and rank attribution happens at ingest, from each frame's own rank badge,
+  rather than a label the task would otherwise have to assert. The badge is
+  read by NCC against embedded templates (`internal/ingest/rankbadge.go`),
+  **not** by OCR — its outlined glyphs were ruled out for OCR under every PSM
+  and charset tried, and `groupKey` is `matchRankBadge`'s rank. The sticky
+  header is still OCR'd, but for the group's name and `N/M` count, which is a
+  separate field with its own failure mode (see "Sometimes it is the
+  classifier, not the layout"). This is the clearest case in the project of
+  something a single capture session cannot reveal — one session shows a
+  self-consistent world, and only two sessions weeks apart show what actually
+  moves, which is the entire reason this project exists.
 
 ## Operational reality
 

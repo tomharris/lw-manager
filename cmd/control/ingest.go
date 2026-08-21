@@ -224,10 +224,33 @@ func printRosterSummary(out io.Writer, captureID int64, periodKey string, res in
 		// parsed a name for this rank (every frame queued to review before
 		// GroupTally.Name could be set) must not print a misleading empty
 		// quoted string.
+		// yielded= is printed beside parsed= because the two answer different
+		// questions: parsed counts row bands that reached OCR, yielded counts
+		// the ones that ended as a member -- matched OR created. A group
+		// reading parsed=64 yielded=41 is a matching problem; parsed=41
+		// expected=64 is a scrolling one, and without both numbers a triage
+		// cannot tell them apart. The shortfall between them is name-class
+		// rows: a band read but not resolved to a member. It is not the whole
+		// review queue, which also carries a row per unparseable or
+		// low-confidence numeric field on rows that matched perfectly well.
+		//
+		// Deliberately NOT called created=. The run-level created= above is
+		// res.Created, which counts NEW members only; this is matched or
+		// created, so printing both under one word made "matched=90 created=3"
+		// and "group=R2 parsed=18 created=17" read as a contradiction during
+		// triage.
+		//
+		// expected=? is a group whose own header never parsed on any frame of
+		// this capture (GroupTally.ExpectedLabel, which is where the rule for
+		// rendering the pair lives). It also says why such a group created
+		// nobody: no count means no creation budget, so every unmatched row is
+		// in the queue as no_confident_match_group_count_unknown
+		// (internal/ingest/roster.go).
+		expected := t.ExpectedLabel()
 		if t.Name != "" {
-			fmt.Fprintf(out, "  group=%s name=%q parsed=%d expected=%d\n", k, t.Name, t.Parsed, t.Expected)
+			fmt.Fprintf(out, "  group=%s name=%q parsed=%d yielded=%d expected=%s\n", k, t.Name, t.Parsed, t.MatchedOrCreated, expected)
 		} else {
-			fmt.Fprintf(out, "  group=%s parsed=%d expected=%d\n", k, t.Parsed, t.Expected)
+			fmt.Fprintf(out, "  group=%s parsed=%d yielded=%d expected=%s\n", k, t.Parsed, t.MatchedOrCreated, expected)
 		}
 	}
 }

@@ -63,6 +63,30 @@ gate-m4: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
 gate-m4:
 	LW_BLOB_FS_ROOT="$(LW_BLOB_FS_ROOT)" $(GO) test -tags m4gate -count=1 -v -timeout 20m ./internal/ingest/
 
+# The M4 roster gate: ingest reproduces a hand-transcribed roster capture.
+#
+# Same three dependencies as gate-m4 and for the same reasons — Postgres via
+# internal/dbtest (never the dev database), the blob store holding capture 1's
+# frames, and tesseract. It skips, naming what is missing, when the
+# transcription is absent or a frame is not in the configured store.
+#
+# LW_BLOB_FS_ROOT must be ABSOLUTE, for the reason spelled out above gate-m4:
+# `go test` runs each package binary in its own source directory, so the fs
+# backend's relative ./data/blobs would resolve under internal/ingest and find
+# nothing. ?= so an explicitly configured store still wins.
+#
+# It does not pass, and is committed failing on purpose: 47/75 covered
+# (never_created 19, wrong_group 9), orphans 5, splits 0 as of 2026-08-20.
+# R2's group header count is unread on this capture at any geometry,
+# preprocessing shape, threshold or page-segmentation mode measured, and the
+# count is what gates member creation, so R2's 11 members cannot be created
+# at all — coverage caps at 64/75 = 85.3% against the 0.95 condition. See
+# CLAUDE.md and README.md for the full reasoning.
+.PHONY: gate-roster
+gate-roster: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
+gate-roster:
+	LW_BLOB_FS_ROOT="$(LW_BLOB_FS_ROOT)" $(GO) test -tags m4rostergate -count=1 -v -timeout 20m ./internal/ingest/
+
 # The M4 name probe: a measuring instrument for the name field, not a gate.
 #
 # It asserts nothing and always passes; its output is the point. Use it to
@@ -139,25 +163,113 @@ probe-assign:
 # / probe-assign. It asserts nothing and always passes; reading its output is
 # the point. Needs the blob store and tesseract, no database.
 #
-# It has no hand-checked transcription behind it -- there is no roster
-# equivalent of fixtures/m4gate/expected.yaml -- so it scores against the VS
-# fixture's 86 names, which are hand-transcribed but neither complete (96
-# members, 86 scorers) nor contemporaneous (three days apart). Read `exact` as
-# a LOWER bound and never as an accuracy.
+# It scores against fixtures/m4rostergate/expected.yaml -- 75 members, THIS
+# capture, transcribed frame by frame. It used to score against the VS
+# fixture's 86 ranked names, three days later and missing 11 of this roster's
+# members, which is why every number it printed carried a "lower bound, never
+# an accuracy" caveat. That caveat is retired: `exact` is an accuracy and
+# `unmatched` is an error rate.
 #
-# The column that carries the signal is `junk-prefixed`: reads that are a known
-# name plus one leading token. Those are provably-correct reads with something
-# the crop let in, and the count does not depend on the truth set being
-# complete. A crop change is read against that column first.
+# Two columns still need their own reading. `junk-prefixed` counts reads that
+# are a known name plus one leading token -- provably-correct reads with
+# something the crop let in, and the column a crop change is read against
+# first. `exact (below MinConf)` counts reads that are byte-identical to a
+# transcribed name and still below nameSpec.MinConf, which processRow refuses
+# to create a member from: an accuracy count hides those entirely.
 #
 #   -roster.detail      per-band reads and verdicts, to localize
+#   -roster.members     per-MEMBER: each member's best band and what
+#                       processRow would do with it (MATCH / CREATABLE /
+#                       LOW-CONF / MISS). This is the view the gate's
+#                       "member never created" question needs; a per-band
+#                       count cannot answer it.
+#   -roster.noretry     read at PSM 7 only, without the PSM 13 retry
+#                       production ships -- what the retry is worth. The
+#                       default is production's own read path.
 #   -roster.x0sweep     sweep nameXFrac0 across the gutter
 #   -roster.inkprofile  the column histogram the crop edges are placed from
 #
+# Five more instruments measure the fields the name probe never touched.
+# Between them they cover every fact this route fails to write, and the first
+# is the only instrument in this file aimed at something that is not an OCR
+# read:
+#
+#   -roster.badge       matchRankBadge's per-frame verdict, with the gap
+#                       distribution split by right/wrong -- a wrong verdict at
+#                       a wide gap means the templates match the wrong thing, at
+#                       a narrow gap means the threshold cannot separate them,
+#                       and those need opposite fixes. Rank comes from NCC, not
+#                       OCR, so no other mode here can see a rank defect.
+#   -roster.badgeshuffle  not a sixth instrument -- rotates -roster.badge's own
+#                       truth table one rank forward so the mode is wrong by
+#                       construction. It must report 0 agree; run it before
+#                       believing a clean badge sweep. Implies -roster.badge.
+#   -roster.header      the sticky group header's raw text beside
+#                       parseGroupHeader's verdict, so a refusal names its own
+#                       cause. A header that will not parse no longer drops the
+#                       frame (task 6b): its rows are still attributed from the
+#                       rank badge, so a refusal costs the creation budget, not
+#                       the frame.
+#   -roster.headerink   the header's column histogram, printed at full frame
+#                       width rather than the name field's 0.10-0.45 window,
+#                       because the edge under suspicion was X2=0.97. Read the
+#                       numeric column, not the bars: the bar renders any count
+#                       under 65 as empty, so it cannot tell 0 from 16.
+#   -roster.headersweep the header crop's edges walked across that gutter, and
+#                       the count-only rectangle beside it, each scored against
+#                       the transcribed GROUP TOTALS rather than only on
+#                       whether it parsed -- an under-count is the failure that
+#                       does silent damage, so a fabrication must not outrank a
+#                       refusal.
+#   -roster.headeropts  24 preprocessing shapes (8 skip-flag combinations x 3
+#                       upscale factors) through EACH candidate rectangle, then
+#                       PSM 8/11/13 through the count-only one, then a
+#                       "0123456789/" whitelist through both. Options measured
+#                       through the wrong rectangle are not evidence about the
+#                       right one, so moving the crop obliges this. The
+#                       whitelist is measured, not endorsed: it reads R2 as
+#                       nothing and manufactures a total of 1 for an 11-member
+#                       group on four frames.
+#   -roster.headerthresh  AdaptiveThreshold's block size and C, the two knobs
+#                       the shape grid never varies: 40 settings through EACH
+#                       rectangle. R2's "1/11" resists all of them -- tesseract
+#                       classifies that run of vertical bars as "VN", "VL",
+#                       "Wu" or "U/L" -- which is the engine, not the crop and
+#                       not the contrast the mode was built to chase.
+#   -roster.lastactive  the status column, split by whether the TRANSCRIBED
+#                       value is the green "Online" or a grey elapsed time --
+#                       the two states are drawn differently and a single
+#                       accuracy over both cannot say which one is failing.
+#                       It reports `wrong` beside `parsed`: a read parsing
+#                       BELOW the transcribed value, which the clock cannot
+#                       explain, and the number any retry on this field has to
+#                       be judged by.
+#   -roster.lasweep     the 144-combination shape/PSM grid behind that mode's
+#                       shape list, run over the Online bands only. Nothing in
+#                       it serves both states: every shape reaching 12 of 24
+#                       Online rows costs 46 to 109 elapsed ones.
+#   -roster.power       the power column's reads and ParsePower's verdict,
+#                       counting refusals that are structurally one damaged
+#                       separator -- the shape the review queue is full of and
+#                       the number a crop change should move.
+#   -roster.level       the same for the level column and ParseLevel.
+#
 #	make probe-roster
 #	make probe-roster PROBE_ARGS='-roster.detail'
+#	make probe-roster PROBE_ARGS='-roster.members'
 #	make probe-roster PROBE_ARGS='-roster.x0sweep'
 #	make probe-roster PROBE_ARGS='-roster.inkprofile -roster.maxframes=12'
+#	make probe-roster PROBE_ARGS='-roster.badge'
+#	make probe-roster PROBE_ARGS='-roster.badge -roster.badgeshuffle'
+#	make probe-roster PROBE_ARGS='-roster.header'
+#	make probe-roster PROBE_ARGS='-roster.headerink'
+#	make probe-roster PROBE_ARGS='-roster.headersweep'
+#	make probe-roster PROBE_ARGS='-roster.headeropts'
+#	make probe-roster PROBE_ARGS='-roster.headerthresh'
+#	make probe-roster PROBE_ARGS='-roster.power'
+#	make probe-roster PROBE_ARGS='-roster.level'
+#	make probe-roster PROBE_ARGS='-roster.lastactive'
+#	make probe-roster PROBE_ARGS='-roster.lasweep'
 .PHONY: probe-roster
 probe-roster: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
 probe-roster:

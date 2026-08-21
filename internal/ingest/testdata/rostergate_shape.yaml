@@ -1,0 +1,60 @@
+# A three-member fixture that exists only to exercise loadExpectedRoster's
+# shape checks. It is NOT ground truth and is NOT the gate's input -- the gate
+# reads fixtures/m4rostergate/expected.yaml. Keeping this separate is what lets
+# the loader's guards be tested without a 96-member transcription and without
+# the blob store.
+capture: 0
+period_key: "2026-W33"
+game_version: "0.0.0"
+
+alliance:
+  tag: "TEST"
+  name: "Shape Fixture"
+  # Alpha 2 + Beta 1 + Gamma 2 = 5 grouped, + 1 leader in the banner = 6.
+  # Only 3 members are transcribed below (Alpha's 2, Beta's 1): Gamma's 2 are
+  # not, because Gamma was never expanded -- see the group's own comment.
+  member_count: 6
+  leader: "TheLeader"
+
+frames:
+  - seq: 0
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    offset_px: 0
+    group_key: "_alliance_summary"
+
+groups:
+  - rank: "R4"
+    name: "Alpha"
+    total: 2
+    expanded: true
+  - rank: "R3"
+    name: "Beta"
+    total: 1
+    expanded: true
+  # A collapsed group: its header is transcribed, its members are not, because
+  # the capture holds no rows for them. The header still states a real size --
+  # a collapsed group's "N/M" reads "0/12" for R1 Danger Zone, 0 online of a
+  # true 12 -- so Gamma's total is not 0 either; this is R1 Danger Zone's
+  # shape exactly, just scaled down to keep the fixture small.
+  - rank: "R2"
+    name: "Gamma"
+    total: 2
+    expanded: false
+
+members:
+  - rank: "R4"
+    name: "MemberOne"
+    power: 211500000
+    level: 34
+    last_active: "Online"
+  - rank: "R4"
+    name: "MemberTwo"
+    power: 189200000
+    level: 32
+    last_active: "3h ago"
+  - rank: "R3"
+    name: "MemberThree"
+    power: 230800000
+    level: 35
+    last_active: "Online"
+    note: "trailing glyph is a best reading"

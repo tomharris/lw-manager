@@ -750,7 +750,16 @@ func (i *Ingester) IngestVS(ctx context.Context, captureID int64, periodKey stri
 	// absent, and infers nothing. The zeroes are not lost, only deferred:
 	// clear the review queue and re-ingest, and this same capture writes them
 	// once every row is accounted for.
-	if capture.Status == "complete" && run.res.Unidentified == 0 {
+	//
+	// The third condition closes a hole the first two leave open. Both of
+	// them are about rows that WERE parsed -- one about the capture's own
+	// completeness claim, one about rows held in review -- and neither says
+	// anything when there are no rows at all. With none, Unidentified == 0
+	// holds vacuously and this loop zeroes the entire roster on the strength
+	// of no read whatsoever, which invariant #5 forbids in its plainest form.
+	// A capture reaches that state whenever the route proved it reached the
+	// list bottom on a screen whose rows then failed to segment.
+	if capture.Status == "complete" && run.res.Unidentified == 0 && totalParsed > 0 {
 		for n, m := range members {
 			if assignedMember[n] {
 				continue

@@ -27,7 +27,7 @@ surface area at "a fast player."
 | **M0** Foundations | ✅ | Postgres, migrations, config, `Transport`, capture → blob store |
 | **M1** Vision core | ✅ | **99.53%** recognizer accuracy (632/635) against a 98% gate. All three misses are missed detections, not misidentifications — the confusion matrix has no false positives at all, which is the property invariant #3 depends on: a screen the recognizer declines to name is a task that declines to act. |
 | **M2** Task runtime | ✅ | Runtime, screen graph, panic route, kill switch, scheduler, and all five Tier 1 task bodies. Gated on the handset over 24 unattended hours: **95.82%** (229/239) against a 95% bar, zero stuck runs, and invariant #3 held through a four-hour display outage. The three defects that run exposed — a panic route that recovered nothing, a scheduler planning in UTC, and `radar`'s wrong flow model — are fixed since; `mail_collect` still has no successful unattended observation. |
-| **M4** Analytics collection | 🚧 | Both routes run end to end on the handset: scroll-and-stitch with measured offsets, phase-locked row segmentation, per-field OCR (plus NCC for the rank badges no OCR can read), append-only facts, and uncertain reads triaged in `agent studio`. Against a real 86-row capture the gate now **passes at 85/86 (98.84%)** against its 95% bar, up from 63/86: every row matched to a member, one queued for review, nothing dropped silently, and the capture still reconciles. The gain came from matching the whole ranking as a **closed set** — one assignment over all rows and all members at once — rather than 86 independent threshold lookups, plus points bounded by the ranking's own order and decoration-stripping in the matcher. Language packs were the obvious fix for the two decorated names and were measured inert. Four instruments are committed with it: `make probe-m4`, `make probe-points`, `make probe-assign` — which self-checks with a shuffled-truth canary and decoy padding — and `make probe-roster`, added last because the roster was the one route with nothing measuring it. That gap is how its name crop stayed inside the per-member status icon for a milestone; moving it to a gutter read off an ink profile and retrying empty reads at raw line took one capture from 46 members created to 57, with name-plus-icon-fragment reads from 16 to 0. Measured in full in `docs/superpowers/specs/2026-08-17-m4-closed-set-matching-design.md`. |
+| **M4** Analytics collection | 🚧 | Both routes run end to end on the handset: scroll-and-stitch with measured offsets, phase-locked row segmentation, per-field OCR (plus NCC for the rank badges no OCR can read), append-only facts, and uncertain reads triaged in `agent studio`. Against a real 86-row capture the VS gate **passes at 85/86 (98.84%)** against its 95% bar, up from 63/86: every row matched to a member, one queued for review, nothing dropped silently, and the capture still reconciles. What that pass proves is bounded and the gate now says so in its own output: a row counts as correct within ±1%, which at rank 7 is a window ~183,000 wide, so 85/86 means each row reached the right member carrying roughly the right magnitude — **not** that the numbers are right. One of the passing rows is wrong by a single digit. The 1% bar stays anyway: a tighter one would start failing rows for transcription ambiguity in the hand-read fixture itself. The gain came from matching the whole ranking as a **closed set** — one assignment over all rows and all members at once — rather than 86 independent threshold lookups, plus points bounded by the ranking's own order and decoration-stripping in the matcher. Language packs were the obvious fix for the two decorated names and were measured inert. The roster route has its own gate too, `make gate-roster` — ≥95% member coverage with zero splits — and it does not pass yet: **47/75 members covered** (orphans=5, splits=0), and the remaining gap decomposes into 19 members never created and 9 attributed to the wrong rank group (`internal/ingest/roster_gate_test.go`). Its bar is unreachable on this capture and that is worth knowing before reading the number as progress: one group's header count reads as vertical strokes under every geometry, preprocessing shape, threshold and page-segmentation mode measured, the count is what gates member creation, so those 11 members cannot be created at all and coverage caps at 64/75 = 85.3% against a 95% condition. `probe-roster`'s first find was the name crop's left edge sitting inside the per-member status icon; moving it to a gutter read off an ink profile and retrying empty reads at raw line was the fix that made a gate worth building. Four instruments are committed across both routes: `make probe-m4`, `make probe-points`, `make probe-assign` — which self-checks with a shuffled-truth canary and decoy padding — and `make probe-roster`, now scored against its own 75-member hand transcription (`fixtures/m4rostergate/expected.yaml`) rather than the VS fixture's. Measured in full in `docs/superpowers/specs/2026-08-17-m4-closed-set-matching-design.md` (VS) and `docs/superpowers/specs/2026-08-20-m4-roster-gate-design.md` (roster). |
 | **M5** Participation surface | ⬜ | Leaderboard, VS compliance, inactivity watchlist |
 | **M3** Fleet | 💤 | Deferred until after M5, and may not happen. Dashboard + WebSocket status; the registry and the multi-device run loop already shipped in M0/M2 |
 
@@ -141,8 +141,15 @@ make test              # unit. Passes with nothing running — no device, no Doc
 make test-integration  # needs docker compose up; runs against lw_manager_test
 make test-device       # needs a device on adb; skips without one
 make gate              # M1 recognizer accuracy against the real corpus
-make gate-m4           # M4 ingest against a hand-checked 86-row capture
+make gate-m4           # M4 VS ingest against a hand-checked 86-row capture
+make gate-roster       # M4 roster ingest against a hand-checked 75-member capture
 ```
+
+**Never run `gate-m4` and `gate-roster` concurrently.** They are two `go test`
+invocations of the same package under different build tags, both seeding and
+truncating `lw_manager_test`, so in parallel they truncate each other's
+fixtures — and it does not fail as an error, it fails as `0/86 rows within 1%`,
+which reads exactly like a broken pipeline. Run serially.
 
 The four M4 probes are **measuring instruments, not gates** — they assert
 nothing and always pass, and their output is the point:
@@ -151,17 +158,23 @@ nothing and always pass, and their output is the point:
 make probe-m4          # the VS name field, scored against 86 hand-transcribed names
 make probe-points      # the points field: exact, within 1%, unparseable, retried
 make probe-assign      # closed-set matching, with a shuffled-truth canary and decoys
-make probe-roster      # the roster name field; read `junk-prefixed`, not `exact`
+make probe-roster      # the roster name field, scored against 75 hand-transcribed names
 ```
 
-`probe-roster` is the one with no ground truth of its own. There is no
-hand-checked roster transcription, so it scores against the VS fixture's 86
-names, which are neither complete — the ranking lists scorers, the alliance had
-97 members — nor contemporaneous. Its `exact` count is therefore a **lower
-bound** and must never be quoted as an accuracy. The column that carries signal
-is `junk-prefixed`: a known name plus one leading token is a provably-correct
-read with something the crop let in, and that measure does not depend on the
-truth set being complete.
+`probe-roster` scores against `fixtures/m4rostergate/expected.yaml` — 75
+members, this capture, transcribed frame by frame off capture 1 — so `exact`
+**is** an accuracy and `unmatched` **is** an error rate. That was not always
+true: before that fixture existed, the probe scored against the VS fixture's
+86 scorers, three days later and missing 11 of this roster's members, and
+`exact` was a lower bound nobody could quote as an accuracy. Two columns
+still need their own reading. `junk-prefixed` counts reads that match a name
+only after one leading token is stripped — the direct measure of a left-edge
+crop defect, a status icon read as a first character — and it is the column a
+crop change is read against first. `exact (below MinConf)` counts reads that
+are byte-identical to a transcribed name and still below the field's
+confidence floor, which ingest refuses to create a member from: an accuracy
+count hides those completely, because the name was read correctly and the
+pipeline dropped it anyway.
 
 Reach for one before changing a crop, a preprocessing option, a
 page-segmentation mode or a matcher constant — and again afterwards. A crop

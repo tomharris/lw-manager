@@ -60,6 +60,7 @@ var confusablePairs = [][2]rune{
 	{'0', 'o'},
 	{'1', 'i'},
 	{'1', 'l'},
+	{'1', 't'}, // measured: Bwiz21 -> "Bwiz2t", Delio1 -> "Deliot" (capture 1)
 	{'i', 'l'}, // measured: AnthraxVIII -> "AnthraxVIIl"
 
 	// Digit/letter pairs this font draws with the same skeleton.

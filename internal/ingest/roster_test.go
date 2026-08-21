@@ -528,7 +528,7 @@ func newRosterIngestHarness(t *testing.T, fx rosterFixture) *rosterIngestHarness
 	return h
 }
 
-// distinctRowNames are eleven names with no shared root or numeric suffix,
+// distinctRowNames are twelve names with no shared root or numeric suffix,
 // so no pair of them can accidentally land in roster.TokenSetRatio's
 // ambiguous band the way "Row00" vs "Row01" (one digit apart) would —
 // used wherever a test needs several rows that must each create a distinct
@@ -536,6 +536,7 @@ func newRosterIngestHarness(t *testing.T, fx rosterFixture) *rosterIngestHarness
 var distinctRowNames = []string{
 	"Zephyr", "Quokka", "Umbrella", "Xylophone", "Yonderland", "Cascade",
 	"Thunderbolt", "Falconry", "Meadowlark", "Granitepeak", "Ripplewave",
+	"Saltmarsh",
 }
 
 // rowResults scripts one row's four field reads, in IngestRoster's call
@@ -757,6 +758,34 @@ func TestIngestRosterQueuesALowConfidenceNameRatherThanGuessing(t *testing.T) {
 	}
 }
 
+// GroupTally.Parsed and GroupTally.MatchedOrCreated answer different
+// questions, and this is the fixture where they diverge: eleven rows match a
+// known member and a twelfth reads ambiguously and is queued. Parsed counts
+// twelve because twelve bands reached OCR; MatchedOrCreated counts eleven
+// because that is what the group actually yielded. The gap of one is the
+// ambiguous row's NAME-class review -- not the review queue as a whole, which
+// on a real capture also carries a row per unparseable or low-confidence
+// numeric field on rows that resolved perfectly well.
+//
+// Asserted here rather than left to a gate: `control ingest` prints this as
+// yielded=, and the roster gate needs Postgres, the blob store and tesseract,
+// so nothing in `make test` would notice the exported counter silently going
+// to zero.
+func TestIngestRosterCountsMembersYieldedSeparatelyFromRowsParsed(t *testing.T) {
+	h := newRosterIngestHarness(t, rosterFixture{
+		group: "R2", groupTotal: 11, existing: 11, ambiguousName: true,
+	})
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	got := res.PerGroup["R2"]
+	if got.Parsed != 12 || got.MatchedOrCreated != 11 {
+		t.Errorf("R2 tally = %+v, want parsed 12 and matched-or-created 11 (the ambiguous row is parsed and yields nobody)", got)
+	}
+}
+
 func TestIngestRosterWritesFactsWithScreenshotProvenance(t *testing.T) {
 	h := newRosterIngestHarness(t, rosterFixture{group: "R2", groupTotal: 2, existing: 2})
 
@@ -876,18 +905,28 @@ func TestIngestRosterNeverWritesAFactBelowTheConfidenceGate(t *testing.T) {
 	}
 }
 
-// The sticky group header pins over whatever content is at the top of the
-// scroll region once a group's second and later frames are captured, so
-// that band is a row cut in half. It must be discarded rather than parsed,
-// and discarding it must not perturb the geometric dedupe count: two frames
-// scrolled by exactly one screenful apart must total the true number of
-// distinct rows, not one fewer (double-dropped) or one more (double-counted).
-func TestIngestRosterDiscardsTheOccludedTopRow(t *testing.T) {
+// A frame that scrolled a whole number of rows since the last one shows a
+// whole new screenful, and every band on it is a row nothing has read.
+//
+// This test used to assert the opposite. It was called
+// TestIngestRosterDiscardsTheOccludedTopRow and it pinned the drop of each
+// continuing frame's topmost band, on the theory that the sticky header cut
+// that row in half -- so two frames scrolled exactly six rows apart were
+// expected to yield 11 members out of 12 rows, and the twelfth was scripted
+// nowhere. The theory is false twice over: memberListRegion.Y1 sits below the
+// sticky header's bottom edge, and SegmentRows never emits a bisected band in
+// the first place, because collectBands only ever cuts at a confirmed
+// inter-card gap (see the drop's own former site in roster.go). The row that
+// assertion was throwing away is a real member.
+//
+// Six rows plus six rows is twelve, and the dedupe must not turn it into
+// eleven (a dropped band) or thirteen (a band counted twice).
+func TestIngestRosterCollectsEveryRowOfAFrameScrolledAWholeNumberOfRows(t *testing.T) {
 	h := newHarness(t)
 
 	frame1 := rosterFrame(6)
 	frame2 := rosterFrame(6)
-	h.addFrame(frame1, 0)   // first frame of the group: header has not pinned over anything yet
+	h.addFrame(frame1, 0)   // first frame of the group
 	h.addFrame(frame2, 672) // scrolled by exactly 6 rows * 112px pitch
 
 	var results []ocr.Result
@@ -896,22 +935,212 @@ func TestIngestRosterDiscardsTheOccludedTopRow(t *testing.T) {
 		results = append(results, rowResults(distinctRowNames[k])...)
 	}
 	results = append(results, ocr.Result{Text: "R1 Group 20/20", Confidence: 0.9})
-	// Frame 2 detects 6 bands but its first (index 0) is occluded and must
-	// never be OCR'd -- only 5 more rows are scripted here.
-	for k := 6; k < 11; k++ {
+	for k := 6; k < 12; k++ {
 		results = append(results, rowResults(distinctRowNames[k])...)
 	}
 	h.engine.Results = results
 
 	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
 	if err != nil {
-		t.Fatalf("IngestRoster: %v (an unexpected OCR call means the occluded row was not dropped)", err)
+		t.Fatalf("IngestRoster: %v", err)
 	}
-	if got := res.PerGroup["R1"].Parsed; got != 11 {
-		t.Errorf("parsed %d rows across two frames, want 11 (6 + 5, the occluded top row of frame 2 dropped)", got)
+	if got := res.PerGroup["R1"].Parsed; got != 12 {
+		t.Errorf("parsed %d rows across two frames, want 12 (6 + 6, none dropped and none counted twice)", got)
 	}
-	if res.Created != 11 {
-		t.Errorf("created %d members, want 11", res.Created)
+	if res.Created != 12 {
+		t.Errorf("created %d members, want 12", res.Created)
+	}
+}
+
+// The status column has two states drawn differently: a grey elapsed time and
+// "Online" in green with a dark outline. The shipped luma preprocessing parses
+// 7 of capture 1's 24 Online bands and 250 of its 253 elapsed ones; a
+// green-channel read of the same crop parses 12 of 24 Online and only 202 of
+// 253 elapsed. Neither serves both, so the green channel is a RETRY on a read
+// that did not parse -- never a replacement.
+func TestIngestRosterRetriesAnUnparseableStatusOnTheGreenChannel(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R1")
+	h.addFrame(rosterFrame(1), 0)
+
+	h.engine.Results = []ocr.Result{
+		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
+		{Text: "Zephyr", Confidence: 0.9},
+		{Text: "Power: 200.0M", Confidence: 0.9},
+		{Text: "Lv.30", Confidence: 0.9},
+		// What luma makes of the outlined green wordmark.
+		{Text: "oo", Confidence: 0.9},
+		// The green channel's read of the same crop.
+		{Text: "Online", Confidence: 0.9},
+	}
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Created != 1 {
+		t.Fatalf("created %d members, want 1", res.Created)
+	}
+	if got := h.reviewReasons()["unparseable_last_active"]; got != 0 {
+		t.Errorf("queued %d unparseable_last_active rows, want 0 -- the retry parsed it", got)
+	}
+	var found bool
+	for _, f := range h.store.Facts {
+		if f.Metric == "last_active_hours" {
+			found = true
+			if f.Value != 0 {
+				t.Errorf("last_active_hours = %v, want 0 (Online)", f.Value)
+			}
+		}
+	}
+	if !found {
+		t.Error("no last_active_hours fact written")
+	}
+}
+
+// The other half: a retry that also fails must leave the PRIMARY's raw text on
+// the review row. A number has no roster behind it, so the reviewer's only
+// evidence is what the shipped read saw -- replacing it with the retry's
+// output would hide the shipped path's own behaviour on exactly the crops it
+// is failing.
+func TestIngestRosterKeepsTheShippedStatusReadWhenTheGreenRetryAlsoFails(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R1")
+	h.addFrame(rosterFrame(1), 0)
+
+	h.engine.Results = []ocr.Result{
+		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
+		{Text: "Zephyr", Confidence: 0.9},
+		{Text: "Power: 200.0M", Confidence: 0.9},
+		{Text: "Lv.30", Confidence: 0.9},
+		{Text: "luma saw this", Confidence: 0.9},
+		{Text: "green saw this", Confidence: 0.9},
+	}
+
+	if _, err := h.IngestRoster(context.Background(), 1, testPeriodKey); err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	var raw string
+	for _, r := range h.store.Reviews {
+		if r.Reason == "unparseable_last_active" {
+			raw = r.RawText
+		}
+	}
+	if raw != "luma saw this" {
+		t.Errorf("review row raw text = %q, want the shipped read %q", raw, "luma saw this")
+	}
+}
+
+// A roster capture photographs most rows three or more times. Until this
+// test's fix exactly one of those photographs -- the first -- ever reached
+// OCR, because the geometric dedupe compared a band's position against the
+// last row collected and skipped anything already covered. A row whose first
+// sighting read badly was therefore never read again, however clean the next
+// photograph of it was.
+//
+// Capture 1 loses two members to exactly that and nothing else. Bujangann
+// reads at confidence 0.03 on seq 7 and 0.00 on seq 8, then "Bujangann" at
+// 0.80 on seq 9; Riesige Banane reads at 0.38 on seq 6 -- just under
+// nameSpec.MinConf -- and 0.77 on seq 7. Both good reads were photographed
+// and thrown away.
+func TestIngestRosterRereadsARowItsFirstSightingCouldNotResolve(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R1")
+
+	h.addFrame(rosterFrame(1), 0)
+	// A small offset: the same physical row, a little further up the screen.
+	// Well inside half a pitch, so the dedupe recognizes it as the row it
+	// already collected rather than a new one.
+	h.addFrame(rosterFrame(1), 20)
+
+	h.engine.Results = []ocr.Result{
+		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
+		// Read correctly and far below nameSpec.MinConf, so processRow
+		// refuses to create a member from it. This is Riesige Banane's shape.
+		{Text: "Zephyr", Confidence: 0.1},
+		{Text: "Power: 200.0M", Confidence: 0.9},
+		{Text: "Lv.30", Confidence: 0.9},
+		{Text: "Online", Confidence: 0.9},
+		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
+		{Text: "Zephyr", Confidence: 0.9},
+		{Text: "Power: 200.0M", Confidence: 0.9},
+		{Text: "Lv.30", Confidence: 0.9},
+		{Text: "Online", Confidence: 0.9},
+	}
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Created != 1 {
+		t.Errorf("created %d members, want 1: the second photograph of a row nobody could read must be read", res.Created)
+	}
+	if reasons := h.reviewReasons(); reasons["low_confidence_name"] != 1 {
+		t.Errorf("queued %d low_confidence_name rows, want 1 -- the first sighting still queues", reasons["low_confidence_name"])
+	}
+	// Parsed asks whether the scroll photographed the whole group. Re-reading
+	// one row does not make the group larger, so it must stay 1.
+	if got := res.PerGroup["R1"].Parsed; got != 1 {
+		t.Errorf("parsed = %d, want 1: a re-read of a row already collected is not a second row", got)
+	}
+}
+
+// A row nothing can read is re-read on every photograph of it, and each of
+// those failures used to put another row in front of a human describing the
+// same piece of work. Capture 1 photographs some rows seventeen times; the
+// review queue went 271 -> 378 rows before this was suppressed.
+func TestIngestRosterQueuesOneReviewRowPerUnresolvableRowNotPerPhotograph(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R1")
+
+	for range 3 {
+		h.addFrame(rosterFrame(1), 20)
+	}
+
+	var results []ocr.Result
+	for range 3 {
+		results = append(results, ocr.Result{Text: groupHeaderText("R1", 5), Confidence: 0.9})
+		results = append(results, rowResultsConf("Zephyr", 0.1)...)
+	}
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Created != 0 {
+		t.Fatalf("created %d members, want 0 -- every sighting is below nameSpec.MinConf", res.Created)
+	}
+	if got := h.reviewReasons()["low_confidence_name"]; got != 1 {
+		t.Errorf("queued %d low_confidence_name rows, want 1: three photographs of one unreadable row are one piece of human work", got)
+	}
+}
+
+// The other half of the same rule, and the one that stops a member being
+// minted twice: a row that DID resolve is never read again. The second frame
+// scripts a header and nothing else, so any field read on it exhausts the
+// fake engine and fails the test by name.
+func TestIngestRosterNeverRereadsARowThatAlreadyResolved(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R1")
+
+	h.addFrame(rosterFrame(1), 0)
+	h.addFrame(rosterFrame(1), 20)
+
+	results := []ocr.Result{{Text: groupHeaderText("R1", 5), Confidence: 0.9}}
+	results = append(results, rowResults("Zephyr")...)
+	results = append(results, ocr.Result{Text: groupHeaderText("R1", 5), Confidence: 0.9})
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v (an OCR call past the second frame's header means a resolved row was read again)", err)
+	}
+	if res.Created != 1 {
+		t.Errorf("created %d members, want 1", res.Created)
+	}
+	if res.Matched != 0 {
+		t.Errorf("matched %d rows, want 0: the resolved row must not reach the matcher a second time", res.Matched)
 	}
 }
 
@@ -999,6 +1228,305 @@ func TestIngestRosterFailsRatherThanQueueingABrokenTemplateSet(t *testing.T) {
 		if r.Reason == "unmatched_rank_badge" {
 			t.Error("a broken template set queued an unmatched_rank_badge review row; it must fail the run instead")
 		}
+	}
+}
+
+// TestIngestRosterQueuesEveryRowWhenTheGroupCountIsUnreadable is the ratio
+// this task exists to fix. IngestRoster used to `continue` on a header-parse
+// failure, so ONE unreadable field discarded EVERY row on the frame: capture
+// 1's 21 R2 frames left 21 unparseable_group_header rows behind and nothing
+// else, and the members on them vanished with no record that a row had been
+// seen at all. That is the silent drop this milestone exists to prevent,
+// committed by the ingest path itself -- and it would be wrong even if every
+// count in that capture read perfectly, because one smudged header on a
+// future capture loses a whole group the same way.
+//
+// The count and the rank are independent reads with independent failure
+// paths (see IngestRoster's own comment): the badge here matches at full
+// confidence, so the frame's rows have an honest rank to attach to and
+// nothing about invariant #3 is being bent. What the missing count costs is
+// the creation budget, not the frame.
+//
+// The assertion is on the PER-ROW count, not on "something was queued": one
+// row per frame and one row per member both leave a non-empty review queue,
+// and only the ratio distinguishes the defect from the fix.
+func TestIngestRosterQueuesEveryRowWhenTheGroupCountIsUnreadable(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R2")
+	h.addFrame(rosterFrame(3), 0)
+
+	// Real text: capture 1's R2 headers read as the group's name with no
+	// count-shaped token at all, on all 21 frames, at every geometry and
+	// preprocessing shape measured (task 6's report; groupHeaderRegion's doc
+	// comment). parseGroupHeader refuses it rather than guessing.
+	results := []ocr.Result{{Text: "{R2) I'm Alright", Confidence: 0.9}}
+	for _, name := range distinctRowNames[:3] {
+		results = append(results, rowResults(name)...)
+	}
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+
+	reasons := h.reviewReasons()
+	if reasons["unparseable_group_header"] != 1 {
+		t.Errorf("queued %d unparseable_group_header rows, want 1: the header failure is still worth recording",
+			reasons["unparseable_group_header"])
+	}
+	if got := reasons["no_confident_match_group_count_unknown"]; got != 3 {
+		t.Errorf("queued %d per-row reviews for a countless group, want 3 -- one per row on the frame, not one for the frame; all reasons: %v", got, reasons)
+	}
+
+	// No budget means no creations, and this is the line not to cross: the
+	// count is the structural guard against minting phantoms (design doc §4),
+	// so a group whose size is unknown has none to spend. Ending the silent
+	// drop must not become a licence to invent people.
+	if res.Created != 0 {
+		t.Errorf("created %d members for a group with no readable count, want 0: the count is what gates creation", res.Created)
+	}
+
+	tally, seen := res.PerGroup["R2"]
+	if !seen {
+		t.Fatalf("group R2 produced no tally at all; its badge matched, so the rows it carried are describable: %v", res.PerGroup)
+	}
+	if tally.Parsed != 3 {
+		t.Errorf("tally parsed=%d, want 3: every band on the frame was segmented and read", tally.Parsed)
+	}
+	if tally.ExpectedKnown {
+		t.Error("tally reports ExpectedKnown=true for a header that never parsed")
+	}
+	if tally.Expected != 0 {
+		t.Errorf("tally expected=%d for an unread count, want 0 alongside ExpectedKnown=false", tally.Expected)
+	}
+	if res.Status != "partial" {
+		t.Errorf("status = %q, want %q: a group whose size is unknown cannot be reconciled, so the capture is not complete", res.Status, "partial")
+	}
+}
+
+// A countless group is not an inert group: it still matches its rows against
+// members already known, which is the whole difference between "no creation
+// budget" and the old "discard the frame". Capture 1's R2 members do not
+// exist in `members` today, but on any later capture -- one where the header
+// read, or after review resolves them -- they will, and every subsequent
+// unreadable header must keep collecting their facts rather than re-queueing
+// them forever.
+func TestIngestRosterStillMatchesKnownMembersWhenTheGroupCountIsUnreadable(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R2")
+	h.store.nextMemberID++
+	known := h.store.nextMemberID
+	h.store.members = append(h.store.members, db.Member{
+		ID: known, AllianceID: 1, Name: "Zephyr",
+		NameNormalized: roster.Normalize("Zephyr"), Rank: "R2", Active: true,
+	})
+	h.addFrame(rosterFrame(2), 0)
+
+	results := []ocr.Result{{Text: "{R2) I'm Alright", Confidence: 0.9}}
+	results = append(results, rowResults("Zephyr")...)
+	results = append(results, rowResults("Quokka")...)
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Matched != 1 {
+		t.Errorf("matched %d rows, want 1: a missing count withholds the creation budget, not the matcher", res.Matched)
+	}
+	if res.Created != 0 {
+		t.Errorf("created %d members, want 0", res.Created)
+	}
+	if reasons := h.reviewReasons(); reasons["no_confident_match_group_count_unknown"] != 1 {
+		t.Errorf("queued %d unmatched rows, want 1 (the row that matched nobody); all reasons: %v",
+			reasons["no_confident_match_group_count_unknown"], reasons)
+	}
+	var wroteFor int64
+	for _, f := range h.store.Facts {
+		wroteFor = f.MemberID
+	}
+	if wroteFor != known {
+		t.Errorf("facts written for member %d, want the known member %d: a matched row on a countless frame still carries its numbers", wroteFor, known)
+	}
+}
+
+// A group whose count never parsed must not be reported `complete`, and the
+// case that says so is the one where it also parsed no rows -- a collapsed
+// group's frame, which carries a header and no list. Expected and Parsed are
+// then both 0, so the arithmetic half of the reconciliation rule
+// (Parsed != Expected) is satisfied and would call the capture complete: a
+// claim that a group of unknown size was fully seen. Only ExpectedKnown
+// distinguishes it, which is why the rule states the unknown case explicitly
+// rather than leaning on a zero.
+func TestIngestRosterRefusesToCallACountlessGroupComplete(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R2")
+	h.addFrame(rosterFrame(0), 0)
+	h.engine.Results = []ocr.Result{{Text: "{R2) I'm Alright", Confidence: 0.9}}
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	tally := res.PerGroup["R2"]
+	if tally.Parsed != 0 || tally.Expected != 0 {
+		t.Fatalf("tally parsed=%d expected=%d, want 0/0 -- this test is only meaningful when the arithmetic agrees", tally.Parsed, tally.Expected)
+	}
+	if res.Status != "partial" {
+		t.Errorf("status = %q for a group whose size was never read, want %q", res.Status, "partial")
+	}
+}
+
+// The budget is the GROUP's, not the frame's: once any frame of a group has
+// read its count, a later frame whose header fails still creates. Capture 1
+// cannot tell the two readings apart -- all 21 of its R2 headers fail, so
+// "this frame has no count" and "this group has no count" coincide exactly on
+// the only real capture there is, which is the condition under which the
+// wrong one ships.
+func TestIngestRosterKeepsTheBudgetAFrameOfItsGroupAlreadyRead(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R2")
+	h.addFrame(rosterFrame(1), 0)
+	// One card on the second frame too, three rows further down the list, so
+	// exactly one new row is collected from it. (It used to draw two cards
+	// and script one row, because IngestRoster discarded every continuing
+	// frame's topmost band; it no longer does -- see the removed drop's site
+	// in roster.go.)
+	h.addFrame(rosterFrame(1), memberRowPitch*3)
+
+	results := []ocr.Result{{Text: "{R2) I'm Alright 2/11", Confidence: 0.9}}
+	results = append(results, rowResults("Zephyr")...)
+	results = append(results, ocr.Result{Text: "{R2) I'm Alright", Confidence: 0.9})
+	results = append(results, rowResults("Quokka")...)
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Created != 2 {
+		t.Errorf("created %d members, want 2: a header that failed on the SECOND frame cannot take away a budget the first frame read", res.Created)
+	}
+	reasons := h.reviewReasons()
+	if reasons["unparseable_group_header"] != 1 {
+		t.Errorf("queued %d unparseable_group_header rows, want 1", reasons["unparseable_group_header"])
+	}
+	if reasons["no_confident_match_group_count_unknown"] != 0 {
+		t.Errorf("queued %d rows as countless, want 0: this group's count was read; all reasons: %v",
+			reasons["no_confident_match_group_count_unknown"], reasons)
+	}
+	if tally := res.PerGroup["R2"]; !tally.ExpectedKnown || tally.Expected != 11 {
+		t.Errorf("tally expected=%d known=%v, want 11/true", tally.Expected, tally.ExpectedKnown)
+	}
+}
+
+// A failed-header frame is no longer invisible to the FRAME-ADJACENCY chain,
+// and that is a consequence of removing the `continue` rather than a thing
+// this task set out to change. The skipped branch sat ahead of gt.advance and
+// of the prevGroupKey bookkeeping, so a dropped frame used to leave the frame
+// AFTER it looking consecutive with the last frame actually processed. It no
+// longer does: a group-A frame between two group-B frames now breaks B's
+// chain, exactly as a readable group-A frame between them always has.
+//
+// The new behaviour is the one advance's own doc argues for -- the pixels
+// moved across a group boundary are not evidence about either group's list,
+// so contentY stays where the tracker left it and the top band is not
+// skipped. What that costs is stated here rather than left to be
+// rediscovered: rows the resumed cursor cannot distinguish from ones already
+// collected are DEDUPED AWAY, which is an under-collection, and
+// under-collection is a silent drop. The alternative is worse in a way this
+// route cannot recover from -- attributing a cross-group scroll to B's list
+// makes rows look new that are not, and creation is first-writer-wins -- so
+// the trade is deliberate.
+//
+// On capture 1 it cost nothing (the yield arithmetic across the change is
+// unchanged), because its group boundaries happen to fall where the frames
+// either side are the same group. This test is the case that capture does
+// not contain.
+func TestIngestRosterBreaksTheFrameChainAcrossAFailedHeaderFrame(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankSequence([]string{"R3", "R2", "R3"})
+	h.addFrame(rosterFrame(2), 0)
+	h.addFrame(rosterFrame(1), memberRowPitch)
+	h.addFrame(rosterFrame(2), memberRowPitch)
+
+	results := []ocr.Result{{Text: "[R3) Footloose 10/64", Confidence: 0.9}}
+	results = append(results, rowResults(distinctRowNames[0])...)
+	results = append(results, rowResults(distinctRowNames[1])...)
+	results = append(results, ocr.Result{Text: "{R2) I'm Alright", Confidence: 0.9})
+	results = append(results, rowResults(distinctRowNames[2])...)
+	results = append(results, ocr.Result{Text: "[R3) Footloose 10/64", Confidence: 0.9})
+	// Scripted but expected to go unread. If a future change restores the old
+	// chain semantics, R3's third frame collects a row and these results are
+	// consumed -- which the tally assertion below names, rather than letting
+	// the engine run out somewhere unrelated.
+	results = append(results, rowResults(distinctRowNames[3])...)
+	results = append(results, rowResults(distinctRowNames[4])...)
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if got := res.PerGroup["R3"].Parsed; got != 2 {
+		t.Errorf("R3 parsed %d rows across two frames, want 2: the R2 frame between them breaks R3's chain, so R3's cursor does not advance and its second frame's bands read as already collected", got)
+	}
+	if res.Created != 2 {
+		t.Errorf("created %d members, want 2: R3's two rows, and none for the countless R2 frame", res.Created)
+	}
+	// The under-collection must never become a DUPLICATION: the same member
+	// minted twice is the roster route's unrecoverable failure (design §4,
+	// condition 2), and it is what advancing a resumed group's cursor by a
+	// cross-group offset would risk.
+	names := map[string]int{}
+	for _, m := range h.store.members {
+		names[m.Name]++
+		if names[m.Name] > 1 {
+			t.Errorf("member %q was created twice across the interleaved frames", m.Name)
+		}
+	}
+	if reasons := h.reviewReasons(); reasons["no_confident_match_group_count_unknown"] != 1 {
+		t.Errorf("queued %d countless rows, want 1 (the R2 frame's own row); all reasons: %v",
+			reasons["no_confident_match_group_count_unknown"], reasons)
+	}
+}
+
+// A count that arrives on a LATER frame of the same group is still the
+// count. groupTracker is created on the group's first frame, so a group
+// whose first header failed and whose second read cleanly would otherwise
+// stay budgetless for the rest of the capture -- the evidence for its size
+// having been seen and thrown away. Order is not something the capture
+// controls: which frame a group is first sighted on depends on where a
+// swipe happened to land.
+func TestIngestRosterAdoptsACountThatOnlyLaterFramesCouldRead(t *testing.T) {
+	h := newHarness(t)
+	h.stubRankFor("R2")
+	h.addFrame(rosterFrame(1), 0)
+	// One card on the second frame too, three rows further down the list, so
+	// exactly one new row is collected from it.
+	h.addFrame(rosterFrame(1), memberRowPitch*3)
+
+	results := []ocr.Result{{Text: "{R2) I'm Alright", Confidence: 0.9}}
+	results = append(results, rowResults("Zephyr")...)
+	results = append(results, ocr.Result{Text: "{R2) I'm Alright 2/11", Confidence: 0.9})
+	results = append(results, rowResults("Quokka")...)
+	h.engine.Results = results
+
+	res, err := h.IngestRoster(context.Background(), 1, testPeriodKey)
+	if err != nil {
+		t.Fatalf("IngestRoster: %v", err)
+	}
+	if res.Created != 1 {
+		t.Errorf("created %d members, want 1: the second frame's header supplied the budget the first frame's did not", res.Created)
+	}
+	tally := res.PerGroup["R2"]
+	if !tally.ExpectedKnown || tally.Expected != 11 {
+		t.Errorf("tally expected=%d known=%v, want 11/true once a frame read the header", tally.Expected, tally.ExpectedKnown)
+	}
+	if reasons := h.reviewReasons(); reasons["no_confident_match_group_count_unknown"] != 1 {
+		t.Errorf("queued %d rows for the countless first frame, want 1; all reasons: %v",
+			reasons["no_confident_match_group_count_unknown"], reasons)
 	}
 }
 
@@ -1256,10 +1784,9 @@ func TestParseAllianceMemberCount(t *testing.T) {
 // resume, not restart.
 func TestGroupTrackerAdvanceResumesAnInterruptedGroupRatherThanRestarting(t *testing.T) {
 	type step struct {
-		group           string
-		offsetPx        int
-		wantContentY    int
-		wantSkipTopBand bool
+		group        string
+		offsetPx     int
+		wantContentY int
 	}
 	// R3, R3, R2, R3, R2, R2 -- finding 10's own oscillation, at its
 	// shortest. offsetPx is only ever added when the immediately preceding
@@ -1268,12 +1795,12 @@ func TestGroupTrackerAdvanceResumesAnInterruptedGroupRatherThanRestarting(t *tes
 	// (999) to prove it is ignored on a group switch, not just unused by
 	// coincidence of a convenient number.
 	steps := []step{
-		{group: "R3", offsetPx: 0, wantContentY: 0, wantSkipTopBand: false},     // R3's first-ever frame
-		{group: "R3", offsetPx: 112, wantContentY: 112, wantSkipTopBand: true},  // continuing: accumulate
-		{group: "R2", offsetPx: 999, wantContentY: 0, wantSkipTopBand: false},   // R2's first-ever frame
-		{group: "R3", offsetPx: 999, wantContentY: 112, wantSkipTopBand: false}, // returning: RESUME 112, not reset to 0
-		{group: "R2", offsetPx: 999, wantContentY: 0, wantSkipTopBand: false},   // returning: resume R2's own leftover (0)
-		{group: "R2", offsetPx: 112, wantContentY: 112, wantSkipTopBand: true},  // continuing: accumulate again
+		{group: "R3", offsetPx: 0, wantContentY: 0},     // R3's first-ever frame
+		{group: "R3", offsetPx: 112, wantContentY: 112}, // continuing: accumulate
+		{group: "R2", offsetPx: 999, wantContentY: 0},   // R2's first-ever frame
+		{group: "R3", offsetPx: 999, wantContentY: 112}, // returning: RESUME 112, not reset to 0
+		{group: "R2", offsetPx: 999, wantContentY: 0},   // returning: resume R2's own leftover (0)
+		{group: "R2", offsetPx: 112, wantContentY: 112}, // continuing: accumulate again
 	}
 
 	groups := map[string]*groupTracker{}
@@ -1282,16 +1809,12 @@ func TestGroupTrackerAdvanceResumesAnInterruptedGroupRatherThanRestarting(t *tes
 	for idx, s := range steps {
 		gt, ok := groups[s.group]
 		if !ok {
-			gt = &groupTracker{lastRowY: -1}
+			gt = &groupTracker{}
 			groups[s.group] = gt
 		}
 		sameAsPrev := havePrev && s.group == prevGroup
-		gotContentY, gotSkip := gt.advance(s.offsetPx, sameAsPrev)
-		if gotContentY != s.wantContentY {
+		if gotContentY := gt.advance(s.offsetPx, sameAsPrev); gotContentY != s.wantContentY {
 			t.Errorf("step %d (%s): contentY = %d, want %d", idx, s.group, gotContentY, s.wantContentY)
-		}
-		if gotSkip != s.wantSkipTopBand {
-			t.Errorf("step %d (%s): skipTopBand = %v, want %v", idx, s.group, gotSkip, s.wantSkipTopBand)
 		}
 		prevGroup, havePrev = s.group, true
 	}
@@ -1340,10 +1863,8 @@ func TestIngestRosterSurvivesInterleavedGroupsAcrossARerun(t *testing.T) {
 
 	// Frame 1: R3's first-ever frame. One row, Zephyr.
 	h.addFrame(rosterFrame(1), 0)
-	// Frame 2: R3 continuing. Two bands; the sticky-header occlusion skip
-	// (TestIngestRosterDiscardsTheOccludedTopRow) drops the first, leaving
-	// one real row, Quokka.
-	h.addFrame(rosterFrame(2), memberRowPitch)
+	// Frame 2: R3 continuing, one row further down the list. One row, Quokka.
+	h.addFrame(rosterFrame(1), memberRowPitch)
 	// Frame 3: R2's own first-ever frame, independent of R3's accounting.
 	h.addFrame(rosterFrame(1), 0)
 	// Frame 4: R3 returning after R2 interleaves. See the test's own doc
@@ -1352,9 +1873,8 @@ func TestIngestRosterSurvivesInterleavedGroupsAcrossARerun(t *testing.T) {
 	h.addFrame(rosterFrame(1), 999)
 	// Frame 5: R2 returning after R3. Same shape as frame 4, for R2.
 	h.addFrame(rosterFrame(1), 999)
-	// Frame 6: R2 continuing. Two bands, one real row after the occlusion
-	// skip: Foxtrot.
-	h.addFrame(rosterFrame(2), memberRowPitch)
+	// Frame 6: R2 continuing, one row further down. One row, Foxtrot.
+	h.addFrame(rosterFrame(1), memberRowPitch)
 
 	scriptOneIngest := func() []ocr.Result {
 		var results []ocr.Result
@@ -1415,7 +1935,7 @@ func TestIngestRosterSurvivesInterleavedGroupsAcrossARerun(t *testing.T) {
 // just across separate runs -- capture 1's interleaving is one cause, but an
 // ordinary overlap between two screenfuls of a group that never closed is
 // another, and needs no group switch to demonstrate. The two rows here are
-// deliberately far enough apart geometrically that gt.lastRowY's dedupe does
+// deliberately far enough apart geometrically that the group's row-position dedupe does
 // NOT recognize them as the same physical row -- only name-identity does,
 // which is the case this task's fix (writeFacts calling UpsertFact) has to
 // carry once geometric dedupe has already let a genuine repeat through.
@@ -1435,10 +1955,10 @@ func TestIngestRosterUpsertsARepeatObservationRatherThanDuplicatingTheFact(t *te
 
 	h.addFrame(rosterFrame(1), 0)
 	// A huge offset, not a realistic scroll distance: the point is to place
-	// this frame's one real row far past gt.lastRowY's dedupe window, so it
+	// this frame's one real row far past every collected row's dedupe window, so it
 	// reaches processRow as a "new" row on identity grounds even though it
 	// names the same member as frame 1's row.
-	h.addFrame(rosterFrame(2), 5000)
+	h.addFrame(rosterFrame(1), 5000)
 
 	results := []ocr.Result{
 		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
