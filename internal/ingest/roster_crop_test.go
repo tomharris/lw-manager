@@ -2,6 +2,8 @@ package ingest
 
 import (
 	"image"
+	"image/color"
+	"image/draw"
 	"image/png"
 	"os"
 	"sort"
@@ -267,4 +269,47 @@ func loadRosterGroupHeaderFixture(t *testing.T) image.Image {
 			" a taller band would drag rows of the member list into the ink counts", got, wantH)
 	}
 	return img
+}
+
+// TestTrimNameRectToInkRemovesBlankCardToTheRight is the read-side fix for an
+// OCR artifact, pinned against a real row.
+//
+// nameXFrac1 is a SEARCH bound placed to clear the longest name on the roster,
+// so a short name leaves 40-odd pixels of blank card inside the crop and the
+// raw-line retry invents glyphs in it: capture 1 reads B52RN10 as "B52RNI0 ts"
+// and 2Rule as "aeule ts", from crops that are, on inspection, entirely clean
+// to the right of the name. "B52RNI0" scores 97 against its member and
+// "B52RNI0 ts" scores 75, which is the difference between resolving the row
+// and queueing it.
+func TestTrimNameRectToInkRemovesBlankCardToTheRight(t *testing.T) {
+	img := loadRosterBandFixture(t)
+	full := fieldRect(RowBand{Y0: img.Bounds().Min.Y, Y1: img.Bounds().Max.Y}, img,
+		nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1)
+	trimmed := trimNameRectToInk(img, full)
+
+	if trimmed.X2 >= full.X2 {
+		t.Fatalf("trimNameRectToInk left the right edge at %.4f (was %.4f): a row whose name"+
+			" does not reach nameXFrac1 must be trimmed, or the engine is handed blank card to invent in",
+			trimmed.X2, full.X2)
+	}
+	if trimmed.X1 != full.X1 || trimmed.Y1 != full.Y1 || trimmed.Y2 != full.Y2 {
+		t.Errorf("trimNameRectToInk moved an edge other than X2: %+v against %+v", trimmed, full)
+	}
+	if !trimmed.Valid() {
+		t.Errorf("trimNameRectToInk produced an invalid rect %+v", trimmed)
+	}
+}
+
+// TestTrimNameRectToInkKeepsACropItCannotSeeInkIn is the guard. The trim finds
+// the name by its COLOUR, so a crop with no saturated pixel in it -- an empty
+// row band, or some future skin that draws names in grey -- must come back
+// untouched. Narrowing to nothing would turn a readable crop into a blank one,
+// which is a worse failure than the blank space it exists to remove.
+func TestTrimNameRectToInkKeepsACropItCannotSeeInkIn(t *testing.T) {
+	flat := image.NewRGBA(image.Rect(0, 0, 720, 112))
+	draw.Draw(flat, flat.Bounds(), &image.Uniform{color.RGBA{R: 235, G: 228, B: 220, A: 255}}, image.Point{}, draw.Src)
+	full := fieldRect(RowBand{Y0: 0, Y1: 112}, flat, nameXFrac0, nameXFrac1, topRowYFrac0, topRowYFrac1)
+	if got := trimNameRectToInk(flat, full); got != full {
+		t.Errorf("trimNameRectToInk narrowed a crop with no name-coloured ink: %+v, want %+v", got, full)
+	}
 }

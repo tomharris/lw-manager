@@ -119,13 +119,31 @@ func TestIngestRosterPassesEachFieldsMeasuredOptions(t *testing.T) {
 		t.Fatalf("IngestRoster: %v", err)
 	}
 
-	want := []vision.Options{groupHeaderOptions, nameOptions, powerOptions, levelOptions, lastActiveOptions}
+	// nameSatOptions sits between the name and the power read: every row now
+	// takes a second NAME read off a saturation mask (see nameSatMinSats), and
+	// its options are its own -- a mask is binary, so the threshold and invert
+	// steps fitted for luma are wrong on it.
+	want := []vision.Options{groupHeaderOptions, nameOptions}
+	for range nameSatMinSats {
+		want = append(want, nameSatOptions)
+	}
+	want = append(want, powerOptions, levelOptions, lastActiveOptions)
 	if len(*calls) != len(want) {
 		t.Fatalf("visionPreprocess called %d times, want %d (calls: %+v)", len(*calls), len(want), *calls)
 	}
 	for i, w := range want {
 		if (*calls)[i].Opts != w {
 			t.Errorf("call %d: got Options %+v, want %+v", i, (*calls)[i].Opts, w)
+		}
+	}
+	// And the colour read must be a different IMAGE, not the same one with
+	// different Options -- the same property the green-channel test below
+	// asserts for the status column, and for the same reason: nothing about
+	// Options or the scripted OCR text can show which pixels were read.
+	for i := range nameSatMinSats {
+		if got := (*calls)[2+i].ImageType; got != "vision.saturatedInkMask" {
+			t.Errorf("extra name read %d preprocessed %s, want vision.saturatedInkMask:"+
+				" it must read a saturation mask, which is the axis luma cannot reach", i, got)
 		}
 	}
 }
@@ -151,21 +169,28 @@ func TestIngestRosterLastActiveRetryReadsTheGreenChannel(t *testing.T) {
 	h.engine.Results = []ocr.Result{
 		{Text: groupHeaderText("R1", 5), Confidence: 0.9},
 		{Text: "Zephyr", Confidence: 0.9},
-		{Text: "Power: 200.0M", Confidence: 0.9},
-		{Text: "Lv.30", Confidence: 0.9},
-		{Text: "oo", Confidence: 0.9}, // what luma makes of the wordmark
-		{Text: "Online", Confidence: 0.9},
 	}
+	for range nameSatMinSats {
+		h.engine.Results = append(h.engine.Results, inertSatRead)
+	}
+	h.engine.Results = append(h.engine.Results,
+		ocr.Result{Text: "Power: 200.0M", Confidence: 0.9},
+		ocr.Result{Text: "Lv.30", Confidence: 0.9},
+		ocr.Result{Text: "oo", Confidence: 0.9}, // what luma makes of the wordmark
+		ocr.Result{Text: "Online", Confidence: 0.9},
+	)
 
 	if _, err := h.IngestRoster(context.Background(), 1, testPeriodKey); err != nil {
 		t.Fatalf("IngestRoster: %v", err)
 	}
 
-	// header, name, power, level, last-active, last-active retry.
-	if len(*calls) != 6 {
-		t.Fatalf("visionPreprocess called %d times, want 6 (calls: %+v)", len(*calls), *calls)
+	// header, name, one name-on-a-saturation-mask per nameSatMinSats entry,
+	// power, level, last-active, last-active retry.
+	wantCalls := 6 + len(nameSatMinSats)
+	if len(*calls) != wantCalls {
+		t.Fatalf("visionPreprocess called %d times, want %d (calls: %+v)", len(*calls), wantCalls, *calls)
 	}
-	primary, retry := (*calls)[4], (*calls)[5]
+	primary, retry := (*calls)[wantCalls-2], (*calls)[wantCalls-1]
 	if primary.Opts != lastActiveOptions || retry.Opts != lastActiveOptions {
 		t.Errorf("both status reads must carry lastActiveOptions; got %+v and %+v", primary.Opts, retry.Opts)
 	}

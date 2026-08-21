@@ -169,3 +169,57 @@ func TestDecorationStrippingSeesHomoglyphsAlreadyFolded(t *testing.T) {
 		t.Errorf("TokenSetRatio = %d, want 100; the koppas must strip and the deltas must fold, which only happens if stripping runs on normalized text", got)
 	}
 }
+
+// TestOrnamentTokenScoring covers the ornament OCR returns as letters or
+// digits rather than as punctuation -- the case stripDecoration structurally
+// cannot see, because Normalize has collapsed the space away by the time it
+// runs. Both pairs are real: capture 1 reads "Danny 狂" as "Danny jt" on both
+// of its sightings and "ZāP ꙅઉ" as "ZaP 96".
+func TestOrnamentTokenScoring(t *testing.T) {
+	for _, tc := range []struct{ read, member string }{
+		{"Danny jt", "Danny 狂"},
+		{"Danny 31", "Danny 狂"},
+		{"ZaP 96", "ZāP ꙅઉ"},
+		{"ZaP 9G", "ZāP ꙅઉ"},
+	} {
+		if got := TokenSetRatio(tc.read, tc.member); got < AutoAccept {
+			t.Errorf("TokenSetRatio(%q, %q) = %d, want >= AutoAccept %d", tc.read, tc.member, got, AutoAccept)
+		}
+	}
+}
+
+// TestOrnamentTokenScoringNeedsAnOrnament is the guard, and it is the half
+// that makes the rule shippable. Dropping a short token is a licence for two
+// names differing only in one to score alike; it is confined to comparisons
+// where one side actually carries a non-ASCII token. Neither name here does,
+// so "89" is part of the member's name and must still cost a full mismatch --
+// this is a real pair from capture 1, where "Mar 89" is read as "Maso".
+func TestOrnamentTokenScoringNeedsAnOrnament(t *testing.T) {
+	for _, tc := range []struct{ a, b string }{
+		{"Maso", "Mar 89"},
+		{"Angel 4am", "Angel 5am"},
+		{"HAL 9000", "HAL 9001"},
+		// The one that would break the roster outright: two all-ASCII members
+		// differing only in a short trailing token.
+		{"Kilo 12", "Kilo 34"},
+	} {
+		if got := TokenSetRatio(tc.a, tc.b); got >= AutoAccept {
+			t.Errorf("TokenSetRatio(%q, %q) = %d, at or above AutoAccept %d: the ornament rule fired without an ornament",
+				tc.a, tc.b, got, AutoAccept)
+		}
+	}
+}
+
+// TestOrnamentTokenScoringKeepsAnAllOrnamentNameIntact is the same guard
+// stripDecoration carries for "한씨아저씨": a name that is ALL ornament by this
+// rule's test has nothing to reduce to, and reducing it to the empty string
+// would stop it matching even its own clean read. "M I C H E L L" is the
+// letter-spaced case -- every token is one character -- and it must survive.
+func TestOrnamentTokenScoringKeepsAnAllOrnamentNameIntact(t *testing.T) {
+	if got := TokenSetRatio("M I C H E L L", "MICHELL"); got < AutoAccept {
+		t.Errorf("TokenSetRatio of a letter-spaced name against its collapsed form = %d, want >= %d", got, AutoAccept)
+	}
+	if got := TokenSetRatio("한씨아저씨", "한씨아저씨"); got != 100 {
+		t.Errorf("a name that is entirely non-ASCII no longer matches itself: %d", got)
+	}
+}

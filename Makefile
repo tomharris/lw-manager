@@ -75,27 +75,31 @@ gate-m4:
 # backend's relative ./data/blobs would resolve under internal/ingest and find
 # nothing. ?= so an explicitly configured store still wins.
 #
-# It does not pass, and is committed failing on purpose: 60/75 covered
-# (never_created 15, wrong_group 0), orphans 5, splits 0 as of 2026-08-21.
-# Conditions 2 and 1 are what remain; conditions 3 and 4 pass.
+# It PASSES: 73/75 members covered (0.9733 against the 0.95 bar), orphans 0,
+# splits 0, all four conditions green as of 2026-08-21. It was committed
+# failing at 47/75 for the milestone before that, and what closed the gap was
+# not threshold tuning -- every one of the four fixes was structural:
 #
-# THE CEILING THIS USED TO CARRY IS GONE. R2's group header count was unread
-# on this capture at any geometry, preprocessing shape, threshold or PSM
-# measured, and the count gates member creation, so R2's members could not be
-# created at all and coverage capped at 64/75 = 85.3%. Every one of those
-# sweeps varied a luma operation; the count is separable on COLOUR, which none
-# of them touched (internal/ingest/groupcount.go, vision.WhiteInkMask). All
-# four groups now report their true size and R1 has a tally at all, which is
-# what condition 4 was failing on.
+#   in-list group header cards   rows were attributed to the frame's STICKY
+#                                header, which is wrong on any frame that
+#                                scrolls across a group boundary (headercard.go)
+#   the count read on COLOUR     "1/11" is unreadable under every luma sweep
+#                                ever run on it, and separable on saturation
+#                                (groupcount.go, vision.WhiteInkMask)
+#   the name read on COLOUR      names are saturated on a cream card, so three
+#                                saturation masks alongside luma read members
+#                                luma cannot (nameSatMinSats)
+#   the crop trimmed to its ink  nameXFrac1 is a search bound, and the blank
+#                                card inside it is what the raw-line retry
+#                                invented "B52RNI0 ts" in (trimNameRectToInk)
 #
-# What is left is the name field, and it is not a threshold. `make probe-roster
-# PROBE_ARGS=-roster.members` reports 60 CREATABLE, 4 LOW-CONF and 11 MISS of
-# 75, so 60/75 is exactly the name reader's own ceiling. Ten of the fifteen
-# misses are reads refused by nameSpec.MinConf before they reach the creation
-# branch, and dropping that floor makes the gate WORSE, not better: four of
-# them are correct reads and six are wrong ones that would be minted as
-# orphans, against a condition that scores orphans at a hard zero. See
-# CLAUDE.md and README.md for the full reasoning.
+# The two members it does not reach are Arabic-Indic and Korean names an
+# English tesseract returns nothing usable for; language packs were measured
+# inert on the VS route's equivalent. Read the pass knowing that, and knowing
+# what `make probe-roster PROBE_ARGS=-roster.firstwins` says about the margin:
+# production mints a member from the FIRST sighting of a row that clears the
+# confidence floor, not the best one, so a capture that photographs rows fewer
+# times has less room than this one does.
 .PHONY: gate-roster
 gate-roster: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
 gate-roster:
@@ -267,6 +271,18 @@ probe-assign:
 #                       separator -- the shape the review queue is full of and
 #                       the number a crop change should move.
 #   -roster.level       the same for the level column and ParseLevel.
+#   -roster.firstwins   the mode that answers the GATE's question, as opposed to
+#                       -roster.members' friendlier one. Production mints a
+#                       member from the first sighting of a row that clears the
+#                       confidence floor and then stops re-reading that row, so
+#                       the best band is not the one that decides. Nichoj was
+#                       CREATABLE at 100 by -roster.members and an orphan in
+#                       the gate: sighting one read "Nicho" at 0.41 and the
+#                       eleven after it read "Nichoj". -roster.createconf and
+#                       -roster.corroborate sweep candidate creation rules.
+#   -roster.sats        the saturation thresholds the name reads use, and
+#                       -roster.satsweep / -roster.nosat measure what they are
+#                       worth. -roster.noinktrim measures the crop trim.
 #   -roster.count       the colour-mask group-count reader, per frame: its ink
 #                       runs, the total it read, and the transcribed total.
 #                       -roster.countshift is its negative control and no
@@ -293,6 +309,9 @@ probe-assign:
 #	make probe-roster PROBE_ARGS='-roster.count'
 #	make probe-roster PROBE_ARGS='-roster.countshift'    # the negative control
 #	make probe-roster PROBE_ARGS='-roster.countsweep'
+#	make probe-roster PROBE_ARGS='-roster.firstwins'     # what the gate sees
+#	make probe-roster PROBE_ARGS='-roster.sats=60,75,120'
+#	make probe-roster PROBE_ARGS='-roster.satsweep'
 #	make probe-roster PROBE_ARGS='-roster.power'
 #	make probe-roster PROBE_ARGS='-roster.level'
 #	make probe-roster PROBE_ARGS='-roster.lastactive'

@@ -55,7 +55,7 @@ make build                    # bin/agent, bin/control
 make gate                                         # the same gate, as a test
 
 make gate-m4                                      # the M4 VS gate: ingest vs a hand-checked capture
-make gate-roster                                  # the M4 roster gate; does not pass yet, deliberately
+make gate-roster                                  # the M4 roster gate
 # never run those two at once — they truncate each other; see Testing
 
 make probe-m4                                     # measure the name field; not a gate, read the output
@@ -147,9 +147,15 @@ instead of creating a duplicate account.
   fitted to histograms. `-roster.inkprofile` prints the column ink histogram a
   crop edge is placed from, `-roster.x0sweep` sweeps `nameXFrac0`,
   `-roster.detail` is the per-band view, `-roster.members` the per-member one,
-  `-roster.noretry` measures what the shipped PSM-13 retry is worth,
+  `-roster.noretry` measures what the shipped PSM-13 retry is worth (and
+  `-roster.fbsweep` sweeps that retry's own preprocessing, which moved five
+  bands and not one member — the band/member distinction again),
   `-roster.count` / `-roster.countshift` / `-roster.countsweep` measure the
-  colour-mask group-count reader, and
+  colour-mask group-count reader, `-roster.sats` / `-roster.satsweep` /
+  `-roster.nosat` / `-roster.noinktrim` measure the name field's colour reads
+  and its crop trim, `-roster.firstwins` is the mode that answers the GATE's
+  question rather than `-roster.members`' friendlier one (see "The best
+  sighting is not the one that decides"), and
   `-roster.lastactive` / `-roster.lasweep` measure the status column split by
   which of its two states a row is in.
   It scores against `fixtures/m4rostergate/expected.yaml` — 75 members, that
@@ -183,19 +189,24 @@ instead of creating a duplicate account.
   75 hand-transcribed members of capture 1
   (`fixtures/m4rostergate/expected.yaml`), at ≥95% member coverage with zero
   splits and zero orphans. Tagged `m4rostergate`; same three dependencies as
-  `gate-m4`. **It does not pass, and is committed failing on purpose**:
-  60/75 covered (never_created 15, wrong_group 0), orphans 5, splits 0 as of
-  2026-08-21. Conditions 3 and 4 pass; 1 and 2 are what remain.
-  **The ceiling this entry used to carry is gone** — R2's count is read now
-  (see "The axis every sweep missed was colour" below) and every group reports
-  its true size, which is what condition 4 was failing on. What is left is the
-  name field, and `make probe-roster PROBE_ARGS=-roster.members` says so
-  exactly: 60 CREATABLE, 4 LOW-CONF, 11 MISS of 75, so 60/75 **is** the name
-  reader's own ceiling and the gate has reached it. Ten of the fifteen misses
-  are refused by `nameSpec.MinConf` before reaching the creation branch, and
-  lowering that floor makes the gate worse rather than better: four of the ten
-  are correct reads, six are wrong ones that would be minted as orphans, and
-  orphans are a hard zero.
+  `gate-m4`. **It passes**: 73/75 covered (0.9733 against the 0.95 bar),
+  orphans 0, splits 0, all four conditions green as of 2026-08-21. It was
+  committed failing at 47/75 for a milestone; what closed the gap was four
+  structural fixes and not one threshold — in-list group header cards
+  (`headercard.go`), the group count read on colour (`groupcount.go`), the
+  name read on colour (`nameSatMinSats`), and the name crop trimmed to its own
+  ink (`trimNameRectToInk`). The two members it never reaches are an
+  Arabic-Indic and a Korean name an English tesseract returns nothing usable
+  for.
+  **Read the pass through `-roster.firstwins`, not `-roster.members`.** The
+  latter reports the BEST band per member and the gate is decided by the
+  FIRST sighting that clears the confidence floor, because creation is
+  first-writer-wins and the geometric dedupe stops re-reading a row once it
+  resolves. Nichoj was CREATABLE at 100 on the best-band view and an orphan in
+  the gate: sighting one read "Nicho" at confidence 0.41, one hundredth above
+  the floor, and the eleven sightings after it all read "Nichoj". A capture
+  that photographs its rows fewer times than this one has less margin than the
+  headline suggests.
 - New packages get a fake or a replay path before they get a real
   implementation. `ReplayTransport` was written before `ADBTransport` was
   trusted, and that ordering is the pattern to follow.
@@ -778,6 +789,84 @@ curve is a different fact from the value at the peak.** And read the 61 with
 its own caveat, which the probe now prints: this capture photographs four
 groups many times over, so 61 bands are **3 distinct count-strip
 segmentations**, not 61 independent trials.
+
+### The same colour axis, on the field that had 48 luma sweeps
+
+The count above was the first place colour beat luma on this UI. It was not the
+last, and the second one is worth recording because the field had been swept
+harder than any other in the project and the axis still had not been tried.
+
+Member names are drawn in saturated orange — green for the account running the
+capture — on a cream card. The 24-shape grid that set `nameOptions` and the 24
+`-roster.fbsweep` runs over `nameRetry` are 48 samples of luma. Reading each
+band through `vision.SaturatedInkMask` **as well** takes creatable members from
+61 to 73.
+
+Three things about it generalize:
+
+- **A union, not a replacement.** As a replacement for the luma retry the mask
+  is worse than what shipped, at 50–59 members against 60 across every
+  threshold, upscale and PSM tried. The two fail on *different* members, which
+  is the property that makes a union worth having and a replacement pointless.
+- **Three thresholds, because they also fail on different members.** The
+  saturation that separates orange text from a cream card is not the one that
+  keeps a thin descender: at 75 and 120, Nichoj reads `Nicho` and the gate
+  mints a member nobody transcribed; at 60 it reads exactly.
+- **Confidence is the arbiter, and only because it was checked.** At the
+  creation branch there is no roster to score a read against, so the
+  closed-set argument `IngestVS` uses to take "the better of two" is
+  unavailable. Whether the engine's own confidence discriminates was the open
+  question; on this capture it does — `Smileypwns` reads `Suileypons` at 0.00
+  through luma and `Smileypwns` at 0.74 through the mask.
+
+### A search bound is not a crop, and blank space is where OCR invents
+
+`nameXFrac1` is 0.67 because that clears the longest name on the roster with
+room to spare. That is the right rule for a bound on where a name may *end*,
+and the wrong thing to hand an OCR engine: a short name leaves forty-odd pixels
+of blank card inside the crop, and the raw-line retry fills them in. Capture 1
+has four members reading with an invented trailing token — `B52RNI0 ts`,
+`BS2RNI0 ts`, `Imovo ts`, `aeule ts` — from crops that are, on inspection,
+completely clean to the right of the name.
+
+It is not cosmetic: `B52RNI0` scores 97 against its member and `B52RNI0 ts`
+scores 75, which is below `AutoAccept` and above `ReviewFloor`, so the row is
+queued as ambiguous instead of resolved. `trimNameRectToInk` narrows the right
+edge to just past the last name-coloured column, and it was worth the last two
+members and the last orphan the gate had.
+
+The tempting alternative was to strip a short trailing token in the matcher.
+That would have been a licence for every name on the roster to lose its last
+token, granted to fix a defect that is not in the matcher at all. **When a read
+carries junk, ask what the engine was shown before asking the scorer to
+forgive it.**
+
+### The best sighting is not the one that decides
+
+`make probe-roster PROBE_ARGS=-roster.members` reports each member's BEST band.
+The gate is decided by the FIRST sighting of a row that clears the confidence
+floor, because creation is first-writer-wins and the geometric dedupe stops
+re-reading a row the moment it resolves. Those are different questions and they
+gave different answers on a member that decided a phase gate: Nichoj scored
+CREATABLE at 100 on the best-band view and was an **orphan** in the gate —
+sighting one read `Nicho` at confidence 0.41, one hundredth above
+`nameSpec.MinConf`, and the eleven sightings after it all read `Nichoj`, eight
+of them above 0.90, none of them ever read.
+
+This is `collectedRow`'s lesson arriving from the other side. That comment
+records the cursor letting only the first sighting of an *unresolved* row reach
+OCR, and fixes it. A row that RESOLVES on a bad-but-just-confident-enough first
+read is locked in by the same mechanism, and no amount of overlap helps.
+
+`-roster.firstwins` models the ordering and is the mode to read a headline
+against; `-roster.createconf` and `-roster.corroborate` sweep candidate
+creation rules through it. Both were swept, and both are worth knowing about
+even though neither shipped: raising the floor to 0.60 clears the orphan and
+costs two members, and requiring a read to repeat before it may mint anybody
+gives zero orphans and only 58 of 75 members, because many rows never produce
+the same read twice. The fix was upstream, in the crop. **A creation rule tuned
+to compensate for a bad read is a worse answer than a better read**, and the
+sweep is what made that visible rather than arguable.
 
 ### A frame can carry more than one group, and the mechanism that copes hides it
 

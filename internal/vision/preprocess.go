@@ -378,6 +378,42 @@ type Inker interface {
 	Ink(x, y int) bool
 }
 
+// SaturatedInkMask is WhiteInkMask's complement: black where a pixel is
+// COLOURED, white everywhere else. Same lazy-view shape, same reason for
+// existing, different population.
+//
+// It is for the member list's NAME field. Names are rendered in saturated
+// orange (and green for the account running the capture) on a cream card, and
+// luma puts those two closer together than colour does -- orange at roughly
+// (230,140,80) has luma 160 against the card's 227, so the glyph edges are
+// low-contrast and the strokes thin out. Every preprocessing shape ever fitted
+// for this field is a luma operation (Options is equalize, threshold, invert,
+// upscale), so the 24-shape grid that set nameOptions and the 24 that swept
+// nameRetry were 48 samples of one axis.
+//
+// Measured contribution is in the roster probe (`make probe-roster
+// PROBE_ARGS=-roster.satsweep`), scored at MEMBER level rather than band
+// level, because those two aggregates move independently on this field: the
+// retry-preprocessing sweep beside it gains five exact bands and loses a
+// member.
+func SaturatedInkMask(img image.Image, minSat int) image.Image {
+	return saturatedInkMask{src: img, minSat: minSat}
+}
+
+type saturatedInkMask struct {
+	src    image.Image
+	minSat int
+}
+
+func (m saturatedInkMask) ColorModel() color.Model { return color.GrayModel }
+func (m saturatedInkMask) Bounds() image.Rectangle { return m.src.Bounds() }
+func (m saturatedInkMask) At(x, y int) color.Color {
+	if Saturated(m.src, x, y, m.minSat) {
+		return color.Gray{Y: 0}
+	}
+	return color.Gray{Y: 255}
+}
+
 // Saturated reports whether a pixel of img is coloured enough to be one of the
 // game's tinted glyphs -- the counterpart test to WhiteInkMask's, used to
 // prove that the colour it dropped was actually there. roster.go's count

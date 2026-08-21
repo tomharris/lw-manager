@@ -90,6 +90,36 @@ func TokenSetRatio(a, b string) int {
 			best = deco
 		}
 	}
+
+	// A fourth comparison, for the ornament stripDecoration structurally
+	// cannot see: one the engine returns as LETTERS OR DIGITS rather than as
+	// punctuation. "Danny 狂" reads as "Danny jt" and "ZāP ꙅઉ" as "ZaP 96";
+	// Normalize keeps "jt" and "96" because they are letters and digits, and
+	// by the time stripDecoration runs the space between them and the name is
+	// gone, so there is no boundary left to cut on. coreTokens works on the
+	// tokens instead, dropping any non-ASCII token and any ASCII token short
+	// enough to be what OCR made of an ornament.
+	//
+	// GUARDED ON ONE SIDE ACTUALLY BEING DECORATED, which is the whole safety
+	// argument. Dropping short tokens is a licence for two names differing
+	// only in one to score alike, and applying it to every comparison would
+	// hand that licence to the entire roster. Requiring a non-ASCII token
+	// confines it to comparisons against a name that carries an ornament: a
+	// read of "Maso" against the member "Mar 89" never reaches here, because
+	// neither carries one and "89" is part of that member's name.
+	//
+	// A maximum like the other three, so it can only raise a score and no pair
+	// that matched before can stop matching. What it can do is raise the score
+	// of a pair that should not match, and that is what ClosestPairScore
+	// measures -- on capture 1's 75 transcribed members the closest pair is
+	// unmoved at 60 against an AutoAccept of 92.
+	if hasNonASCIIToken(ta) || hasNonASCIIToken(tb) {
+		if ca, cb := coreTokens(ta), coreTokens(tb); ca != "" && cb != "" {
+			if core := ratio(ca, cb); core > best {
+				best = core
+			}
+		}
+	}
 	return best
 }
 

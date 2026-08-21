@@ -96,6 +96,31 @@ var homoglyphs = map[rune]rune{
 	// and OCR reads it as one; capture 6's rank 1 is the measured case.
 	'Δ': 'A',
 
+	// The ARCH, on the same stylised-substitution basis as Δ and with the
+	// same caveat stated rather than hidden. Capture 1 carries a member whose
+	// name ends in a tall fallback-font arch; tesseract reads the whole name
+	// as "TYRION" on all eight sightings of it, and the roster fixture's own
+	// note records the transcriber's reading as "the core reads TYRION" while
+	// being explicit that the glyph "carries no diagonal and is therefore not
+	// an N". So this is NOT a claim that the arch is drawn like an N. It is
+	// the Δ claim: a player is using a non-Latin glyph as a letter of their
+	// name, and the engine has no way to return anything but the Latin letter
+	// it resembles, so the two forms would otherwise share no final character
+	// and no threshold could reach them.
+	//
+	// Both candidate codepoints are folded because the transcription does not
+	// settle between them -- "Armenian Ո and the set operator ∩ are both
+	// consistent with it, and ∩ is a best reading rather than a settled
+	// codepoint" -- and a fold that works only for the reading the transcriber
+	// was unsure of is a fold that depends on a coin flip.
+	//
+	// The cost is the usual one and is measured, not argued: two members
+	// differing only by n-versus-arch now collide, which is what
+	// ClosestPairScore is the budget for. `make probe-roster` and both M4
+	// gates print it.
+	'∩': 'N', // U+2229 INTERSECTION
+	'Ո': 'N', // U+0548 ARMENIAN CAPITAL LETTER VO
+
 	// Latin letters NFKD leaves alone, because the stroke through them is
 	// part of the letter rather than a combining mark.
 	'ł': 'l', 'Ł': 'L', 'ø': 'o', 'Ø': 'O', 'đ': 'd', 'Đ': 'D',
@@ -194,4 +219,69 @@ func stripDecoration(s string) string {
 		return s
 	}
 	return string(r[lo:hi])
+}
+
+// ornamentTokenMaxLen is how short an ASCII token has to be before it can be
+// treated as what OCR made of an ornament. Two: the ornaments this roster
+// carries are one or two glyphs ("狂", "ꙅઉ", "ϟϟ") and the engine returns one
+// or two characters for them ("jt", "31", "9G", "96"). Three would start
+// swallowing real name fragments -- "Angel 4am" and "Mar 89" both carry
+// meaningful short tokens.
+const ornamentTokenMaxLen = 2
+
+// coreTokens drops the tokens of an already-token-normalized name that could
+// be an ornament rather than part of the name: any non-ASCII token, and any
+// ASCII token of at most ornamentTokenMaxLen characters. It returns the
+// remainder joined with single spaces, or "" if nothing survives.
+//
+// It is the counterpart to stripDecoration for the case that function cannot
+// see. stripDecoration works on Normalize's output, where whitespace has been
+// collapsed away entirely, and it strips runs of NON-ASCII characters at the
+// ends. That reaches "ϟϟ Leo ϟϟ" versus a read of ">> Lea >>", because the
+// engine returned the ornament as punctuation and Normalize dropped it. It
+// does NOT reach an ornament the engine returns as LETTERS OR DIGITS:
+// "Danny 狂" reads as "Danny jt", "ZāP ꙅઉ" reads as "ZaP 96", and Normalize
+// keeps "jt" and "96" for exactly the reason it keeps any letter or digit --
+// there is no property of the character that marks it as ornament. Once the
+// space is gone there is not even a boundary left to cut on. So this works on
+// TOKENS, before the space is collapsed, and position is again the only
+// signal available.
+//
+// THE SAFETY PROPERTY IS AT THE CALL SITE, not here. This is a licence for two
+// names differing only in a short token to score alike, so TokenSetRatio
+// applies it only when one of the two names actually carries a non-ASCII
+// token -- i.e. only when comparing against a name that is decorated. A read
+// of "Maso" against "Mar 89" never takes this path, because neither carries an
+// ornament, and "89" is part of that member's name rather than something OCR
+// made up. Without that guard this would be a general licence to drop short
+// tokens from every comparison on the roster.
+func coreTokens(tokens []string) string {
+	var kept []string
+	for _, t := range tokens {
+		if !isASCII(t) || len([]rune(t)) <= ornamentTokenMaxLen {
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return strings.Join(kept, " ")
+}
+
+// hasNonASCIIToken reports whether any token is non-ASCII -- the condition
+// under which coreTokens may be applied at all.
+func hasNonASCIIToken(tokens []string) bool {
+	for _, t := range tokens {
+		if !isASCII(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func isASCII(s string) bool {
+	for _, r := range s {
+		if r >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
