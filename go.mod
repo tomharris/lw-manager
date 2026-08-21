@@ -7,7 +7,7 @@ require (
 	github.com/minio/minio-go/v7 v7.3.0
 	github.com/pressly/goose/v3 v3.27.2
 	go.yaml.in/yaml/v3 v3.0.5
-	golang.org/x/image v0.44.0
+	golang.org/x/image v0.45.0
 	golang.org/x/text v0.41.0
 )
 
