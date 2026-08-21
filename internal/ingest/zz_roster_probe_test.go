@@ -143,6 +143,16 @@ var (
 		"sweep the status crop's preprocessing over the bands whose transcribed value is the green \"Online\": 8 skip-flag shapes x 3 upscales x luma/green-channel, plus PSM 8 and 13. Implies -roster.lastactive")
 	rosterMembers = flag.Bool("roster.members", false,
 		"per-MEMBER view: each transcribed member's best band, and whether processRow would match it, create from it, or refuse it for confidence")
+	rosterCount = flag.Bool("roster.count", false,
+		"report readGroupCountTotal -- the colour-mask retry -- per frame: its ink runs, the total it read, and the transcribed total beside it")
+	rosterCountSweep = flag.Bool("roster.countsweep", false,
+		"sweep the mask's luma and saturation thresholds across every real header, so the plateau countMaskMinLuma/countMaskMaxSat sit on is visible rather than asserted. Implies -roster.count")
+	rosterCountLuma = flag.Int("roster.countluma", countMaskMinLuma,
+		"override the count mask's minimum luma for -roster.count, so a setting the sweep reports badly can be inspected per frame rather than only as a total")
+	rosterCountSat = flag.Int("roster.countsat", countMaskMaxSat,
+		"override the count mask's maximum saturation for -roster.count")
+	rosterCountShift = flag.Bool("roster.countshift", false,
+		"run the count reader on bands shifted off the header, where there is no count to read; it must refuse every one. Implies -roster.count")
 )
 
 // leadingToken matches one short token followed by whitespace at the start of
@@ -270,6 +280,11 @@ func TestRosterNameProbe(t *testing.T) {
 
 	if *rosterLastActive || *rosterLASweep {
 		reportRosterLastActive(ctx, t, engine, frames, truth)
+		return
+	}
+
+	if *rosterCount || *rosterCountSweep || *rosterCountShift {
+		reportRosterCount(ctx, t, engine, frames)
 		return
 	}
 
@@ -2078,4 +2093,211 @@ func lastActiveSweepShapes() []lastActiveShape {
 		}
 	}
 	return out
+}
+
+// reportRosterCount measures readGroupCountTotal -- the colour-mask retry
+// behind parseGroupHeader -- against the transcribed group totals.
+//
+// It is the instrument the mask's thresholds and the run-width bounds are set
+// from, and CLAUDE.md's reason for it existing as a committed mode rather than
+// an ad-hoc run is exact here: an ad-hoc one-liner measured this field once
+// before, reported that a digit whitelist "returns empty on every R2 frame",
+// and that claim turned out to be true only of the one rectangle its author
+// happened to have loaded. Enumerating the axes is what finds the second one.
+//
+// THREE COLUMNS, and they are not interchangeable. `correct` is a total that
+// matches the transcription. `refused` is the reader declining, which is the
+// safe outcome and the one R4's "9"-as-"q" produces. `WRONG` is a total that
+// parsed and disagrees, and it is the only number here that can stop a
+// change: total gates member creation, so a wrong one silently withholds a
+// group's members and nothing downstream can catch it (CLAUDE.md's charset
+// section, where a fabricated "1/1" against a real group of 11 is the worked
+// case). A run whose `correct` rises and whose `WRONG` rises with it is not an
+// improvement.
+//
+// -roster.countshift is the validation pass, and no headline from this mode
+// should be believed before it has been run: it moves the band off the header
+// entirely, where there is no count in the pixels at all, and every frame must
+// refuse. CLAUDE.md, "A clean measurement is not a validated one" -- the
+// assignment probe's perfect result came from an instrument nothing had shown
+// could report a wrong answer.
+func reportRosterCount(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame) {
+	t.Helper()
+	ing := New(nil, nil, engine)
+	ranks := rosterFrameRanks()
+	totals := rosterGroupTotals(t)
+
+	if *rosterCountSweep {
+		reportRosterCountSweep(ctx, t, engine, frames, ranks, totals)
+		return
+	}
+
+	// The shifts are DOWNWARD, into the member list, and that direction is the
+	// whole point. Shifting up leaves the band on the search bar, where there
+	// is no ink of any kind and every frame refuses with "0 ink runs" -- which
+	// proves only that the reader declines a blank rectangle. A member row is
+	// the adversarial place to look for a count that is not there: it carries
+	// white "Manage" text and a saturated avatar, i.e. real instances of BOTH
+	// populations this reader's guards key on, arranged in the same left-to-
+	// right order (colour, then white) that the guard treats as proof the
+	// first white run is a slash.
+	//
+	// Three offsets rather than one, because a single offset can land in a
+	// gutter by luck. memberListRegion.Y1 is 0.44 and the header band sits at
+	// 0.409..0.435, so +1, +1.5 and +2 pitches put the band on the first row's
+	// name line, the second row's mid-card, and the second row's name line.
+	shifts := []float64{0}
+	if *rosterCountShift {
+		shifts = []float64{
+			float64(memberRowPitch) / 1600.0,
+			1.5 * float64(memberRowPitch) / 1600.0,
+			2 * float64(memberRowPitch) / 1600.0,
+		}
+		t.Log("  -roster.countshift: every band moved DOWN onto the member rows, where")
+		t.Log("  there is no count but there is white text and saturated colour. Anything")
+		t.Log("  but 100% refused means this mode cannot report a wrong total.")
+	}
+
+	correct, wrong, refused := 0, 0, 0
+	byRefusal := map[string]int{}
+	for _, shift := range shifts {
+		for _, f := range frames {
+			rank := ranks[f.Seq]
+			want := totals[rank]
+			band := transport.Rect{
+				X1: groupHeaderRegion.X1, Y1: groupHeaderRegion.Y1 + shift,
+				X2: groupHeaderRegion.X2, Y2: groupHeaderRegion.Y2 + shift,
+			}
+			runs := countDigitRunsAt(f.Img, band, *rosterCountLuma, *rosterCountSat)
+			widths := make([]string, 0, len(runs))
+			for _, r := range runs {
+				widths = append(widths, fmt.Sprintf("[%d,%d)w%d", r.X0, r.X1, r.Width()))
+			}
+			got, err := ing.readGroupCountTotalAt(ctx, f.Img, band, *rosterCountLuma, *rosterCountSat)
+			switch {
+			case err != nil:
+				refused++
+				byRefusal[rosterCountRefusalShape(err)]++
+				t.Logf("  seq %2d  %-3s want %2d  runs %-40s REFUSED: %v", f.Seq, rank, want, strings.Join(widths, " "), err)
+			case got == want:
+				correct++
+				t.Logf("  seq %2d  %-3s want %2d  runs %-40s -> %d", f.Seq, rank, want, strings.Join(widths, " "), got)
+			default:
+				wrong++
+				t.Logf("  seq %2d  %-3s want %2d  runs %-40s -> %d  WRONG", f.Seq, rank, want, strings.Join(widths, " "), got)
+			}
+		}
+	}
+	// The caveat the headline needs, on the model of the header mode's
+	// "distinct raw reads" line. This capture holds four rank groups and
+	// photographs each of them many times, so 61 frames are nothing like 61
+	// independent trials of the reader: the count strip is pixel-identical
+	// across every frame of a group that did not scroll, and the whole run
+	// exercises about as many distinct crops as there are groups. A number
+	// that reads "61 correct" and is really five is exactly the aggregate
+	// CLAUDE.md warns is hardest to interrogate, because it is green.
+	distinctBands := map[string]bool{}
+	for _, shift := range shifts {
+		for _, f := range frames {
+			band := transport.Rect{
+				X1: groupHeaderRegion.X1, Y1: groupHeaderRegion.Y1 + shift,
+				X2: groupHeaderRegion.X2, Y2: groupHeaderRegion.Y2 + shift,
+			}
+			key := fmt.Sprintf("%v", countDigitRunsAt(f.Img, band, *rosterCountLuma, *rosterCountSat))
+			distinctBands[key] = true
+		}
+	}
+	t.Logf("  distinct count-strip segmentations: %d over %d bands -- the headline below counts bands, and"+
+		" a group photographed 21 times contributes 21 of them from one crop", len(distinctBands), len(frames)*len(shifts))
+	t.Logf("  count mask: %d correct, %d WRONG, %d refused, of %d bands (%d frames x %d band positions, minLuma=%d maxSat=%d)",
+		correct, wrong, refused, len(frames)*len(shifts), len(frames), len(shifts), *rosterCountLuma, *rosterCountSat)
+	for shape, n := range byRefusal {
+		t.Logf("    refusal shape %-48s %d", shape, n)
+	}
+	// Per rank, because the whole point of this reader is the groups the
+	// whole-field path cannot read, and a capture-wide total hides which ones
+	// they were: R3 and R4 already parse without it.
+	perRank := map[string][3]int{}
+	for _, shift := range shifts {
+		for _, f := range frames {
+			rank := ranks[f.Seq]
+			band := transport.Rect{
+				X1: groupHeaderRegion.X1, Y1: groupHeaderRegion.Y1 + shift,
+				X2: groupHeaderRegion.X2, Y2: groupHeaderRegion.Y2 + shift,
+			}
+			got, err := ing.readGroupCountTotalAt(ctx, f.Img, band, *rosterCountLuma, *rosterCountSat)
+			c := perRank[rank]
+			switch {
+			case err != nil:
+				c[2]++
+			case got == totals[rank]:
+				c[0]++
+			default:
+				c[1]++
+			}
+			perRank[rank] = c
+		}
+	}
+	for _, rank := range rankBadgeOrder {
+		if c, ok := perRank[rank]; ok {
+			t.Logf("    %s (transcribed total %2d): %2d correct, %d WRONG, %2d refused", rank, totals[rank], c[0], c[1], c[2])
+		}
+	}
+}
+
+// rosterCountRefusalShape collapses readGroupCountTotal's error text to which
+// guard fired, so the summary says WHY a frame refused rather than only how
+// often one did. Same shape, and same reason, as rosterHeaderRefusalReason.
+func rosterCountRefusalShape(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "ink runs, want a slash"):
+		return "too few ink runs"
+	case strings.Contains(msg, "nothing saturated left of"):
+		return "no colour proving run 0 is the slash"
+	case strings.Contains(msg, "short of the strip's right edge"):
+		return "count not right-aligned"
+	case strings.Contains(msg, "digit runs, want at most"):
+		return "too many digit runs"
+	case strings.Contains(msg, "outside the"):
+		return "ink run width outside a glyph's"
+	case strings.Contains(msg, "want exactly one digit"):
+		return "engine did not return one digit"
+	case strings.Contains(msg, "disagree"):
+		return "the two read paths disagree"
+	default:
+		return "other"
+	}
+}
+
+// reportRosterCountSweep varies the two mask thresholds across every real
+// header, so the shipped setting can be read against its neighbours rather
+// than asserted. The luma axis spans the grey header card (204) up to flat
+// white; the saturation axis spans well below the green card's own tint up to
+// well above it.
+func reportRosterCountSweep(ctx context.Context, t *testing.T, engine ocr.OCREngine, frames []rosterLoadedFrame, ranks map[int]string, totals map[string]int) {
+	t.Helper()
+	ing := New(nil, nil, engine)
+	t.Logf("  %8s %7s %9s %7s %9s", "minLuma", "maxSat", "correct", "WRONG", "refused")
+	for _, lum := range []int{230, 234, 236, 238, 240, 242, 244, 246, 250} {
+		for _, sat := range []int{10, 20, 40, 90, 130, 160, 200} {
+			correct, wrong, refused := 0, 0, 0
+			for _, f := range frames {
+				got, err := ing.readGroupCountTotalAt(ctx, f.Img, groupHeaderRegion, lum, sat)
+				switch {
+				case err != nil:
+					refused++
+				case got == totals[ranks[f.Seq]]:
+					correct++
+				default:
+					wrong++
+				}
+			}
+			mark := ""
+			if lum == countMaskMinLuma && sat == countMaskMaxSat {
+				mark = "   <- shipped"
+			}
+			t.Logf("  %8d %7d %9d %7d %9d%s", lum, sat, correct, wrong, refused, mark)
+		}
+	}
 }

@@ -24,6 +24,16 @@ const (
 	// for, and is markedly worse on crops PSMSingleLine handles, so it earns
 	// its place only as Spec.FallbackPSM.
 	PSMRawLine = 13
+	// PSMSingleWord is "treat the image as a single word". It is the mode
+	// roster.go's group-count reader uses on ONE already-isolated digit at a
+	// time: that reader segments the count strip itself from a colour mask
+	// (vision.WhiteInkMask), so by the time tesseract sees a crop there is
+	// exactly one glyph in it and nothing for layout analysis to get wrong.
+	// Measured on capture 1's four headers it read six of the seven isolated
+	// digits and refused the seventh ("9" as "q") rather than naming a
+	// different digit -- the failure direction a count that gates member
+	// creation can survive.
+	PSMSingleWord = 8
 )
 
 // TesseractEngine reads text by shelling out to the `tesseract` CLI. This is

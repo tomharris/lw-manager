@@ -280,3 +280,122 @@ func (c greenChannel) At(x, y int) color.Color {
 	_, g, _, _ := c.src.At(x, y).RGBA()
 	return color.Gray{Y: uint8(g >> 8)}
 }
+
+// WhiteInkMask presents an image as a two-level mask: black where a pixel is
+// both BRIGHT and DESATURATED, white everywhere else. Like GreenChannel it is
+// a lazy view, so a caller can hand it straight to Preprocess (whose own
+// Grayscale step is then a no-op) or address sub-rects of it in frame
+// coordinates.
+//
+// It exists for one measured field, and for a defect no Options setting can
+// reach. The member list's rank-group header states "N/M" -- N online, M in
+// the group -- in an outlined game font whose glyphs SHARE their black
+// outlines, so adjacent digits touch. Tesseract's classifier merges the run
+// into a single letter-shaped blob: capture 1's R2 header reads "1/11" and
+// comes back "VN", "Vu", "VW" or "Wu" on all 21 of its frames, and R1's
+// "0/12" comes back "OAR" or "OB". CLAUDE.md records the sweeps that failed
+// -- 12 geometries, 24 preprocessing shapes through each of two rectangles,
+// 40 AdaptiveThreshold block/C settings through each, PSM 8/11/13 and a digit
+// whitelist -- and every one of them starts from luma, which is the axis that
+// was never varied. Isolating "11" from the slash and reading it alone still
+// returns "At", "Ai" or "TT", so this is not a layout failure that a
+// page-segmentation mode can bypass (CLAUDE.md, "Sometimes it is the
+// classifier, not the layout").
+//
+// What colour separates that luma cannot: the ONLINE count is drawn saturated
+// (cyan on a grey header, green on a green one) and the TOTAL is drawn white
+// with a black outline. A bright-and-desaturated mask therefore keeps exactly
+// "/M" and drops "N", and -- the part that matters -- each digit's own black
+// outline falls OUTSIDE the mask, so the surviving fills are separated by
+// ink-free columns. The digits become individually addressable without any
+// connected-component analysis: a column profile of the mask is enough
+// (see roster.go's countDigitRuns).
+//
+// Measured on capture 1's four real headers, masking at minLuma 240 /
+// maxSat 40 (`make probe-roster PROBE_ARGS=-roster.count`):
+//
+//	R2  1/11   runs slash+2   -> 11   (OCR of the whole field: "VN")
+//	R3 10/64   runs slash+2   -> 64
+//	R1  0/12   runs slash+2   -> 12   (OCR of the whole field: "OAR")
+//	R4   2/9   runs slash+1   ->  9   (the whole field reads fine here)
+//
+// 61 of 61 header bands, no wrong total. Read that number knowing what it is
+// worth: this capture holds four groups and photographs each of them many
+// times, so those 61 bands are 3 distinct count-strip segmentations, not 61
+// independent trials -- the probe prints that count beside the headline for
+// exactly this reason.
+//
+// It stays a RETRY behind whole-field OCR rather than replacing it. R3 and R4
+// are read perfectly well without any of this, and a second reader is only
+// ever additive behind a path that refuses.  The same asymmetry GreenChannel
+// above records for the status column.
+//
+// The thresholds are parameters rather than constants because they name a
+// property of the pixels being masked, not of this function, and the one
+// field using them states its own measurement beside them.
+func WhiteInkMask(img image.Image, minLuma, maxSat int) image.Image {
+	return whiteInkMask{src: img, minLuma: minLuma, maxSat: maxSat}
+}
+
+type whiteInkMask struct {
+	src             image.Image
+	minLuma, maxSat int
+}
+
+func (m whiteInkMask) ColorModel() color.Model { return color.GrayModel }
+func (m whiteInkMask) Bounds() image.Rectangle { return m.src.Bounds() }
+func (m whiteInkMask) At(x, y int) color.Color {
+	if m.Ink(x, y) {
+		return color.Gray{Y: 0}
+	}
+	return color.Gray{Y: 255}
+}
+
+// Ink reports whether one pixel passes the mask, without going through the
+// color.Color boxing At has to do. A caller building a column profile over a
+// few thousand pixels per frame calls this directly; At exists so the same
+// value can be handed to Preprocess and the OCR engine as an image.
+func (m whiteInkMask) Ink(x, y int) bool {
+	r, g, b, _ := m.src.At(x, y).RGBA()
+	R, G, B := int(r>>8), int(g>>8), int(b>>8)
+	mx, mn := R, R
+	for _, v := range [2]int{G, B} {
+		if v > mx {
+			mx = v
+		}
+		if v < mn {
+			mn = v
+		}
+	}
+	lum := (R*299 + G*587 + B*114) / 1000
+	return lum >= m.minLuma && mx-mn <= m.maxSat
+}
+
+// Inker is the interface WhiteInkMask's result satisfies, so a caller that
+// wants the boolean rather than a color.Color does not have to type-assert to
+// an unexported type.
+type Inker interface {
+	Ink(x, y int) bool
+}
+
+// Saturated reports whether a pixel of img is coloured enough to be one of the
+// game's tinted glyphs -- the counterpart test to WhiteInkMask's, used to
+// prove that the colour it dropped was actually there. roster.go's count
+// reader needs that proof: its whole reason for dropping the first ink run is
+// that the run is the "/" separating a saturated N from a white M, and if N
+// were not saturated the first run would be a DIGIT and dropping it would
+// silently divide the total by ten.
+func Saturated(img image.Image, x, y int, minSat int) bool {
+	r, g, b, _ := img.At(x, y).RGBA()
+	R, G, B := int(r>>8), int(g>>8), int(b>>8)
+	mx, mn := R, R
+	for _, v := range [2]int{G, B} {
+		if v > mx {
+			mx = v
+		}
+		if v < mn {
+			mn = v
+		}
+	}
+	return mx-mn >= minSat
+}

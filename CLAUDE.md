@@ -147,7 +147,9 @@ instead of creating a duplicate account.
   fitted to histograms. `-roster.inkprofile` prints the column ink histogram a
   crop edge is placed from, `-roster.x0sweep` sweeps `nameXFrac0`,
   `-roster.detail` is the per-band view, `-roster.members` the per-member one,
-  `-roster.noretry` measures what the shipped PSM-13 retry is worth, and
+  `-roster.noretry` measures what the shipped PSM-13 retry is worth,
+  `-roster.count` / `-roster.countshift` / `-roster.countsweep` measure the
+  colour-mask group-count reader, and
   `-roster.lastactive` / `-roster.lasweep` measure the status column split by
   which of its two states a row is in.
   It scores against `fixtures/m4rostergate/expected.yaml` — 75 members, that
@@ -182,13 +184,18 @@ instead of creating a duplicate account.
   (`fixtures/m4rostergate/expected.yaml`), at ≥95% member coverage with zero
   splits and zero orphans. Tagged `m4rostergate`; same three dependencies as
   `gate-m4`. **It does not pass, and is committed failing on purpose**:
-  47/75 covered (never_created 19, wrong_group 9), orphans 5, splits 0 as of
-  2026-08-20. Read that number knowing its ceiling: R2's group header count
-  is unread on this capture (see "Sometimes it is the classifier, not the
-  layout" below), the count is what gates member creation, so R2's 11 members
-  cannot be created at all and coverage caps at **64/75 = 85.3% against a
-  0.95 condition**. The bar is a claim about the route, not about capture 1,
-  and a run here measures progress toward a ceiling below its own bar.
+  60/75 covered (never_created 15, wrong_group 0), orphans 5, splits 0 as of
+  2026-08-21. Conditions 3 and 4 pass; 1 and 2 are what remain.
+  **The ceiling this entry used to carry is gone** — R2's count is read now
+  (see "The axis every sweep missed was colour" below) and every group reports
+  its true size, which is what condition 4 was failing on. What is left is the
+  name field, and `make probe-roster PROBE_ARGS=-roster.members` says so
+  exactly: 60 CREATABLE, 4 LOW-CONF, 11 MISS of 75, so 60/75 **is** the name
+  reader's own ceiling and the gate has reached it. Ten of the fifteen misses
+  are refused by `nameSpec.MinConf` before reaching the creation branch, and
+  lowering that floor makes the gate worse rather than better: four of the ten
+  are correct reads, six are wrong ones that would be minted as orphans, and
+  orphans are a hard zero.
 - New packages get a fake or a replay path before they get a real
   implementation. `ReplayTransport` was written before `ADBTransport` was
   trusted, and that ordering is the pattern to follow.
@@ -711,6 +718,101 @@ pixels. Second, before spending another session on preprocessing, establish
 which stage is failing: a crop that reads under *some* PSM is a layout
 problem, and a crop that reads under none of them, at any threshold, through
 two rectangles, is not going to be fixed by a thirteenth setting.
+
+### The axis every sweep missed was colour
+
+The section above closes off page-segmentation mode as a fix for R2's `1/11`
+header count, and it was right to: 12 geometries, 24 preprocessing shapes
+through each of two rectangles, 40 AdaptiveThreshold settings through each,
+PSM 8/11/13 and a digit whitelist, all measured, all failing. What none of
+them varied is that **`vision.Options` is entirely a set of luma operations**
+— equalize, threshold, invert, upscale all run on the grayscale image — so
+thirty-plus committed sweeps were thirty-plus samples of one axis.
+
+The count separates trivially on a second one. The online half is drawn
+saturated (cyan on a grey header, green on a green one) and the total is drawn
+white with a black outline, so a `luma >= 240 && saturation <= 40` mask keeps
+exactly `/M` and drops `N`. The part that matters is not the split but what
+happens to the outline: it is neither bright nor desaturated, so it falls
+**outside** the mask, and the digit fills it encloses come apart into
+ink-free-separated column runs. The glyphs that "touch" for tesseract do not
+touch in the mask. `vision.WhiteInkMask` and `internal/ingest/groupcount.go`.
+
+`vision.GreenChannel` was already in the tree doing the same thing for the
+status column's green "Online", so the technique was not new — it just had
+not been reached for on a field whose failure had been filed under "classifier,
+not layout" and therefore under "nothing to be done". **A closed-off line of
+work is closed off along the axes that were measured.** When a sweep grid has
+been run to exhaustion, the useful question is not "what else on this axis"
+but "what does this grid hold constant", and for every `vision.Options` sweep
+in this repo the answer is colour.
+
+### Two read paths that agree, where one path cannot be trusted
+
+Segmenting the count was the easy half; classifying the isolated digits was
+not, and the way that surfaced is worth keeping.
+
+`make probe-roster PROBE_ARGS=-roster.countsweep` moves the mask's luma
+threshold two levels either side of the shipped 240. The **segmentation does
+not move at all** — capture 1's R2 count produces byte-identical ink runs at
+238, 240 and 242 — while the classification of one isolated glyph goes `q`,
+`1`, `4`. A per-digit reader would have returned **14 for a real 11** at 242:
+coherent, in range, and silently wrong, on the field that gates member
+creation. The shipped 240 was not a plateau, it was a single point.
+
+The fix is not a better threshold. `readGroupCountTotal` reads the digits
+twice — once per glyph at PSM 8, once across the whole strip at PSM 7 (PSM 13
+on a no-digit result) — and refuses unless the two agree. That takes the whole
+threshold sweep to **zero wrong totals at every setting**, degrading to
+refusals instead. It is not two samples of one measurement: the two modes take
+different paths through tesseract, and they already disagree where the
+per-digit path is weakest. A threshold that pushes one path onto a wrong glyph
+does not push the other onto the *same* wrong glyph, so disagreement is the
+signature of an unreliable read even when neither path reports low confidence.
+
+Note what made this findable: the sweep, and only the sweep. At the shipped
+setting the reader was 61/61 with nothing anomalous to explain — the green
+aggregate CLAUDE.md already warns is the hardest to interrogate. **A constant
+worth shipping is worth sweeping either side of, because the shape of the
+curve is a different fact from the value at the peak.** And read the 61 with
+its own caveat, which the probe now prints: this capture photographs four
+groups many times over, so 61 bands are **3 distinct count-strip
+segmentations**, not 61 independent trials.
+
+### A frame can carry more than one group, and the mechanism that copes hides it
+
+`IngestRoster` attributed every row band on a frame to the rank its **sticky**
+header named. That is wrong on any frame that scrolls across a group boundary:
+the next group's own header **card** stands inside the member list with its
+rows beneath it, while the sticky band still shows the outgoing group. Capture
+1 has both shapes — seq 22 (sticky R3, R2's card partway down, five R2 members
+created under R3) and seq 1 (sticky R4 collapsed, R3's card immediately below
+it, four R3 members created under R4) — and those nine are exactly the roster
+gate's entire `wrong_group` count.
+
+Two things about how it stayed hidden generalize.
+
+**The mechanism that copes with the layout is the one that conceals the bug.**
+A header card is not one row pitch tall, so `collectBands` treats it as an
+interposed element, re-locks phase either side of it, and the card falls in the
+gap *between* the two runs. Segmentation handles the case correctly and
+therefore never hands the card to anybody. A component doing its job is not
+evidence that the caller's model of the screen is right.
+
+**And "the sticky header lags" was the wrong story for the right symptom.**
+That reading predicts a transient — a frame or two mid-scroll — and would have
+been chased with settle timing. The pixels say something structural instead:
+two headers are on screen at once, permanently, for as long as the boundary is
+in view. `findHeaderCards` looks for the card by the same NCC rank badge the
+sticky header already uses, in the y-intervals `SegmentRows` left uncovered,
+and rows are attributed to the last header at or above them.
+
+The search has to reach **below** `memberListRegion`, which is not a detail:
+R1's collapsed header sits at the very bottom of the late frames, straddling
+the region's own edge at y=1424, and is never sticky on any frame of this
+capture. A search bounded by the list region finds it nowhere at all, R1 gets
+no tally, and the gate's condition 4 goes on reporting a four-group capture
+described with three groups.
 
 ### A charset whitelist can fabricate a value, not just fail to read one
 

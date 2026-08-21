@@ -75,12 +75,26 @@ gate-m4:
 # backend's relative ./data/blobs would resolve under internal/ingest and find
 # nothing. ?= so an explicitly configured store still wins.
 #
-# It does not pass, and is committed failing on purpose: 47/75 covered
-# (never_created 19, wrong_group 9), orphans 5, splits 0 as of 2026-08-20.
-# R2's group header count is unread on this capture at any geometry,
-# preprocessing shape, threshold or page-segmentation mode measured, and the
-# count is what gates member creation, so R2's 11 members cannot be created
-# at all — coverage caps at 64/75 = 85.3% against the 0.95 condition. See
+# It does not pass, and is committed failing on purpose: 60/75 covered
+# (never_created 15, wrong_group 0), orphans 5, splits 0 as of 2026-08-21.
+# Conditions 2 and 1 are what remain; conditions 3 and 4 pass.
+#
+# THE CEILING THIS USED TO CARRY IS GONE. R2's group header count was unread
+# on this capture at any geometry, preprocessing shape, threshold or PSM
+# measured, and the count gates member creation, so R2's members could not be
+# created at all and coverage capped at 64/75 = 85.3%. Every one of those
+# sweeps varied a luma operation; the count is separable on COLOUR, which none
+# of them touched (internal/ingest/groupcount.go, vision.WhiteInkMask). All
+# four groups now report their true size and R1 has a tally at all, which is
+# what condition 4 was failing on.
+#
+# What is left is the name field, and it is not a threshold. `make probe-roster
+# PROBE_ARGS=-roster.members` reports 60 CREATABLE, 4 LOW-CONF and 11 MISS of
+# 75, so 60/75 is exactly the name reader's own ceiling. Ten of the fifteen
+# misses are reads refused by nameSpec.MinConf before they reach the creation
+# branch, and dropping that floor makes the gate WORSE, not better: four of
+# them are correct reads and six are wrong ones that would be minted as
+# orphans, against a condition that scores orphans at a hard zero. See
 # CLAUDE.md and README.md for the full reasoning.
 .PHONY: gate-roster
 gate-roster: LW_BLOB_FS_ROOT ?= $(CURDIR)/data/blobs
@@ -253,6 +267,16 @@ probe-assign:
 #                       separator -- the shape the review queue is full of and
 #                       the number a crop change should move.
 #   -roster.level       the same for the level column and ParseLevel.
+#   -roster.count       the colour-mask group-count reader, per frame: its ink
+#                       runs, the total it read, and the transcribed total.
+#                       -roster.countshift is its negative control and no
+#                       headline from this mode means anything until it has
+#                       been run — it moves the band down onto the member rows,
+#                       where there is no count but there IS white text and
+#                       saturated colour, and every band must refuse.
+#                       -roster.countsweep varies the two mask thresholds;
+#                       -roster.countluma / -roster.countsat pin one setting so
+#                       a row the sweep reports badly can be read per frame.
 #
 #	make probe-roster
 #	make probe-roster PROBE_ARGS='-roster.detail'
@@ -266,6 +290,9 @@ probe-assign:
 #	make probe-roster PROBE_ARGS='-roster.headersweep'
 #	make probe-roster PROBE_ARGS='-roster.headeropts'
 #	make probe-roster PROBE_ARGS='-roster.headerthresh'
+#	make probe-roster PROBE_ARGS='-roster.count'
+#	make probe-roster PROBE_ARGS='-roster.countshift'    # the negative control
+#	make probe-roster PROBE_ARGS='-roster.countsweep'
 #	make probe-roster PROBE_ARGS='-roster.power'
 #	make probe-roster PROBE_ARGS='-roster.level'
 #	make probe-roster PROBE_ARGS='-roster.lastactive'

@@ -887,8 +887,7 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		}
 	}
 
-	var prevGroupKey string
-	havePrev := false
+	prevFrameRanks := map[string]bool{}
 	var totalParsed int
 
 	for _, frame := range listFrames {
@@ -938,7 +937,33 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		groupName, headerTotal, herr := parseGroupHeader(headerRes.Text)
 		countKnown := herr == nil
 		if herr != nil {
-			if err := run.queueReview(ctx, i, frame.ScreenshotID, RowBand{Y0: hy0, Y1: hy1}, headerRes.Text, nil, "unparseable_group_header", 0); err != nil {
+			// The colour-mask retry. Whole-field OCR of this header cannot
+			// read a count whose digits touch -- capture 1's R2 "1/11" comes
+			// back "VN" on all 21 of its frames -- and every preprocessing
+			// axis anyone swept starts from luma, which is the axis that
+			// cannot see the field. readGroupCountTotal masks on colour
+			// instead, which separates the white total from the saturated
+			// online count AND leaves each digit's own black outline outside
+			// the mask, so the digits come apart into addressable column runs.
+			// Its own doc comment carries the acceptance rules and
+			// vision.WhiteInkMask's carries the measurement.
+			//
+			// It is a retry and not a replacement, on the same rule
+			// readFieldWithRetry states: it runs only where the primary
+			// refused. Measured over this capture's 61 frames it reads all 61
+			// correctly, and moved off the header onto the member rows -- 183
+			// bands where there is no count at all -- it refuses every one
+			// (`make probe-roster PROBE_ARGS=-roster.countshift`).
+			//
+			// Only the TOTAL is recovered. The name is not: parseGroupHeader
+			// derives it from the text preceding the count token, and there is
+			// no such token in a read like "R2) I'm Alright VN". The raw text
+			// stands in, which is honest about what was seen and costs
+			// nothing, because the name is triage-only and never a key (see
+			// parseGroupHeader's own doc comment).
+			if total, merr := i.readGroupCountTotal(ctx, img, groupHeaderRegion); merr == nil {
+				groupName, headerTotal, countKnown = strings.TrimSpace(headerRes.Text), total, true
+			} else if err := run.queueReview(ctx, i, frame.ScreenshotID, RowBand{Y0: hy0, Y1: hy1}, headerRes.Text, nil, "unparseable_group_header", 0); err != nil {
 				return RosterResult{}, err
 			}
 		}
@@ -991,7 +1016,6 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		// the header band, already measured by
 		// `make probe-roster PROBE_ARGS=-roster.headerink`), and guessing
 		// without one would be the blind tap CLAUDE.md's invariant #3 forbids.
-		groupKey := rankRes.Rank
 		// Rank is not OCR-derived, so invariant #5's confidence-on-every-fact
 		// rule does not literally reach it and members.Rank has nowhere to
 		// carry a score. Its provenance is still worth having when a capture
@@ -1003,31 +1027,6 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 		slog.DebugContext(ctx, "ingest: frame rank matched",
 			"capture_id", captureID, "frame_seq", frame.Seq, "screenshot_id", frame.ScreenshotID,
 			"rank", rankRes.Rank, "score", rankRes.Score, "gap", rankRes.Gap)
-
-		gt, exists := run.groups[groupKey]
-		if !exists {
-			gt = &groupTracker{expected: headerTotal, countKnown: countKnown}
-			run.groups[groupKey] = gt
-			run.res.PerGroup[groupKey] = GroupTally{Expected: headerTotal, ExpectedKnown: countKnown, Name: groupName}
-		} else if !gt.countKnown && countKnown {
-			// A count read on a LATER frame of the same group is still the
-			// count, and a tracker is created on whichever frame sighted the
-			// group first -- which is wherever a swipe happened to land, not
-			// something the capture chooses. Without this, a group whose
-			// first header failed would stay budgetless for the rest of the
-			// run with the evidence for its size sitting in a frame already
-			// read. The upgrade only ever goes one way: a header that parsed
-			// is never overwritten by a later one that did not, so noise on
-			// one frame cannot take a budget away.
-			gt.expected, gt.countKnown = headerTotal, true
-			tally := run.res.PerGroup[groupKey]
-			tally.Expected, tally.ExpectedKnown, tally.Name = headerTotal, true, groupName
-			run.res.PerGroup[groupKey] = tally
-		}
-
-		sameGroupAsPrevFrame := havePrev && groupKey == prevGroupKey
-		gt.advance(frame.OffsetPx, sameGroupAsPrevFrame)
-		prevGroupKey, havePrev = groupKey, true
 
 		// Every band SegmentRows returns is a whole row. There used to be a
 		// drop here of each continuing frame's topmost band, on the theory
@@ -1056,8 +1055,78 @@ func (i *Ingester) IngestRoster(ctx context.Context, captureID int64, periodKey 
 			return RosterResult{}, fmt.Errorf("ingest: segmenting screenshot %d: %w", frame.ScreenshotID, err)
 		}
 
+		// Every header on this frame, sticky first, then any group header CARD
+		// standing inside the member list. The sticky one is prepended rather
+		// than searched for: it has already been read above, it always sits
+		// above every band, and it is the owner of any row a card does not
+		// claim. headercard.go's own doc comment carries the nine members
+		// capture 1 loses without this and why SegmentRows cannot surface a
+		// card on its own.
+		headers := []headerCard{{Rank: rankRes.Rank, Band: groupHeaderRegion, Y0: hy0, Score: rankRes.Score, Gap: rankRes.Gap}}
+		cards, err := findHeaderCards(img, bands)
+		if err != nil {
+			return RosterResult{}, fmt.Errorf("ingest: capture %d frame seq %d: finding group header cards: %w", captureID, frame.Seq, err)
+		}
+		headers = append(headers, cards...)
+
+		// The sticky header's own tally, from the reads above.
+		run.noteHeader(rankRes.Rank, groupName, headerTotal, countKnown)
+
+		// Each in-list card is read the same way the sticky header was, through
+		// its OWN band: same crop fractions in X, this card's Y. A card states
+		// its group's size exactly as the sticky header does, and on this
+		// capture R1 "Danger Zone 0/12" is stated on no other kind of frame --
+		// it is never sticky, so without this read R1 has no tally at all and
+		// the roster gate's condition 4 reports a four-group capture described
+		// with three groups.
+		for _, card := range cards {
+			cardRes, err := i.readField(ctx, img, card.Band, groupHeaderSpec, groupHeaderOptions)
+			if err != nil {
+				return RosterResult{}, fmt.Errorf("ingest: reading group header card on screenshot %d: %w", frame.ScreenshotID, err)
+			}
+			cardName, cardTotal, cerr := parseGroupHeader(cardRes.Text)
+			cardKnown := cerr == nil
+			if cerr != nil {
+				if total, merr := i.readGroupCountTotal(ctx, img, card.Band); merr == nil {
+					cardName, cardTotal, cardKnown = strings.TrimSpace(cardRes.Text), total, true
+				} else {
+					cy0 := int(card.Band.Y1 * float64(img.Bounds().Dy()))
+					cy1 := int(card.Band.Y2 * float64(img.Bounds().Dy()))
+					if err := run.queueReview(ctx, i, frame.ScreenshotID, RowBand{Y0: cy0, Y1: cy1}, cardRes.Text, nil, "unparseable_group_header", 0); err != nil {
+						return RosterResult{}, err
+					}
+				}
+			}
+			run.noteHeader(card.Rank, cardName, cardTotal, cardKnown)
+			slog.DebugContext(ctx, "ingest: in-list group header card",
+				"capture_id", captureID, "frame_seq", frame.Seq, "screenshot_id", frame.ScreenshotID,
+				"rank", card.Rank, "score", card.Score, "gap", card.Gap, "band_y0", card.Y0)
+		}
+
+		// Advance each group on this frame ONCE, and only if the previous
+		// frame also carried it. frame.OffsetPx is the scroll between two
+		// consecutive frames, so it is this group's own travel exactly when
+		// this group was on screen for both of them -- which, now that a frame
+		// can carry two groups, is a per-group question rather than the single
+		// prevGroupKey comparison it used to be. A group returned to after an
+		// absence keeps the contentY it had; see groupTracker.advance for why
+		// that is the only assumption the frame pair supports.
+		thisFrameRanks := map[string]bool{}
+		for _, hc := range headers {
+			thisFrameRanks[hc.Rank] = true
+		}
+		for rank := range thisFrameRanks {
+			run.groups[rank].advance(frame.OffsetPx, prevFrameRanks[rank])
+		}
+		prevFrameRanks = thisFrameRanks
+
 		regionTop := int(memberListRegion.Y1 * float64(img.Bounds().Dy()))
 		for _, band := range bands {
+			// Which group's row this is: the last header at or above the
+			// band's top, which is the sticky header unless a card stands
+			// between them.
+			groupKey := ownerOf(headers, band)
+			gt := run.groups[groupKey]
 			rowY := gt.contentY + (band.Y0 - regionTop)
 			// The design doc also specifies an identity-based cross-check
 			// alongside this geometric dedupe, flagging a disagreement
@@ -1196,6 +1265,40 @@ func (run *rosterRun) readAllianceMemberCount(ctx context.Context, i *Ingester, 
 // budget -- and the exported GroupTally.MatchedOrCreated count the same event
 // and must move together, or `control ingest` prints a yielded= column that
 // nothing maintains. Both call sites bump the tracker and then call this.
+// noteHeader records one header sighting of a group: it creates the group's
+// tracker on first sight and upgrades an unread count when a later header
+// supplies one.
+//
+// Extracted from IngestRoster's frame loop when a frame stopped carrying
+// exactly one header. It is called for the sticky header and once for each
+// in-list card, and the two must behave identically -- a card is the same
+// element drawn further down the screen, and a version of this that upgraded
+// counts from one and not the other would depend on where a swipe happened to
+// stop.
+//
+// THE UPGRADE ONLY EVER GOES ONE WAY. A tracker is created on whichever frame
+// sighted the group first, which is wherever the capture happened to land, so
+// a group whose first header failed would otherwise stay budgetless for the
+// rest of the run with the evidence for its size sitting in a frame already
+// read. A header that parsed is never overwritten by a later one that did
+// not, so noise on one frame cannot take a budget away.
+func (run *rosterRun) noteHeader(rank, name string, total int, countKnown bool) *groupTracker {
+	gt, exists := run.groups[rank]
+	if !exists {
+		gt = &groupTracker{expected: total, countKnown: countKnown}
+		run.groups[rank] = gt
+		run.res.PerGroup[rank] = GroupTally{Expected: total, ExpectedKnown: countKnown, Name: name}
+		return gt
+	}
+	if !gt.countKnown && countKnown {
+		gt.expected, gt.countKnown = total, true
+		tally := run.res.PerGroup[rank]
+		tally.Expected, tally.ExpectedKnown, tally.Name = total, true, name
+		run.res.PerGroup[rank] = tally
+	}
+	return gt
+}
+
 func (run *rosterRun) noteMemberFor(groupKey string) {
 	tally := run.res.PerGroup[groupKey]
 	tally.MatchedOrCreated++
