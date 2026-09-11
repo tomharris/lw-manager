@@ -3,7 +3,7 @@ module github.com/tomharris/lw-manager
 go 1.26.4
 
 require (
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/minio/minio-go/v7 v7.3.0
 	github.com/pressly/goose/v3 v3.27.3
 	go.yaml.in/yaml/v3 v3.0.5
